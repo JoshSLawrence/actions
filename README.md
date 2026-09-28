@@ -44,13 +44,12 @@ Complete caller workflows are in [`examples/`](examples/).
 ## Principles
 
 1. **mise** installs every tool, at the versions each project pins.
-2. **OpenTofu**, not Terraform.
-3. **No inline scripts in YAML.** A `run:` step runs one script, where the
+2. **No inline scripts in YAML.** A `run:` step runs one script, where the
    logic can be read, shellchecked and run locally. A pre-commit hook
    enforces this.
-4. **Easy to follow beats early abstraction.**
-5. **Stay DRY** with shared helpers (`common.sh`) and shared actions, as
-   long as that doesn't make the code harder to follow.
+3. **Easy to follow beats early abstraction.**
+4. **Stay DRY** with shared helpers and shared actions, as long as that
+   doesn't make the code harder to follow.
 
 ## Versioning
 
@@ -66,9 +65,7 @@ self-repository syntax (`uses: $/...`). Whatever ref you pin, everything
 therefore comes from the same commit. That syntax needs GitHub Actions
 runner 2.336.0 or newer; GitHub-hosted runners always qualify.
 
-This repository must be public, or, if private, its Actions access setting
-must allow the repositories that use it (Settings -> Actions -> General ->
-Access).
+This repository is public and available for use in any workflow.
 
 ## Layout
 
