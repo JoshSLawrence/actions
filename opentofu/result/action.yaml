@@ -1,0 +1,19 @@
+name: OpenTofu result
+description: >-
+  Fails unless every job in `needs` succeeded or was skipped -- the single
+  check to require in branch protection. Use it in a job with `if: always()`.
+
+inputs:
+  needs:
+    description: The job's toJSON(needs).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Check job results
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/result.sh"'
+      env:
+        NEEDS: ${{ inputs.needs }}
+        IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}

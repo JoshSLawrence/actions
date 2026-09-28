@@ -1,12 +1,14 @@
 [tools]
-# Repo lint tooling (pre-commit hooks use the system actionlint/shellcheck)
+# Repo lint tooling (pre-commit hooks use the system actionlint/shellcheck;
+# yq is for .github/scripts/check-workflow-inputs.sh)
 actionlint = "1.7.12"
 pre-commit = "4.6.2"
 shellcheck = "0.11.0"
+yq = "4.53.6"
 
-# Used to lint and exercise tests/fixtures/ locally. Keep these in sync with
-# the fallback versions in opentofu/scripts/setup-tools.sh, so the fixture is
-# checked with the same versions consumers get by default.
+# For the pre-commit OpenTofu hooks on tests/fixtures/. CI doesn't use these:
+# each fixture root module pins its own tools in its own mise.toml, and only
+# those are installed for it -- which is exactly what the fixtures test.
 conftest = "0.69.0"
 opentofu = "1.12.6"
 terraform-docs = "0.24.0"

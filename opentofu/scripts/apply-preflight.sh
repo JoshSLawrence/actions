@@ -16,9 +16,10 @@
 #   GITHUB_REPOSITORY - owner/name
 #   TARGET_BRANCH     - branch the change lands on (e.g. main)
 #   TARGET_SHA        - commit of TARGET_BRANCH the plan was made against
-#   PREFLIGHT_PATHS   - repository paths the plan depends on, space- or
-#                       newline-separated: the root module, and any local
-#                       modules outside it (required; "." means any change)
+#   PREFLIGHT_PATHS   - what the plan depends on, space- or newline-separated:
+#                       directories (the root module, local modules outside
+#                       it; "." means any change) and/or globs such as
+#                       "modules/**" (required)
 #   PR_NUMBER, HEAD_SHA - the PR and the head commit that was planned (PR
 #                       runs only)
 #
@@ -63,28 +64,34 @@ if [ -n "${PR_NUMBER:-}" ]; then
   log_success "PR #${PR_NUMBER} is open and unchanged"
 fi
 
-# Normalise to repository-relative prefixes: "./iac/" -> "iac/", "." -> ""
-prefixes=()
-while IFS= read -r path; do
-  path="${path#./}"
-  path="${path%/}"
-  if [ -z "$path" ] || [ "$path" = "." ]; then
-    prefixes+=("")
+# Each entry is a directory (everything under it counts) or a glob
+regexes=()
+while IFS= read -r entry; do
+  if [[ "$entry" == *[*?]* ]]; then
+    regexes+=("$(glob_to_regex "${entry#./}")")
   else
-    prefixes+=("${path}/")
+    dir="$(normalize_path "$entry")" || {
+      log_error "preflight-paths entry '${entry}' climbs out of the repository. Use repository-relative paths."
+      exit 1
+    }
+    regexes+=("$(dir_regex "$dir")")
   fi
 done < <(list_items "$PREFLIGHT_PATHS")
-prefixes_json="$(printf '%s\n' "${prefixes[@]}" | jq -R . | jq -sc .)"
 
 log_info "Checking ${PREFLIGHT_PATHS//$'\n'/, } hasn't changed on ${TARGET_BRANCH} since ${TARGET_SHA:0:7}..."
 comparison="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${TARGET_SHA}...${TARGET_BRANCH}")"
 ahead_by="$(jq -r .ahead_by <<< "$comparison")"
 file_count="$(jq -r '.files | length' <<< "$comparison")"
-changed="$(jq -r --argjson prefixes "$prefixes_json" '
-  [ .files[]?.filename as $f
-    | select(any($prefixes[]; . as $p | $f | startswith($p)))
-    | $f ]
-  | unique | join(", ")' <<< "$comparison")"
+changed_files=()
+while IFS= read -r file; do
+  for regex in "${regexes[@]}"; do
+    if [[ "$file" =~ $regex ]]; then
+      changed_files+=("$file")
+      break
+    fi
+  done
+done < <(jq -r '.files[]?.filename' <<< "$comparison")
+changed="$(printf '%s\n' "${changed_files[@]+"${changed_files[@]}"}" | sed '/^$/d' | sort -u | paste -sd, - | sed 's/,/, /g')"
 
 # The compare API lists at most 300 files: with more, a relevant change could
 # be missing from the list. Too much has changed to be sure either way.

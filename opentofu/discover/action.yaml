@@ -1,0 +1,88 @@
+name: OpenTofu discover
+description: >-
+  Finds the root modules under a directory -- directories with *.tf files and
+  their own mise.toml -- and selects the ones a PR or push affects (their own
+  files, local modules they use, or shared paths). Outputs a matrix of
+  modules, and one of every module's deployments (.tfvars files). Check out
+  with fetch-depth: 0 so changes can be diffed.
+
+inputs:
+  search-root:
+    description: Directory to search, relative to the workspace. A single root module works too.
+    required: false
+    default: "."
+  exclude:
+    description: Globs of module paths to skip, space- or newline-separated (e.g. legacy/**).
+    required: false
+    default: ""
+  modules:
+    description: Run exactly these module paths, ignoring changes (e.g. from a workflow_dispatch input).
+    required: false
+    default: ""
+  changed-only:
+    description: On pull_request and push runs, select only affected modules. Other events select all.
+    required: false
+    default: "true"
+  shared-paths:
+    description: >-
+      Globs whose change affects every module (e.g. .github/workflows/**),
+      space- or newline-separated. Also added to each module's preflight
+      paths.
+    required: false
+    default: ""
+  deployments:
+    description: >-
+      .tfvars globs/paths relative to each module, one deployment each (e.g.
+      deployments/*.tfvars). A module they match nothing in runs on its own.
+    required: false
+    default: ""
+  var-files:
+    description: Var files every deployment uses (for deployments-matrix).
+    required: false
+    default: ""
+  backend-config:
+    description: Backend config every deployment uses, one per line; {deployment} is replaced (for deployments-matrix).
+    required: false
+    default: ""
+  plan-environment:
+    description: Plan environment name; {deployment} is replaced (for deployments-matrix).
+    required: false
+    default: ""
+
+outputs:
+  matrix:
+    description: '{"module": [{"path": ..., "preflight_paths": ...}, ...]} for strategy.matrix.'
+    value: ${{ steps.discover.outputs.matrix }}
+  deployments-matrix:
+    description: '{"deployment": [...]} -- every deployment of every selected module, with its path.'
+    value: ${{ steps.discover.outputs.deployments-matrix }}
+  modules:
+    description: JSON array of the selected module paths.
+    value: ${{ steps.discover.outputs.modules }}
+  count:
+    description: Number of selected modules.
+    value: ${{ steps.discover.outputs.count }}
+  has-modules:
+    description: "'true' if any module is selected."
+    value: ${{ steps.discover.outputs.has-modules }}
+
+runs:
+  using: composite
+  steps:
+    - name: Discover root modules
+      id: discover
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/discover.sh"'
+      env:
+        SEARCH_ROOT: ${{ inputs.search-root }}
+        EXCLUDE: ${{ inputs.exclude }}
+        MODULES: ${{ inputs.modules }}
+        CHANGED_ONLY: ${{ inputs.changed-only }}
+        SHARED_PATHS: ${{ inputs.shared-paths }}
+        DEPLOYMENTS: ${{ inputs.deployments }}
+        VAR_FILES: ${{ inputs.var-files }}
+        BACKEND_CONFIG: ${{ inputs.backend-config }}
+        PLAN_ENVIRONMENT: ${{ inputs.plan-environment }}
+        EVENT_NAME: ${{ github.event_name }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        BEFORE_SHA: ${{ github.event.before }}

@@ -1,6 +1,6 @@
 # Building your own workflow from the composite actions, for when the
-# reusable workflow doesn't fit (extra steps, a different job layout). This
-# is the reusable workflow's plan/apply pair, trimmed down.
+# reusable workflows don't fit (extra steps, a different job layout). This
+# is opentofu-deploy.yaml's plan/apply pair for one deployment, trimmed down.
 
 name: OpenTofu (custom)
 
@@ -34,10 +34,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # Installs mise, then exactly the tools infra/mise.toml pins
       - uses: JoshSLawrence/actions/opentofu/setup@v1
         with:
           working-directory: infra
-          tools: opentofu tflint trivy
+          required-tools: opentofu tflint trivy
 
       - uses: JoshSLawrence/actions/opentofu/checks@v1
         with:
@@ -49,10 +50,13 @@ jobs:
         uses: JoshSLawrence/actions/opentofu/plan@v1
         with:
           working-directory: infra
+          deployment: prod
+          var-files: deployments/prod.tfvars
+          backend-config: deployments/prod.tfbackend
           environment: production
 
       # Only a successful plan with changes: a failed policy check fails the
-      # plan step, so a blocked plan is never uploaded
+      # plan step (and deletes the plan), so a blocked plan is never uploaded
       - if: steps.plan.outputs.has-changes == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -76,7 +80,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     concurrency:
-      group: opentofu-apply-infra-production
+      group: opentofu-apply-infra-prod
       cancel-in-progress: false
     permissions:
       actions: read
@@ -108,6 +112,7 @@ jobs:
         with:
           working-directory: infra
           plan-sha256: ${{ needs.plan.outputs.plan-sha256 }}
+          backend-config: deployments/prod.tfbackend
           environment: production
 
       - if: ${{ !cancelled() }}

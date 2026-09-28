@@ -1,0 +1,7 @@
+# A second root module that pins fewer tools than basic (no terraform-docs):
+# only what the checks CI enables for it need.
+[tools]
+conftest = "0.69.0"
+opentofu = "1.12.6"
+tflint = "0.64.0"
+trivy = "0.74.0"

@@ -28,7 +28,7 @@ jobs:
       id-token: write
       pull-requests: write
     with:
-      working-directory: terraform
+      search-root: terraform
       apply-from-pr: false
       apply-environment: production
       cost-estimate: true

@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
 #
-# Derives the names that must be unique per root module and environment --
-# the PR comment key, the plan artifact name, the comment title -- so several
-# modules/environments can be planned in one run (a matrix, or chained calls)
-# without clobbering each other.
+# Derives the names that must be unique per root module, deployment and
+# environment -- the PR comment key, the plan artifact name, the title -- so
+# many of them can run in one workflow run without clobbering each other.
 #
 # Environment variables:
 #   WORKING_DIRECTORY - root module directory, relative to the repository root
 #   STACK_NAME        - display name (default: the working directory, or the
 #                       repository name when that's the root)
+#   DEPLOYMENT        - deployment name (the .tfvars file's), if any
 #   APPLY_ENVIRONMENT - environment the plan is for, if any
 #   REPOSITORY_NAME   - repository name, for a root-level module
 #
 # Outputs:
-#   stack         - display name of the module
-#   key           - "<stack>" or "<stack>:<environment>"
+#   key           - "<stack>", plus ":<deployment>" and ":<environment>"
+#                   when set (the environment only when it isn't the same
+#                   as the deployment)
 #   artifact-name - plan artifact name derived from key
-#   title         - heading for the PR comment and job summary
+#   title         - e.g. OpenTofu: `infra` · `prod` → `production`
 #
 
 set -euo pipefail
@@ -33,19 +34,26 @@ if [ -z "$dir" ] || [ "$dir" = "." ]; then
 fi
 
 stack="${STACK_NAME:-$dir}"
+deployment="${DEPLOYMENT:-}"
 environment="${APPLY_ENVIRONMENT:-}"
-key="${stack}${environment:+:${environment}}"
+if [ "$environment" = "$deployment" ]; then
+  environment=""
+fi
+
+key="${stack}${deployment:+:${deployment}}${environment:+:${environment}}"
 
 # Artifact names can't contain " : < > | * ? \ / or CR/LF
 artifact_name="tofu-plan-$(printf '%s' "$key" | tr -c 'A-Za-z0-9._-' '-')"
 
 title="OpenTofu: \`${stack}\`"
+if [ -n "$deployment" ]; then
+  title="${title} · \`${deployment}\`"
+fi
 if [ -n "$environment" ]; then
   title="${title} → \`${environment}\`"
 fi
 
 log_config stack key artifact_name title
-set_output stack "$stack"
 set_output key "$key"
 set_output artifact-name "$artifact_name"
 set_output title "$title"

@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 #
-# Joins the plan summary fragments (plan, policy, cost -- whichever ran) into
-# one markdown summary, in file name order, and adds it to the job summary.
-# The summary file travels with the plan artifact, so the apply job can
-# re-post it with the apply result.
+# Last step of the plan action; runs even when an earlier step failed:
+#
+# 1. Joins the summary fragments (plan, cost, policy -- whichever ran) into
+#    one markdown summary, in file name order, and adds it to the job
+#    summary. The summary goes in PLAN_DIR, so it travels with the plan
+#    artifact and the apply job can re-post it with the apply result.
+# 2. Deletes WORK_DIR: plan.json and the logs hold sensitive values unmasked.
 #
 # Environment variables:
-#   WORK_DIR     - directory whose fragments/*.md to join (required)
+#   WORK_DIR     - scratch directory whose fragments/*.md to join (required)
 #   SUMMARY_FILE - where to write the joined summary (required)
 #   TITLE        - heading for the job summary (default: OpenTofu plan)
+#
+# Outputs:
+#   summary-file - SUMMARY_FILE, when a summary was written
 #
 
 set -euo pipefail
@@ -19,6 +25,7 @@ source "$SCRIPT_DIR/common.sh"
 
 require_env WORK_DIR
 require_env SUMMARY_FILE
+trap 'rm -rf "$WORK_DIR"' EXIT
 
 shopt -s nullglob
 fragments=("$WORK_DIR"/fragments/*.md)
@@ -49,4 +56,5 @@ mkdir -p "$(dirname "$SUMMARY_FILE")"
   echo ""
 } | append_step_summary
 
+set_output summary-file "$SUMMARY_FILE"
 log_success "Plan summary written to ${SUMMARY_FILE}"

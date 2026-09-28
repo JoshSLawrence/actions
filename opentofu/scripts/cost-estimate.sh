@@ -6,6 +6,8 @@
 # job.
 #
 # Environment variables:
+#   WORKING_DIR       - root module whose mise config pins infracost
+#                       (required)
 #   PLAN_JSON         - `tofu show -json` output to price (required)
 #   FRAGMENT_FILE     - where to write the markdown fragment (required)
 #   INFRACOST_API_KEY - Infracost API key (required for an estimate; get one
@@ -23,6 +25,10 @@ ensure_mise
 require_tool jq
 require_env PLAN_JSON
 require_env FRAGMENT_FILE
+
+# Absolute, so they stay valid once the script moves into the module
+PLAN_JSON="$(abs_path "$PLAN_JSON")"
+FRAGMENT_FILE="$(abs_path "$FRAGMENT_FILE")"
 
 MAX_RESOURCES="${MAX_RESOURCES:-20}"
 export INFRACOST_SKIP_UPDATE_CHECK=true
@@ -52,8 +58,10 @@ unavailable() {
 if [ -z "${INFRACOST_API_KEY:-}" ]; then
   unavailable "No Infracost API key: pass one as the infracost-api-key secret (get a free key with \`infracost auth login\`)."
 fi
+# Infracost runs with the module's own mise pins
+cd_working_dir
 if [ -z "$(mise current infracost 2> /dev/null)" ]; then
-  unavailable "Infracost isn't installed: add infracost to the opentofu/setup action's tools input."
+  unavailable "Infracost isn't pinned for ${WORKING_DIR}. $(mise_pin_hint infracost)"
 fi
 
 cost_json="$(mktemp)"

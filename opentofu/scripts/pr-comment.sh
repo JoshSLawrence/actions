@@ -51,8 +51,6 @@ case "$APPLY_STATUS" in
     ;;
 esac
 
-# GitHub rejects comment bodies over 65536 characters
-MAX_BODY_CHARS=65000
 MARKER="<!-- opentofu-actions:${COMMENT_KEY} -->"
 COMMENT_AUTHOR="${COMMENT_AUTHOR:-github-actions[bot]}"
 REPO_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}"
@@ -130,42 +128,24 @@ else
   } > "$SUMMARY_COPY"
 fi
 
-section="$(apply_section)"
+# plan-summary.sh already budgets the plan output, but a huge policy report
+# could still push the comment over GitHub's limit
+fit_github_body "$SUMMARY_COPY" "the [workflow run](${RUN_URL})'s job summary"
 
-render_body() {
+{
   echo "$MARKER"
   echo "## ${TITLE:-OpenTofu}"
   echo ""
   cat "$SUMMARY_COPY"
+  section="$(apply_section)"
   if [ -n "$section" ]; then
     echo ""
     echo "$section"
   fi
-}
-render_body > "$BODY_FILE"
+} > "$BODY_FILE"
 
-# Last-resort guard: plan-summary.sh budgets the plan output, but a huge
-# policy report could still push the body over GitHub's limit.
-body_chars=$(wc -m < "$BODY_FILE" | tr -d ' ')
-if [ "$body_chars" -gt "$MAX_BODY_CHARS" ]; then
-  log_warn "The PR comment would be ${body_chars} characters, over GitHub's limit; truncating the summary. The full summary is in the job summary."
-  keep=$((MAX_BODY_CHARS - 2000))
-  {
-    head -c "$keep" "$SUMMARY_COPY"
-    echo ""
-    echo ""
-    echo "_... summary truncated: see the [workflow run](${RUN_URL}) job summary for all of it._"
-  } > "${SUMMARY_COPY}.tmp"
-  mv "${SUMMARY_COPY}.tmp" "$SUMMARY_COPY"
-  render_body > "$BODY_FILE"
-fi
-
-# Oldest match wins, should two runs ever have raced to create the comment.
-# Only COMMENT_AUTHOR's comments count, so nobody can hijack the update by
-# quoting the marker. Not piped into `head`: that could kill gh mid-pagination.
-comment_ids="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
-  --jq ".[] | select(.user.login == \"${COMMENT_AUTHOR}\" and (.body | startswith(\"${MARKER}\"))) | .id")"
-comment_id="${comment_ids%%$'\n'*}"
+# The oldest match wins, should two runs ever have raced to create it
+comment_id="$(gh_find_by_marker "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" "$COMMENT_AUTHOR" "$MARKER" id)"
 
 payload="$(jq -n --rawfile body "$BODY_FILE" '{body: $body}')"
 if [ -n "$comment_id" ]; then

@@ -22,6 +22,20 @@ repos:
       - id: actionlint-system
         name: actionlint (examples)
         files: ^examples/.*\.ya?ml$
+  - repo: local
+    hooks:
+      - id: check-workflow-inputs
+        name: OpenTofu workflows' shared inputs in sync
+        entry: .github/scripts/check-workflow-inputs.sh
+        language: system
+        files: ^\.github/(workflows/opentofu.*\.yaml|scripts/check-workflow-inputs\.sh)$
+        pass_filenames: false
+      - id: check-no-inline-scripts
+        name: No inline scripts in run steps
+        entry: .github/scripts/check-no-inline-scripts.sh
+        language: system
+        files: (^\.github/workflows/|/action\.ya?ml$|^examples/|^\.github/scripts/check-no-inline-scripts\.sh$)
+        pass_filenames: false
   # Security audit of the workflows and composite actions (template
   # injection, excessive permissions, unpinned actions, ...)
   - repo: https://github.com/zizmorcore/zizmor-pre-commit

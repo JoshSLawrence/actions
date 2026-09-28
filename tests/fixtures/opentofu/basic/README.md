@@ -1,10 +1,11 @@
 <!-- BEGIN_TF_DOCS -->
 # basic (test fixture)
 
-Root module the CI workflow runs the OpenTofu reusable workflow against. It
-needs no cloud account: `random_pet` and `terraform_data` only touch local
-state. It exercises every check, the plan summary, the policy check (see
-`policy/`), and apply.
+A root module the CI workflows run against. It needs no cloud account:
+`random_pet` and `terraform_data` only touch local state. It has two
+deployments, `deployments/dev.tfvars` and `deployments/prod.tfvars`, each
+with its own state file set by the `.tfbackend` file next to it, and uses
+the shared local module `../modules/label`.
 
 ## Requirements
 
@@ -22,7 +23,9 @@ state. It exercises every check, the plan summary, the policy check (see
 
 ## Modules
 
-No modules.
+| Name | Source | Version |
+| ---- | ------ | ------- |
+| <a name="module_label"></a> [label](#module\_label) | ../modules/label | n/a |
 
 ## Resources
 

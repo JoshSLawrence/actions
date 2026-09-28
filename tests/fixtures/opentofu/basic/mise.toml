@@ -1,0 +1,8 @@
+# This root module's own tools: CI installs exactly these (nothing from the
+# repository root's mise.toml), and every enabled check's tool must be here.
+[tools]
+conftest = "0.69.0"
+opentofu = "1.12.6"
+terraform-docs = "0.24.0"
+tflint = "0.64.0"
+trivy = "0.74.0"

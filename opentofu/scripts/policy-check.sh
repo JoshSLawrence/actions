@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
 #
 # Evaluates a plan against Rego policies with conftest, and renders the
-# results as a markdown fragment for the plan summary. Always exits 0 once
-# it has rendered the fragment; the pass/fail decision is the `passed` output,
-# which the plan action enforces after the PR comment is posted (so a blocked
-# plan still shows reviewers why).
+# results as a markdown fragment for the plan summary (written before failing,
+# so a blocked plan's PR comment still shows reviewers why). When the plan
+# fails policy, it also deletes the plan file -- so it can't be uploaded, and
+# therefore can't be applied -- and exits 1.
 #
 # Fails closed: if conftest can't run (no policies found, a Rego syntax error,
 # an unreadable plan), the check counts as failed.
 #
 # Environment variables:
+#   WORKING_DIR         - root module whose mise config pins conftest
+#                         (required)
 #   PLAN_JSON           - `tofu show -json` output to evaluate (required)
 #   FRAGMENT_FILE       - where to write the markdown fragment (required)
 #   POLICY_PATH         - policy directories, space- or newline-separated,
-#                         relative to the current directory (optional if
-#                         POLICY_SOURCE is set)
+#                         relative to the directory the script starts in
+#                         (optional if POLICY_SOURCE is set)
 #   POLICY_SOURCE       - a go-getter URL to pull policies from, e.g.
 #                         git::https://github.com/org/policies.git//policy?ref=v1
 #                         (optional; private GitHub repositories use
@@ -24,6 +26,8 @@
 #   POLICY_FAIL_ON_WARN - "true" to also fail on warn rules (default: false)
 #   WORK_DIR            - scratch directory for pulled policies (default:
 #                         a temporary directory)
+#   PLAN_DIR            - directory holding tfplan, deleted from it when the
+#                         check fails (optional)
 #
 # Outputs:
 #   passed   - true if no deny (and, with POLICY_FAIL_ON_WARN, no warn) fired
@@ -42,9 +46,21 @@ require_tool jq
 require_env PLAN_JSON "The plan action sets it to the plan's JSON; check the policy step runs after the plan step."
 require_env FRAGMENT_FILE
 
-log_config PLAN_JSON POLICY_PATH POLICY_SOURCE POLICY_NAMESPACES POLICY_FAIL_ON_WARN
+# Absolute, so they stay valid once the script moves into the module
+PLAN_JSON="$(abs_path "$PLAN_JSON")"
+FRAGMENT_FILE="$(abs_path "$FRAGMENT_FILE")"
+
+log_config WORKING_DIR PLAN_JSON POLICY_PATH POLICY_SOURCE POLICY_NAMESPACES POLICY_FAIL_ON_WARN
 
 set_output passed false
+
+# The plan fails policy: make sure it can't be applied, then fail the step
+block_plan() {
+  if [ -n "${PLAN_DIR:-}" ]; then
+    rm -f "${PLAN_DIR}/tfplan"
+  fi
+  exit 1
+}
 
 # Writes a "could not run" fragment and fails closed
 could_not_run() {
@@ -64,28 +80,33 @@ could_not_run() {
       echo "</details>"
     fi
   } > "$FRAGMENT_FILE"
-  log_error "Policy check could not run: ${reason}"
-  exit 0
+  log_error "Policy check could not run: ${reason} The plan is blocked until it can."
+  block_plan
 }
 
-if [ -z "$(mise current conftest 2> /dev/null)" ]; then
-  could_not_run "conftest isn't installed: add conftest to the opentofu/setup action's tools input (the reusable workflow does this when policy is enabled)."
-fi
 if [ ! -s "$PLAN_JSON" ]; then
   could_not_run "The plan JSON (${PLAN_JSON}) is missing or empty."
 fi
 
+# Resolve the policy paths before moving into the module
 policy_args=()
 while IFS= read -r path; do
   if [ ! -d "$path" ]; then
     could_not_run "Policy directory '${path}' not found (paths are relative to the repository root)."
   fi
-  policy_args+=(--policy "$path")
+  policy_args+=(--policy "$(cd "$path" && pwd)")
 done < <(list_items "${POLICY_PATH:-}")
+
+# conftest runs with the module's own mise pins
+cd_working_dir
+if [ -z "$(mise current conftest 2> /dev/null)" ]; then
+  could_not_run "conftest isn't pinned for ${WORKING_DIR}. $(mise_pin_hint conftest)"
+fi
 
 if [ -n "${POLICY_SOURCE:-}" ]; then
   configure_git_github_auth
-  pulled="${WORK_DIR:-$(mktemp -d)}/policy-source"
+  scratch="${WORK_DIR:-$(mktemp -d)}"
+  pulled="$(cd "$scratch" && pwd)/policy-source"
   rm -rf "$pulled"
   log_cmd conftest pull "$POLICY_SOURCE" --policy "$pulled"
   set +e
@@ -170,5 +191,6 @@ set_output warnings "$warnings"
 if [ "$passed" = "true" ]; then
   log_success "Policy check passed (${denies} denied, ${warnings} warning(s), ${successes} passed)"
 else
-  log_error "Policy check failed: ${denies} denied, ${warnings} warning(s). The plan won't be uploaded, so it can't be applied. See the policy section of the plan summary."
+  log_error "Policy check failed: ${denies} denied, ${warnings} warning(s). The plan is blocked, so it can't be applied. See the policy section of the plan summary."
+  block_plan
 fi
