@@ -70,7 +70,8 @@ jobs:
       policy-path: tests/fixtures/opentofu/policy
 
   # One config directly, with toggles flipped: one deployment, the docs
-  # check on, other checks off, plan only, and its own PR comment
+  # check on, other checks off, policies pulled from a URL, plan only, and
+  # its own PR comment
   e2e-config:
     name: E2E config
     uses: $/.github/workflows/opentofu-config.yaml
@@ -88,6 +89,12 @@ jobs:
       trivy: false
       tests: false
       apply: false
+      # The same fixture policy as e2e-repo, but pulled with policy-source
+      # (conftest pull) instead of read from policy-path. The PR head, not
+      # github.sha: a PR's merge commit can't be cloned by ref.
+      policy: true
+      policy-path: ""
+      policy-source: git::https://github.com/${{ github.repository }}.git//tests/fixtures/opentofu/policy?ref=${{ github.event.pull_request.head.sha || github.sha }}
 
   # Drift detection over the same deployments. Local state starts empty on
   # every runner, so every check finds "drift": issues are off to keep the

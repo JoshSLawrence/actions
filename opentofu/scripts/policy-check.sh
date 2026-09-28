@@ -105,14 +105,22 @@ fi
 
 if [ -n "${POLICY_SOURCE:-}" ]; then
   configure_git_github_auth
-  scratch="${WORK_DIR:-$(mktemp -d)}"
-  pulled="$(cd "$scratch" && pwd)/policy-source"
+  scratch="$(cd "${WORK_DIR:-$(mktemp -d)}" && pwd)"
+  pulled="${scratch}/policy-source"
   rm -rf "$pulled"
-  log_cmd conftest pull "$POLICY_SOURCE" --policy "$pulled"
+  # conftest pull joins --policy onto the current directory even when it's
+  # absolute, so pull from inside the scratch directory with a relative path.
+  # The binary is resolved here, where the module's mise pins apply.
+  conftest_bin="$(mise which conftest)"
+  log_cmd conftest pull "$POLICY_SOURCE" --policy policy-source "(in ${scratch})"
   set +e
-  pull_output=$(mise exec -- conftest pull "$POLICY_SOURCE" --policy "$pulled" 2>&1)
+  pull_output=$(cd "$scratch" && "$conftest_bin" pull "$POLICY_SOURCE" --policy policy-source 2>&1)
   pull_exit=$?
   set -e
+  if [ "$pull_exit" -eq 0 ] && [ ! -d "$pulled" ]; then
+    pull_exit=1
+    pull_output="${pull_output}"$'\n'"conftest pull succeeded but wrote nothing to ${pulled}."
+  fi
   if [ "$pull_exit" -ne 0 ]; then
     could_not_run "Pulling policies from the policy-source URL failed (exit ${pull_exit})." "$pull_output"
   fi
