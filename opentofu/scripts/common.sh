@@ -420,9 +420,10 @@ configure_git_github_auth() {
 
 # Print the init arguments shared by plan and apply: -backend-config for each
 # line of BACKEND_CONFIG (key=value, or a file such as a .tfbackend, relative
-# to WORKING_DIR), and -lockfile=readonly when the module commits a lock
-# file, so plan and apply use exactly the provider versions and checksums
-# recorded there.
+# to WORKING_DIR), -var-file for each line of VAR_FILES (OpenTofu supports
+# variables in the backend block), and -lockfile=readonly when the module
+# commits a lock file, so plan and apply use exactly the provider versions and
+# checksums recorded there.
 # One argument per line; read with mapfile.
 tofu_init_args() {
   echo "-input=false"
@@ -438,6 +439,21 @@ tofu_init_args() {
   while IFS= read -r line; do
     echo "-backend-config=${line}"
   done < <(list_lines "${BACKEND_CONFIG:-}")
+  # OpenTofu supports variables in the backend block, so pass var-files to init.
+  # When VAR_FILES is empty (module without deployments), also check for
+  # terraform.tfvars which OpenTofu would auto-load during plan/apply, but we
+  # need to explicitly pass to init for backend variable resolution.
+  local var_files_list
+  var_files_list="$(list_items "${VAR_FILES:-}")"
+  if [ -z "$var_files_list" ] && [ -f terraform.tfvars ]; then
+    echo "-var-file=terraform.tfvars"
+  elif [ -z "$var_files_list" ] && [ -f terraform.tfvars.json ]; then
+    echo "-var-file=terraform.tfvars.json"
+  else
+    while IFS= read -r line; do
+      echo "-var-file=${line}"
+    done <<< "$var_files_list"
+  fi
 }
 
 # Warn once per job when the root module has no lock file: providers then
