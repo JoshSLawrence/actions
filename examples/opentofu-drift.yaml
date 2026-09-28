@@ -1,7 +1,6 @@
-# Nightly drift detection for every root module and deployment in the
-# repository -- the same search-root and deployments as the deploy
-# workflow. A drifted deployment gets an issue (labelled `drift`), updated
-# by later checks and closed once the drift is gone.
+# Nightly drift detection: an issue (labelled `drift`) per drifted
+# deployment, closed once the drift is gone. Use the same search-root and
+# deployments as the deploy workflow.
 
 name: OpenTofu drift
 
@@ -22,9 +21,3 @@ jobs:
     with:
       search-root: iac
       deployments: deployments/*.tfvars
-      backend-config: |
-        resource_group_name=rg-tfstate
-        storage_account_name=sttfstate
-        container_name=tfstate
-      # Read-only identity: the plan environment's AZURE_CLIENT_ID variable
-      plan-environment: drift

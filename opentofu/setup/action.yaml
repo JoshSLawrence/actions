@@ -1,9 +1,10 @@
 name: OpenTofu setup
 description: >-
   Installs mise, then runs mise install in the root module: exactly the tools
-  the module's own mise config pins (its mise.toml), nothing from parent directories such as the repository root. Fails, listing
-  them all, if a tool the job needs isn't pinned. Optionally exports secret
-  KEY=VALUE env vars for the rest of the job.
+  the module's own mise config pins (its mise.toml), nothing from parent
+  directories such as the repository root. Fails, listing them all, if a
+  tool the job needs isn't pinned. Optionally exports secret KEY=VALUE env
+  vars for the rest of the job.
 
 inputs:
   working-directory:

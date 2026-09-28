@@ -1,6 +1,4 @@
-# A monorepo of root modules under iac/, each deployed to dev and prod.
-#
-# Layout (each root module has its own mise.toml and deployments):
+# A monorepo of root modules under iac/, each deployed to dev and prod:
 #
 #   iac/
 #   ├── identity/
@@ -15,10 +13,8 @@
 #   └── network/
 #       └── ...
 #
-# PRs run only the root modules they affect (their own files, the local
-# modules they use, or shared-paths). Each deployment plans and applies on
-# its own, in the GitHub environment named after it (`dev`, `prod`), so dev
-# and prod can have different reviewers and Azure identities.
+# PRs run only the root modules they affect. Each deployment applies in the
+# GitHub environment named after it (`dev`, `prod`).
 
 name: OpenTofu
 
@@ -30,11 +26,6 @@ on:
     branches:
       - main
   workflow_dispatch:
-    inputs:
-      modules:
-        description: Root modules to run (e.g. iac/network); empty = all
-        type: string
-        default: ""
 
 permissions: {}
 
@@ -48,15 +39,5 @@ jobs:
       pull-requests: write
     with:
       search-root: iac
-      exclude: iac/legacy/**
-      modules: ${{ inputs.modules }}
-      # Changing this workflow re-plans everything
-      shared-paths: .github/workflows/opentofu.yaml
       deployments: deployments/*.tfvars
       apply-environment: "{deployment}"
-      backend-config: |
-        resource_group_name=rg-tfstate
-        storage_account_name=sttfstate
-        container_name=tfstate
-      policy: true
-      policy-source: git::https://github.com/JoshSLawrence/policies.git//opentofu?ref=v1

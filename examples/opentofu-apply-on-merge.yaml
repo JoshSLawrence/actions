@@ -1,10 +1,6 @@
-# PRs only plan (the comment says the apply happens after merge); the push
-# to main plans again and applies after approval. Simpler, but the plan that
-# gets applied is main's fresh plan rather than the one reviewed on the PR,
-# and a change that fails to apply is already merged.
-#
-# Also shows a non-Azure provider: credentials go through the env-vars
-# secret, which exports masked KEY=VALUE lines in the plan and apply jobs.
+# PRs only plan; the push to main plans again and applies. Simpler, but
+# what gets applied is main's fresh plan rather than the one reviewed on
+# the PR, and a change that fails to apply is already merged.
 
 name: OpenTofu
 
@@ -28,13 +24,6 @@ jobs:
       id-token: write
       pull-requests: write
     with:
-      search-root: terraform
+      search-root: infra
       apply-from-pr: false
       apply-environment: production
-      cost-estimate: true
-    secrets:
-      # A repository secret holding lines like:
-      #   CLOUDFLARE_API_TOKEN=...
-      #   TF_VAR_admin_password=...
-      env-vars: ${{ secrets.OPENTOFU_ENV }}
-      infracost-api-key: ${{ secrets.INFRACOST_API_KEY }}

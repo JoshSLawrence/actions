@@ -38,24 +38,26 @@ log_success() {
 
 # Notices, warnings and errors are also emitted as workflow commands, so they
 # show up as annotations on the run and the PR instead of only in the log.
+# The commands go to stderr (the runner reads both streams), so a helper
+# whose stdout is captured -- e.g. an issue body -- doesn't swallow them.
 log_notice() {
   echo -e "${BLUE}[NOTE]${NC} $1"
   if is_github_actions; then
-    echo "::notice::$1"
+    echo "::notice::$1" >&2
   fi
 }
 
 log_warn() {
   echo -e "${YELLOW}[WARN]${NC} $1" >&2
   if is_github_actions; then
-    echo "::warning::$1"
+    echo "::warning::$1" >&2
   fi
 }
 
 log_error() {
   echo -e "${RED}[ERROR]${NC} $1" >&2
   if is_github_actions; then
-    echo "::error::$1"
+    echo "::error::$1" >&2
   fi
 }
 

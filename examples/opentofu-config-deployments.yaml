@@ -1,19 +1,14 @@
 # One configuration deployed many times -- here once per customer -- each
-# with its own variables and its own state:
+# with its own variables and state:
 #
 #   app/
 #   ├── customers/
 #   │   ├── contoso.tfvars
-#   │   ├── fabrikam.tfvars
-#   │   └── ...                   # one .tfvars per customer
-#   ├── main.tf
+#   │   └── fabrikam.tfvars
+#   ├── main.tf                   # backend "azurerm" { ... } without key
 #   └── mise.toml
 #
-# The config is validated once; then every customer is planned, commented
-# on the PR, and applied on its own. Their state keys only differ by name,
-# so backend-config sets them with {deployment} instead of a .tfbackend file
-# per customer (both work; a .tfbackend next to a .tfvars is added to its
-# backend config).
+# Validated once; each customer is planned and applied on its own.
 
 name: OpenTofu app
 
@@ -21,13 +16,9 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - app/**
   push:
     branches:
       - main
-    paths:
-      - app/**
   workflow_dispatch:
 
 permissions: {}
@@ -43,11 +34,5 @@ jobs:
     with:
       working-directory: app
       deployments: customers/*.tfvars
-      var-files: common.tfvars
-      backend-config: |
-        resource_group_name=rg-tfstate
-        storage_account_name=sttfstate
-        container_name=tfstate
-        key=app-{deployment}.tfstate
+      backend-config: key=app-{deployment}.tfstate
       apply-environment: production
-      max-parallel: 5

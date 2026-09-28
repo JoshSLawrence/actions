@@ -107,12 +107,12 @@ Complete callers are in [`examples/`](../examples/):
 
 | Example | Shows |
 | --- | --- |
-| [`opentofu-repo.yaml`](../examples/opentofu-repo.yaml) | A repository's root module(s) on Azure, applied from the PR |
-| [`opentofu-monorepo.yaml`](../examples/opentofu-monorepo.yaml) | Many root modules, each with dev/prod deployments and environments, a policy repo, a dispatch input |
-| [`opentofu-config-deployments.yaml`](../examples/opentofu-config-deployments.yaml) | One configuration deployed per customer, keys via `{deployment}` |
+| [`opentofu-repo.yaml`](../examples/opentofu-repo.yaml) | A repository's root module(s) on Azure, applied from the PR, with the setup it needs |
+| [`opentofu-monorepo.yaml`](../examples/opentofu-monorepo.yaml) | Many root modules, each with dev/prod deployments and environments |
+| [`opentofu-config-deployments.yaml`](../examples/opentofu-config-deployments.yaml) | One configuration deployed per customer, state keys via `{deployment}` |
 | [`opentofu-drift.yaml`](../examples/opentofu-drift.yaml) | Nightly drift detection with issues |
-| [`opentofu-apply-on-merge.yaml`](../examples/opentofu-apply-on-merge.yaml) | Apply on merge, a non-Azure provider, Infracost |
-| [`opentofu-composite-actions.yaml`](../examples/opentofu-composite-actions.yaml) | Your own workflow from the composite actions |
+| [`opentofu-apply-on-merge.yaml`](../examples/opentofu-apply-on-merge.yaml) | PRs only plan; apply after merge |
+| [`opentofu-composite-actions.yaml`](../examples/opentofu-composite-actions.yaml) | Your own plan/apply workflow from the composite actions |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -198,6 +198,9 @@ them, whatever changed) with the same plan action, lock-free.
    deployment). GitHub creates any environment a workflow names on first
    use, without protection rules. The apply job warns when its environment
    has no required reviewers.
+   - Required reviewers on a **private** repository need GitHub Enterprise.
+     Without them, `apply-from-pr: true` applies every PR's plan
+     unattended; `apply-from-pr: false` makes merging the approval.
 3. **Plan environment (optional):** one without reviewers, passed as
    `plan-environment`, to scope read-only credentials to plans and drift
    checks.
@@ -401,7 +404,8 @@ WORKING_DIR=infra DEPLOYMENTS='deployments/*.tfvars' opentofu/scripts/deployment
   exist only after approval.
 - **Private repositories.** The default `GITHUB_TOKEN` can only read the
   calling repository. Pass a token that can read the others as
-  `modules-token`.
+  `modules-token`. This library itself needs no token: its Actions access
+  setting grants the calling repositories (see the top-level README).
 - **Fork PRs** are validated, never planned.
 
 ## Coming from the Azure DevOps templates

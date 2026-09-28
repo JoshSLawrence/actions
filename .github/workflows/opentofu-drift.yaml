@@ -236,7 +236,10 @@ jobs:
     if: always()
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 5
-    permissions: {}
+    # contents: read only to fetch this repository's result action: with
+    # none, a private copy of this repository can't be downloaded.
+    permissions:
+      contents: read
     steps:
       - name: Check results
         uses: $/opentofu/result

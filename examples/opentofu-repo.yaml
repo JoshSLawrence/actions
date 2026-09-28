@@ -1,18 +1,13 @@
 # A repository with one root module (or several -- the same workflow finds
-# them all), applied from the PR after approval.
+# them all), applied from the PR.
 #
-# Setup (once per repository):
-# - infra/mise.toml pins the module's tools: opentofu, plus tflint and
-#   trivy for the default checks ('mise use opentofu@1.12.6 tflint trivy'
-#   in infra/).
-# - Environment `production` with required reviewers (Settings ->
-#   Environments). Optionally `production-plan` without reviewers, to scope
-#   a read-only identity to plans.
-# - Variables AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
-#   (repository-wide, or per environment for separate plan/apply
-#   identities), and federated credentials for this repository's
-#   `environment:production` (and `environment:production-plan`) subjects.
-# - Require the "opentofu / Result" check in a branch ruleset for main.
+# Setup:
+# - infra/mise.toml pins opentofu, tflint and trivy (the default checks
+#   need all three): 'mise use opentofu tflint trivy' in infra/.
+# - Environment `production`, with required reviewers if your plan allows.
+# - Variables AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID, and
+#   federated credentials for this repository's `pull_request`,
+#   `ref:refs/heads/main` and `environment:production` subjects.
 
 name: OpenTofu
 
@@ -23,7 +18,6 @@ on:
   push:
     branches:
       - main
-  # Re-apply main, e.g. to roll back a PR that was applied but not merged
   workflow_dispatch:
 
 permissions: {}
@@ -31,7 +25,6 @@ permissions: {}
 jobs:
   opentofu:
     uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v1
-    # The reusable workflow's jobs can only use what's granted here
     permissions:
       actions: read
       contents: read
@@ -39,8 +32,4 @@ jobs:
       pull-requests: write
     with:
       search-root: infra
-      plan-environment: production-plan
       apply-environment: production
-      # Checks are on/off switches
-      docs: true
-      trivy-severity: CRITICAL,HIGH
