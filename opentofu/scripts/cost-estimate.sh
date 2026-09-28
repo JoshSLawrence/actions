@@ -3,9 +3,12 @@
 # Estimates the monthly cost of a plan with Infracost, and renders it as a
 # markdown fragment for the plan summary. Informational only: any failure
 # (no API key, Infracost down) is a warning in the fragment, never a failed
-# job.
+# job. With cost estimates turned off, the fragment just says so, so readers
+# of the PR comment know why there's no cost section.
 #
 # Environment variables:
+#   COST_ESTIMATE     - "true" to estimate; anything else writes the "off"
+#                       note instead (default: true)
 #   WORKING_DIR       - root module whose mise config pins infracost
 #                       (required)
 #   PLAN_JSON         - `tofu show -json` output to price (required)
@@ -29,6 +32,12 @@ require_env FRAGMENT_FILE
 # Absolute, so they stay valid once the script moves into the module
 PLAN_JSON="$(abs_path "$PLAN_JSON")"
 FRAGMENT_FILE="$(abs_path "$FRAGMENT_FILE")"
+
+if ! is_true "${COST_ESTIMATE:-true}"; then
+  echo "<sub>💰 No cost estimate: Infracost is turned off for this deployment (the \`cost-estimate\` input).</sub>" > "$FRAGMENT_FILE"
+  log_info "Cost estimates are off; noted in the plan summary"
+  exit 0
+fi
 
 MAX_RESOURCES="${MAX_RESOURCES:-20}"
 export INFRACOST_SKIP_UPDATE_CHECK=true

@@ -68,9 +68,12 @@ inputs:
     required: false
     default: "false"
   cost-estimate:
-    description: Add an Infracost monthly cost estimate to the summary (informational).
+    description: >-
+      "true" adds an Infracost monthly cost estimate to the summary
+      (informational); "false" says in the summary that it's off; empty
+      leaves cost out of the summary entirely (e.g. drift checks).
     required: false
-    default: "false"
+    default: ""
   infracost-api-key:
     description: Infracost API key (required for cost-estimate).
     required: false
@@ -146,12 +149,14 @@ runs:
         TARGET_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
 
     # Before the policy check, so the estimate is in the summary even when
-    # the policy blocks the plan
+    # the policy blocks the plan. Only plans with changes have a cost to
+    # estimate (or to say isn't estimated).
     - name: Cost estimate
-      if: inputs.cost-estimate == 'true' && steps.plan.outputs.has-changes == 'true'
+      if: inputs.cost-estimate != '' && steps.plan.outputs.has-changes == 'true'
       shell: bash
       run: '"${GITHUB_ACTION_PATH}/../scripts/cost-estimate.sh"'
       env:
+        COST_ESTIMATE: ${{ inputs.cost-estimate }}
         WORKING_DIR: ${{ inputs.working-directory }}
         PLAN_JSON: ${{ steps.plan.outputs.work-dir }}/plan.json
         FRAGMENT_FILE: ${{ steps.plan.outputs.work-dir }}/fragments/20-cost.md

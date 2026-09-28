@@ -295,7 +295,7 @@ crosses directories.
 | `policy-source` | none | go-getter URL for (more) policies |
 | `policy-namespaces` | all | Rego namespaces to evaluate |
 | `policy-fail-on-warn` | `false` | Also block on `warn` rules |
-| `cost-estimate` | `false` | Infracost estimate (needs `infracost-api-key`) |
+| `cost-estimate` | `false` | Infracost estimate (needs `infracost-api-key`); when off, the plan summary and PR comment say so |
 
 ### Apply
 
