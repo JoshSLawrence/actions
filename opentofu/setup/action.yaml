@@ -1,0 +1,100 @@
+name: OpenTofu setup
+description: >-
+  Installs mise and the OpenTofu toolchain (tofu, tflint, trivy,
+  terraform-docs, conftest, infracost). Versions pinned in the repository's
+  mise config win; any tool it doesn't pin gets the version input's value or
+  this library's default. Optionally exports secret KEY=VALUE env vars for
+  the rest of the job.
+
+inputs:
+  working-directory:
+    description: >-
+      Root module directory, relative to the workspace. mise reads its config
+      from here and every parent directory.
+    required: false
+    default: "."
+  tools:
+    description: >-
+      Tools to make available, space- or newline-separated: opentofu, tflint,
+      trivy, terraform-docs, conftest, infracost.
+    required: false
+    default: opentofu
+  tofu-version:
+    description: OpenTofu version when mise config doesn't pin opentofu (default in opentofu/README.md).
+    required: false
+    default: ""
+  tflint-version:
+    description: TFLint version when mise config doesn't pin tflint.
+    required: false
+    default: ""
+  trivy-version:
+    description: Trivy version when mise config doesn't pin trivy.
+    required: false
+    default: ""
+  terraform-docs-version:
+    description: terraform-docs version when mise config doesn't pin it.
+    required: false
+    default: ""
+  conftest-version:
+    description: conftest version when mise config doesn't pin it.
+    required: false
+    default: ""
+  infracost-version:
+    description: Infracost version when mise config doesn't pin it.
+    required: false
+    default: ""
+  mise-version:
+    description: >-
+      mise version to install (default: 2026.9.12). Pinned rather than latest
+      so a mise release can't change behaviour under you; bump it
+      deliberately.
+    required: false
+    default: ""
+  github-token:
+    description: Token for GitHub API calls while installing tools (avoids rate limits).
+    required: false
+    default: ${{ github.token }}
+  env-vars:
+    description: >-
+      KEY=VALUE lines (usually from a secret) to export as environment
+      variables for the rest of the job, masked in the log. Blank lines and
+      lines starting with # are skipped.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # mise-action also trusts every mise config under the workspace
+    # (MISE_TRUSTED_CONFIG_PATHS), so the repository's own pins load without
+    # an untrusted-config prompt.
+    - name: Set up mise
+      uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      with:
+        # The default lives here rather than on the input, so callers passing
+        # an empty string through (like the reusable workflow) get it too.
+        # Dependabot doesn't update it; bump it by hand now and then.
+        version: ${{ inputs.mise-version || '2026.9.12' }}
+        working_directory: ${{ inputs.working-directory }}
+        github_token: ${{ inputs.github-token }}
+
+    - name: Install tools
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/setup-tools.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        TOOLS: ${{ inputs.tools }}
+        OPENTOFU_VERSION: ${{ inputs.tofu-version }}
+        TFLINT_VERSION: ${{ inputs.tflint-version }}
+        TRIVY_VERSION: ${{ inputs.trivy-version }}
+        TERRAFORM_DOCS_VERSION: ${{ inputs.terraform-docs-version }}
+        CONFTEST_VERSION: ${{ inputs.conftest-version }}
+        INFRACOST_VERSION: ${{ inputs.infracost-version }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+
+    - name: Export environment variables
+      if: inputs.env-vars != ''
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/export-env.sh"'
+      env:
+        ENV_VARS: ${{ inputs.env-vars }}

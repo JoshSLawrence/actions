@@ -1,0 +1,140 @@
+name: OpenTofu checks
+description: >-
+  Static checks and tests for a root module: format, validate, TFLint, Trivy,
+  terraform-docs, and tofu test, each toggled by an input. Every enabled check
+  runs even if an earlier one fails, so one run reports every problem; a
+  results table goes to the job summary. Needs no cloud credentials unless
+  the tests do. Run opentofu/setup first, with the tools the enabled checks
+  need.
+
+inputs:
+  working-directory:
+    description: Root module directory, relative to the workspace.
+    required: false
+    default: "."
+  fmt:
+    description: Check formatting (tofu fmt -check -recursive).
+    required: false
+    default: "true"
+  validate:
+    description: Run tofu init -backend=false and tofu validate.
+    required: false
+    default: "true"
+  tflint:
+    description: Run TFLint (uses the module's .tflint.hcl when present).
+    required: false
+    default: "true"
+  tflint-recursive:
+    description: Also lint every module under the working directory.
+    required: false
+    default: "true"
+  trivy:
+    description: Run a Trivy misconfiguration scan (uses the module's trivy.yaml when present).
+    required: false
+    default: "true"
+  trivy-severity:
+    description: >-
+      Severities that fail the Trivy scan, e.g. CRITICAL,HIGH. Default:
+      trivy.yaml's setting, otherwise CRITICAL,HIGH.
+    required: false
+    default: ""
+  docs:
+    description: Check the terraform-docs generated README.md is up to date.
+    required: false
+    default: "false"
+  tests:
+    description: Run tofu test (skipped with a notice when there are no test files).
+    required: false
+    default: "true"
+  test-filter:
+    description: >-
+      Test files to run, relative to the working directory, space- or
+      newline-separated; globs allowed (default: all).
+    required: false
+    default: ""
+  test-verbose:
+    description: Pass -verbose to tofu test.
+    required: false
+    default: "false"
+  github-token:
+    description: Authenticates TFLint plugin downloads (avoids GitHub API rate limits).
+    required: false
+    default: ${{ github.token }}
+  modules-token:
+    description: >-
+      Token that can read private GitHub repositories used as module sources.
+      Defaults to github-token, which can only read this repository.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Format
+      id: fmt
+      if: ${{ !cancelled() && inputs.fmt == 'true' }}
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/check-fmt.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+
+    - name: Validate
+      id: validate
+      if: ${{ !cancelled() && inputs.validate == 'true' }}
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/check-validate.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        MODULES_GITHUB_TOKEN: ${{ inputs.modules-token || inputs.github-token }}
+
+    - name: TFLint
+      id: tflint
+      if: ${{ !cancelled() && inputs.tflint == 'true' }}
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/check-lint.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        TFLINT_RECURSIVE: ${{ inputs.tflint-recursive }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+
+    - name: Trivy
+      id: trivy
+      if: ${{ !cancelled() && inputs.trivy == 'true' }}
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/check-security.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        TRIVY_SEVERITY: ${{ inputs.trivy-severity }}
+
+    - name: terraform-docs
+      id: docs
+      if: ${{ !cancelled() && inputs.docs == 'true' }}
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/check-docs.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+
+    - name: Tests
+      id: tests
+      if: ${{ !cancelled() && inputs.tests == 'true' }}
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/check-test.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        TEST_FILTER: ${{ inputs.test-filter }}
+        TEST_VERBOSE: ${{ inputs.test-verbose }}
+        MODULES_GITHUB_TOKEN: ${{ inputs.modules-token || inputs.github-token }}
+
+    - name: Summarize checks
+      if: ${{ !cancelled() }}
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/checks-summary.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        RESULTS: |
+          Format=${{ steps.fmt.outcome }}
+          Validate=${{ steps.validate.outcome }}
+          TFLint=${{ steps.tflint.outcome }}
+          Trivy=${{ steps.trivy.outcome }}
+          terraform-docs=${{ steps.docs.outcome }}
+          Tests=${{ steps.tests.outcome }}

@@ -1,0 +1,60 @@
+# Several root modules in one repository, each planned and applied
+# independently (one PR comment, artifact and approval per module).
+#
+# A matrix over a reusable workflow call can't require one check per leg in
+# branch protection (names depend on the matrix), so the `result` job rolls
+# them up into a single check to require.
+
+name: OpenTofu
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  opentofu:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        module:
+          - iac/identity
+          - iac/network
+          - iac/monitoring
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v1
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      working-directory: ${{ matrix.module }}
+      apply-environment: production
+      # Local modules shared by every root: a change to them on main since a
+      # plan was made makes that plan stale
+      preflight-paths: |
+        ${{ matrix.module }}
+        iac/modules
+      policy: true
+      policy-source: git::https://github.com/JoshSLawrence/policies.git//opentofu?ref=v1
+
+  result:
+    name: OpenTofu result
+    needs: opentofu
+    if: always()
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Check every module succeeded
+        env:
+          RESULT: ${{ needs.opentofu.result }}
+        run: |
+          echo "opentofu: ${RESULT}"
+          [ "$RESULT" = "success" ] || [ "$RESULT" = "skipped" ]

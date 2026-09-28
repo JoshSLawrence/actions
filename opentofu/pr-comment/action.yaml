@@ -1,0 +1,56 @@
+name: OpenTofu PR comment
+description: >-
+  Creates or updates one PR comment per root module and environment with the
+  plan summary and the apply status. Edited in place on every run (history is
+  in the comment's edit log); a run for an outdated PR head leaves it alone.
+  Does nothing outside pull_request runs. Needs pull-requests: write.
+
+inputs:
+  comment-key:
+    description: >-
+      Identifies this comment among others on the PR, e.g.
+      "<working-directory>:<environment>". Unique per root module/environment.
+    required: true
+  title:
+    description: Comment heading.
+    required: false
+    default: OpenTofu
+  summary-file:
+    description: Plan summary markdown (the summary-file output of opentofu/plan).
+    required: false
+    default: ""
+  apply-status:
+    description: none, awaiting-approval, after-merge, blocked, succeeded, or failed.
+    required: false
+    default: none
+  apply-environment:
+    description: GitHub environment the apply runs in, for the comment text.
+    required: false
+    default: ""
+  comment-author:
+    description: >-
+      Login that posts the comment; only its comments are edited. Change it
+      when github-token is a GitHub App token (e.g. my-app[bot]).
+    required: false
+    default: github-actions[bot]
+  github-token:
+    description: 'Token to comment with (needs pull-requests: write; actions: read adds who approved).'
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Comment on PR
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/pr-comment.sh"'
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        COMMENT_KEY: ${{ inputs.comment-key }}
+        TITLE: ${{ inputs.title }}
+        SUMMARY_FILE: ${{ inputs.summary-file }}
+        APPLY_STATUS: ${{ inputs.apply-status }}
+        APPLY_ENVIRONMENT: ${{ inputs.apply-environment }}
+        COMMENT_AUTHOR: ${{ inputs.comment-author }}

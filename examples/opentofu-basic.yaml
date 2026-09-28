@@ -1,0 +1,49 @@
+# One root module on Azure, applied from the PR after approval.
+#
+# Setup (once per repository):
+# - Environment `production` with required reviewers (Settings ->
+#   Environments). Optionally a `production-plan` environment without
+#   reviewers, to scope a read-only identity to plans.
+# - Variables AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+#   (repository-wide, or per environment for separate plan/apply identities).
+# - Federated credentials on the Azure identity for this repository's
+#   `environment:production` subject (and `pull_request` or
+#   `environment:production-plan` for plans).
+# - Require the "opentofu / Result" check in a branch ruleset for main.
+
+name: OpenTofu
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - infra/**
+      - .github/workflows/opentofu.yaml
+  push:
+    branches:
+      - main
+    paths:
+      - infra/**
+  # Re-apply main, e.g. to roll back a PR that was applied but not merged
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  opentofu:
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v1
+    # The reusable workflow's jobs can only use what's granted here
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      working-directory: infra
+      var-files: prod.tfvars
+      apply-environment: production
+      plan-environment: production-plan
+      # Toggle checks on/off as needed
+      docs: true
+      trivy-severity: CRITICAL,HIGH

@@ -1,0 +1,8 @@
+severity:
+  - CRITICAL
+  - HIGH
+  - MEDIUM
+misconfiguration:
+  scanners:
+    - terraform
+exit-code: 1

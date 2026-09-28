@@ -1,0 +1,197 @@
+name: OpenTofu plan
+description: >-
+  Plans a root module to a saved plan file and renders a markdown summary
+  (resources, destroys called out, full plan), optionally with a conftest
+  policy check and an Infracost estimate. Fails if the plan fails or the
+  policy check fails -- in both cases after writing the summary, so it can
+  still be posted. Upload plan-dir as an artifact only when this succeeds and
+  has-changes is true. Run opentofu/setup first.
+
+inputs:
+  working-directory:
+    description: Root module directory, relative to the workspace.
+    required: false
+    default: "."
+  var-files:
+    description: -var-file paths relative to the working directory, space- or newline-separated.
+    required: false
+    default: ""
+  backend-config:
+    description: >-
+      -backend-config values, one per line: key=value, or a file relative to
+      the working directory. Pass the same to opentofu/apply.
+    required: false
+    default: ""
+  plan-dir:
+    description: >-
+      Directory for tfplan and summary.md -- the plan artifact (default:
+      $RUNNER_TEMP/tofu-plan).
+    required: false
+    default: ""
+  stack-name:
+    description: >-
+      Display name for the summary, comment and artifact names (default: the
+      working directory, or the repository name for the root).
+    required: false
+    default: ""
+  environment:
+    description: >-
+      Environment the plan will be applied to, if any. Part of the names, so
+      each module/environment gets its own comment and artifact.
+    required: false
+    default: ""
+  policy:
+    description: Evaluate the plan with conftest; a failing policy fails this action.
+    required: false
+    default: "false"
+  policy-path:
+    description: Policy directories, relative to the workspace, space- or newline-separated.
+    required: false
+    default: policy
+  policy-source:
+    description: >-
+      go-getter URL to pull policies from, in addition to policy-path, e.g.
+      git::https://github.com/org/policies.git//policy?ref=v1
+    required: false
+    default: ""
+  policy-namespaces:
+    description: 'Rego namespaces to evaluate, space- or newline-separated (default: all).'
+    required: false
+    default: ""
+  policy-fail-on-warn:
+    description: Also fail the policy check on warn rules.
+    required: false
+    default: "false"
+  cost-estimate:
+    description: Add an Infracost monthly cost estimate to the summary (informational).
+    required: false
+    default: "false"
+  infracost-api-key:
+    description: Infracost API key (required for cost-estimate).
+    required: false
+    default: ""
+  github-token:
+    description: Default token for fetching private GitHub module sources.
+    required: false
+    default: ${{ github.token }}
+  modules-token:
+    description: >-
+      Token that can read private GitHub repositories used as module (and
+      policy-source) sources. Defaults to github-token.
+    required: false
+    default: ""
+
+outputs:
+  key:
+    description: Unique key for this module/environment -- the comment-key for opentofu/pr-comment.
+    value: ${{ steps.names.outputs.key }}
+  artifact-name:
+    description: Plan artifact name derived from key.
+    value: ${{ steps.names.outputs.artifact-name }}
+  title:
+    description: Heading for the PR comment.
+    value: ${{ steps.names.outputs.title }}
+  has-changes:
+    description: "'true' if applying the plan would change anything."
+    value: ${{ steps.plan.outputs.has-changes }}
+  plan-sha256:
+    description: SHA-256 of tfplan (when has-changes); pass it to opentofu/apply.
+    value: ${{ steps.plan.outputs.plan-sha256 }}
+  plan-dir:
+    description: Absolute path of the directory holding tfplan and summary.md.
+    value: ${{ steps.plan.outputs.plan-dir }}
+  summary-file:
+    description: Absolute path of the markdown plan summary (empty if none was produced).
+    value: ${{ steps.summary.outputs.summary-file }}
+  exit-code:
+    description: Exit code of tofu init/plan (0 = no changes, 2 = changes, else failed).
+    value: ${{ steps.plan.outputs.exit-code }}
+  policy-passed:
+    description: "'true'/'false' when the policy check ran, otherwise empty."
+    value: ${{ steps.policy.outputs.passed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve names
+      id: names
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/names.sh"'
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        STACK_NAME: ${{ inputs.stack-name }}
+        APPLY_ENVIRONMENT: ${{ inputs.environment }}
+        REPOSITORY_NAME: ${{ github.event.repository.name }}
+
+    - name: Plan
+      id: plan
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/plan.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        PLAN_DIR: ${{ inputs.plan-dir || format('{0}/tofu-plan', runner.temp) }}
+        WORK_DIR: ${{ runner.temp }}/tofu-plan-work
+        VAR_FILES: ${{ inputs.var-files }}
+        BACKEND_CONFIG: ${{ inputs.backend-config }}
+        MODULES_GITHUB_TOKEN: ${{ inputs.modules-token || inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        TARGET_BRANCH: ${{ github.event.pull_request.base.ref || github.ref_name }}
+        TARGET_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+
+    - name: Policy check
+      id: policy
+      if: inputs.policy == 'true' && steps.plan.outputs.has-changes == 'true'
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/policy-check.sh"'
+      env:
+        PLAN_JSON: ${{ steps.plan.outputs.work-dir }}/plan.json
+        FRAGMENT_FILE: ${{ steps.plan.outputs.work-dir }}/fragments/20-policy.md
+        WORK_DIR: ${{ steps.plan.outputs.work-dir }}
+        POLICY_PATH: ${{ inputs.policy-path }}
+        POLICY_SOURCE: ${{ inputs.policy-source }}
+        POLICY_NAMESPACES: ${{ inputs.policy-namespaces }}
+        POLICY_FAIL_ON_WARN: ${{ inputs.policy-fail-on-warn }}
+        MODULES_GITHUB_TOKEN: ${{ inputs.modules-token || inputs.github-token }}
+
+    - name: Cost estimate
+      if: inputs.cost-estimate == 'true' && steps.plan.outputs.has-changes == 'true'
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/cost-estimate.sh"'
+      env:
+        PLAN_JSON: ${{ steps.plan.outputs.work-dir }}/plan.json
+        FRAGMENT_FILE: ${{ steps.plan.outputs.work-dir }}/fragments/30-cost.md
+        INFRACOST_API_KEY: ${{ inputs.infracost-api-key }}
+
+    # Runs after a failed plan too, so the failure can be posted on the PR
+    - name: Assemble summary
+      id: summary
+      if: ${{ !cancelled() && steps.plan.outputs.work-dir != '' }}
+      shell: bash
+      run: |
+        "${GITHUB_ACTION_PATH}/../scripts/assemble-summary.sh"
+        if [ -s "$SUMMARY_FILE" ]; then
+          echo "summary-file=${SUMMARY_FILE}" >> "$GITHUB_OUTPUT"
+        fi
+      env:
+        WORK_DIR: ${{ steps.plan.outputs.work-dir }}
+        SUMMARY_FILE: ${{ steps.plan.outputs.plan-dir }}/summary.md
+        TITLE: ${{ steps.names.outputs.title }}
+
+    # plan.json and the logs hold sensitive values unmasked
+    - name: Remove plan scratch files
+      if: always()
+      shell: bash
+      run: rm -rf "${RUNNER_TEMP}/tofu-plan-work"
+
+    # Last, so the summary above already says why. Also deletes the plan file,
+    # so a caller that uploads plan-dir regardless can't ship a blocked plan.
+    - name: Enforce policy
+      if: steps.policy.outputs.passed == 'false'
+      shell: bash
+      run: |
+        rm -f "${PLAN_DIR}/tfplan"
+        echo "::error::The plan failed the policy check, so it can't be applied. See the policy section of the plan summary."
+        exit 1
+      env:
+        PLAN_DIR: ${{ steps.plan.outputs.plan-dir }}

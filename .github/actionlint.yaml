@@ -1,0 +1,14 @@
+# actionlint 1.7.12 (the latest release as of Sept 2026) predates GitHub's
+# self-repository syntax (`uses: $/...`, July 2026), and reports every such
+# reference as malformed. The syntax is how the reusable workflow calls this
+# repository's own composite actions at the caller's pinned commit -- see the
+# header of .github/workflows/opentofu.yaml.
+#
+# Only those two messages are ignored, and only for `$/` references; every
+# other check still runs on these lines. Delete this file once actionlint
+# supports `$/` (https://github.com/rhysd/actionlint/releases).
+paths:
+  .github/workflows/**/*.{yml,yaml}:
+    ignore:
+      - 'specifying action "\$/[^"]+" in invalid format because ref is missing'
+      - 'reusable workflow call "\$/[^"]+" at "uses" is not following the format'

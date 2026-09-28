@@ -1,0 +1,47 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        args: ["-x"]
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      # -system: uses the actionlint pinned in mise.toml instead of building
+      # it from source with Go
+      - id: actionlint-system
+      # The consumer examples are workflows too, just not in .github/
+      - id: actionlint-system
+        name: actionlint (examples)
+        files: ^examples/.*\.ya?ml$
+  # Security audit of the workflows and composite actions (template
+  # injection, excessive permissions, unpinned actions, ...)
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.30.1
+    hooks:
+      - id: zizmor
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.23.3
+    hooks:
+      - id: markdownlint-cli2
+  # The test fixture should itself pass the checks the actions run
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.99.5
+    hooks:
+      - id: terraform_fmt
+        args:
+          - --hook-config=--tf-path=tofu
+      - id: terraform_docs
+        args:
+          - --hook-config=--tf-path=tofu
+      - id: terraform_tflint
+        args:
+          - --hook-config=--tf-path=tofu

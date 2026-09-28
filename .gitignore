@@ -1,0 +1,13 @@
+# OpenTofu working files (tests/fixtures/)
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+crash.log
+crash.*.log
+tfplan
+*.tfplan
+plan.json
+
+# Local scratch
+.DS_Store
