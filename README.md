@@ -19,7 +19,7 @@ Reference a reusable workflow from a job:
 ```yaml
 jobs:
   opentofu:
-    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v1
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.0.1
     permissions:
       actions: read
       contents: read
@@ -33,7 +33,7 @@ jobs:
 Or reference a composite action from a step:
 
 ```yaml
-- uses: JoshSLawrence/actions/opentofu/plan@v1
+- uses: JoshSLawrence/actions/opentofu/plan@v0.0.1
   with:
     working-directory: infra
 ```
@@ -53,12 +53,11 @@ Complete caller workflows are in [`examples/`](examples/).
 
 ## Versioning
 
-Releases are tagged `vX.Y.Z`, and a major-version tag (`v1`) moves to the
-latest release of that major version:
+This project is in pre-release (`v0.x.x`). Breaking changes may occur
+between minor versions. Once stable, it will move to `v1.0.0`.
 
-- `@v1` gets fixes and new features, but no breaking changes.
-- `@vX.Y.Z`, or better a full commit SHA (with a `# vX.Y.Z` comment for
-  Dependabot), pins exactly.
+Releases are tagged `vX.Y.Z`. Pin to a specific version or use a full commit
+SHA (with a `# vX.Y.Z` comment for Dependabot) for stability.
 
 Workflows refer to their sibling workflows and actions with GitHub's
 self-repository syntax (`uses: $/...`). Whatever ref you pin, everything
