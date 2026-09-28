@@ -449,7 +449,7 @@ tofu_init_args() {
     echo "-var-file=terraform.tfvars"
   elif [ -z "$var_files_list" ] && [ -f terraform.tfvars.json ]; then
     echo "-var-file=terraform.tfvars.json"
-  else
+  elif [ -n "$var_files_list" ]; then
     while IFS= read -r line; do
       echo "-var-file=${line}"
     done <<< "$var_files_list"
