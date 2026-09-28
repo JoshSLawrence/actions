@@ -16,7 +16,7 @@ inputs:
     required: false
     default: OpenTofu
   summary-file:
-    description: Plan summary markdown (the summary-file output of opentofu/plan).
+    description: Plan summary markdown (the summary-file output of opentofu/plan, datafactory/plan or synapse/plan).
     required: false
     default: ""
   apply-status:

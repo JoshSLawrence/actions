@@ -1,0 +1,8 @@
+# Tools for this factory folder, and only these: node runs the export bundle
+# (build); azure-cli and powershell deploy it (what-if, the ARM deployment,
+# and the pre/post-deployment script). mise installs azure-cli with uv.
+[tools]
+azure-cli = "2.90.0"
+node = "22.23.3"
+powershell = "7.6.6"
+uv = "0.12.19"

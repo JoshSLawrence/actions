@@ -31,12 +31,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: JoshSLawrence/actions/opentofu/setup@v0.0.1
+      - uses: JoshSLawrence/actions/opentofu/setup@v0.1.0
         with:
           working-directory: infra
 
       - id: plan
-        uses: JoshSLawrence/actions/opentofu/plan@v0.0.1
+        uses: JoshSLawrence/actions/opentofu/plan@v0.1.0
         with:
           working-directory: infra
 
@@ -67,11 +67,11 @@ jobs:
           name: ${{ needs.plan.outputs.artifact-name }}
           path: ${{ runner.temp }}/tofu-plan
 
-      - uses: JoshSLawrence/actions/opentofu/setup@v0.0.1
+      - uses: JoshSLawrence/actions/opentofu/setup@v0.1.0
         with:
           working-directory: infra
 
-      - uses: JoshSLawrence/actions/opentofu/apply@v0.0.1
+      - uses: JoshSLawrence/actions/opentofu/apply@v0.1.0
         with:
           working-directory: infra
           plan-sha256: ${{ needs.plan.outputs.plan-sha256 }}

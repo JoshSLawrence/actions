@@ -15,7 +15,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=opentofu/scripts/common.sh
+# shellcheck source=shared/scripts/common.sh
 source "$SCRIPT_DIR/common.sh"
 
 if [ -z "${APPLY_ENVIRONMENT:-}" ]; then

@@ -1,0 +1,53 @@
+# A Data Factory deployed to dev and prod from its Git folder (adf/): every
+# PR validates the folder, exports its ARM template, previews each
+# environment with what-if, and deploys each after its approval -- before
+# merge. No Publish button, no adf_publish branch.
+#
+# Setup:
+# - adf/ is the factory's Git root folder (pipeline/, dataset/, ...), with a
+#   mise.toml: 'mise use node@22 azure-cli uv powershell' in adf/.
+# - adf/deployments/dev.json and prod.json: ARM parameters files, each
+#   setting at least factoryName, e.g.
+#     {"parameters": {"factoryName": {"value": "adf-prod"}}}
+# - Environments `dev` and `prod`, with required reviewers if your plan
+#   allows.
+# - Variables AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID
+#   (environment-scoped ones for a per-environment identity), and federated
+#   credentials for this repository's `pull_request`, `ref:refs/heads/main`,
+#   `environment:dev` and `environment:prod` subjects. The identity needs
+#   Data Factory Contributor on rg-dev / rg-prod.
+# - Optionally, a secret DATAFACTORY_PARAMETER_SECRETS with name=value lines
+#   for secure parameters that aren't in Key Vault.
+
+name: Data Factory
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - adf/**
+  push:
+    branches:
+      - main
+    paths:
+      - adf/**
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  datafactory:
+    uses: JoshSLawrence/actions/.github/workflows/datafactory.yaml@v0.1.0
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      working-directory: adf
+      deployments: deployments/*.json
+      resource-group: rg-{deployment}
+      apply-environment: "{deployment}"
+    secrets:
+      parameter-secrets: ${{ secrets.DATAFACTORY_PARAMETER_SECRETS }}

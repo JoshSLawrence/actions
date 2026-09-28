@@ -1,0 +1,89 @@
+name: Data Factory apply
+description: >-
+  Deploys a plan from datafactory/plan -- exactly that plan, to the factory
+  and resource group it names. First refuses a stale plan (the PR moved on,
+  or the folder changed on the target branch since it was planned) and checks
+  the plan's digest; then runs the exported pre-deployment script (stop
+  triggers), an incremental ARM deployment, and the post-deployment script
+  (delete removed resources, start triggers). Download the plan artifact into
+  plan-dir, sign in with azure/login, and run opentofu/setup (azure-cli, plus
+  powershell for the script) first. Gate the job with an environment that
+  requires reviewers.
+
+inputs:
+  working-directory:
+    description: The factory's Git root folder, relative to the workspace.
+    required: false
+    default: "."
+  plan-dir:
+    description: 'Directory the plan artifact was downloaded to (default: $RUNNER_TEMP/datafactory-plan).'
+    required: false
+    default: ""
+  plan-sha256:
+    description: The plan-sha256 output of datafactory/plan.
+    required: true
+  parameter-secrets:
+    description: name=value lines for secure parameters (the same as the plan's).
+    required: false
+    default: ""
+  pre-post-script:
+    description: >-
+      Run the exported PrePostDeploymentScript.ps1 around the deployment: stop
+      changed triggers before; delete resources removed from the folder and
+      start triggers after.
+    required: false
+    default: "true"
+  environment:
+    description: >-
+      The job's GitHub environment. Only used to warn when it has no required
+      reviewers (GitHub silently creates unprotected environments on first
+      use), which needs actions: read.
+    required: false
+    default: ""
+  preflight:
+    description: Refuse plans that are stale (see description). Only disable if something else guarantees it.
+    required: false
+    default: "true"
+  preflight-paths:
+    description: >-
+      Repository paths the plan depends on, space- or newline-separated: a
+      change to any of them on the target branch since the plan makes it
+      stale. Default: the working directory. Add parameter files outside it.
+    required: false
+    default: ""
+  github-token:
+    description: Token for the preflight's GitHub API calls.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the environment gates the apply
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../../shared/scripts/check-environment.sh"'
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        APPLY_ENVIRONMENT: ${{ inputs.environment }}
+
+    - name: Check the plan is still current
+      if: inputs.preflight == 'true'
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../../shared/scripts/apply-preflight.sh"'
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PREFLIGHT_PATHS: ${{ inputs.preflight-paths || inputs.working-directory }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        TARGET_BRANCH: ${{ github.event.pull_request.base.ref || github.ref_name }}
+        TARGET_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+
+    - name: Deploy
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/apply.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        PLAN_DIR: ${{ inputs.plan-dir || format('{0}/datafactory-plan', runner.temp) }}
+        PLAN_SHA256: ${{ inputs.plan-sha256 }}
+        PARAMETER_SECRETS: ${{ inputs.parameter-secrets }}
+        PRE_POST_SCRIPT: ${{ inputs.pre-post-script }}

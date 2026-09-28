@@ -32,7 +32,7 @@ for config in mise.toml .mise.toml mise/config.toml .mise/config.toml .config/mi
   fi
 done
 if [ "$config_found" = false ]; then
-  log_error "No mise config in ${WORKING_DIR}. Every root module pins its own tools: add a mise.toml there, e.g. 'mise use opentofu@<version>' (plus tflint, trivy, ... for the checks you enable)."
+  log_error "No mise config in ${WORKING_DIR}. Every root module (or factory/workspace folder) pins its own tools: add a mise.toml there, e.g. 'mise use $(list_items "$REQUIRED_TOOLS" | sed 's/$/@<version>/' | tr '\n' ' ')' (plus tflint, trivy, ... for the OpenTofu checks you enable)."
   exit 1
 fi
 

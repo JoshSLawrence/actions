@@ -361,7 +361,7 @@ are relative to the workspace. Run `setup` first in every job.
 | --- | --- |
 | [`opentofu/discover`](discover/action.yaml) | Root modules under a directory, filtered to a change; module and deployment matrices |
 | [`opentofu/deployments`](deployments/action.yaml) | One root module's deployments as a matrix |
-| [`opentofu/setup`](setup/action.yaml) | Installs mise, then exactly the module's pinned tools; checks the required ones are pinned |
+| [`opentofu/setup`](setup/action.yaml) | Installs mise, then exactly the module's pinned tools; checks the required ones are pinned (the Data Factory and Synapse workflows use it too) |
 | [`opentofu/checks`](checks/action.yaml) | fmt, validate, TFLint, Trivy, docs, tests, each switchable |
 | [`opentofu/plan`](plan/action.yaml) | Plan to a file, summary, optional cost estimate and policy check |
 | [`opentofu/apply`](apply/action.yaml) | Environment check, stale-plan preflight, digest check, apply |
@@ -373,7 +373,9 @@ are relative to the workspace. Run `setup` first in every job.
 
 The logic is in [`scripts/`](scripts/). Each script documents its
 environment variables at the top, uses the helpers in
-[`scripts/common.sh`](scripts/common.sh), and runs locally too. For example:
+[`scripts/common.sh`](scripts/common.sh) (the generic ones are in
+[`../shared/scripts/common.sh`](../shared/scripts/common.sh), shared with
+the Data Factory and Synapse actions), and runs locally too. For example:
 
 ```bash
 WORKING_DIR=infra DEPLOYMENTS='deployments/*.tfvars' opentofu/scripts/deployments.sh

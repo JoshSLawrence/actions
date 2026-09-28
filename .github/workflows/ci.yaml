@@ -2,10 +2,16 @@
 # workflows end to end -- from this commit -- against the test fixtures, the
 # same way a consumer calls them.
 #
-# The fixtures need no cloud account (random_pet/terraform_data, local
-# state), so the e2e runs plan, comment on the PR, and apply without an
-# approval environment. Require "Lint", "E2E repo / Result",
-# "E2E config / Result" and "E2E drift / Result" in branch protection.
+# The OpenTofu fixtures need no cloud account (random_pet/terraform_data,
+# local state), so the e2e runs plan, comment on the PR, and apply without an
+# approval environment. The Data Factory and Synapse fixtures build (offline)
+# and plan without what-if, which needs no Azure either. One more run deploys
+# the Data Factory fixture to a real, otherwise empty factory
+# (adf-githubtest), through the adf-githubtest environment: its variables
+# hold the identity, whose only federated credential is for that
+# environment. Require "Lint", "E2E repo / Result", "E2E config / Result",
+# "E2E drift / Result", "E2E datafactory / Result", "E2E synapse / Result"
+# and "E2E datafactory (Azure) / Result" in branch protection.
 
 name: CI
 
@@ -110,3 +116,65 @@ jobs:
       search-root: tests/fixtures/opentofu
       deployments: deployments/*.tfvars
       create-issues: false
+
+  # A factory with two deployments (deployments/dev.json and prod.json):
+  # build -- which must leave out the fixture's stray pipeline/.keep -- then
+  # plan each and comment on the PR. No what-if and no apply: those need a
+  # real factory.
+  e2e-datafactory:
+    name: E2E datafactory
+    uses: $/.github/workflows/datafactory.yaml
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      working-directory: tests/fixtures/datafactory/basic
+      deployments: deployments/*.json
+      resource-group: rg-fixture-{deployment}
+      what-if: false
+      apply: false
+
+  # The same fixture, deployed for real: what-if against the live factory,
+  # then the pre-deployment script, the ARM deployment and the
+  # post-deployment script, from the PR, without an approval (the
+  # environment has no reviewers: it only scopes the credentials). A plan
+  # with nothing to change skips the deploy. The fixture's trigger is
+  # Stopped, so the factory never runs anything.
+  e2e-datafactory-azure:
+    name: E2E datafactory (Azure)
+    uses: $/.github/workflows/datafactory.yaml
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      working-directory: tests/fixtures/datafactory/basic
+      stack-name: datafactory (adf-githubtest)
+      deployments: ci/adf-githubtest.json
+      resource-group: rg-dataplatform
+      plan-environment: "{deployment}"
+      apply-environment: "{deployment}"
+      # Dependabot's runs get no OIDC token, so they can't reach Azure: they
+      # build and plan offline instead of skipping the job, so the required
+      # Result check still reports
+      what-if: ${{ github.actor != 'dependabot[bot]' }}
+      apply: ${{ github.actor != 'dependabot[bot]' }}
+
+  # The same for a Synapse workspace
+  e2e-synapse:
+    name: E2E synapse
+    uses: $/.github/workflows/synapse.yaml
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      working-directory: tests/fixtures/synapse/basic
+      deployments: deployments/*.json
+      resource-group: rg-fixture-{deployment}
+      what-if: false
+      apply: false

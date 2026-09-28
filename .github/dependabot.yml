@@ -1,11 +1,15 @@
 # Keeps the SHA-pinned actions up to date, in the workflows and in every
-# composite action (Dependabot only scans the directories listed here).
+# composite action (Dependabot only scans the directories listed here). The
+# Synapse deployer fork in synapse/apply follows upstream's releases by hand
+# (see the comment there).
 version: 2
 updates:
   - package-ecosystem: github-actions
     directories:
       - /
+      - /datafactory/*
       - /opentofu/*
+      - /synapse/*
     schedule:
       interval: weekly
     # Wait before proposing a freshly published release: compromised action

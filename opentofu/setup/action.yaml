@@ -1,20 +1,22 @@
 name: OpenTofu setup
 description: >-
-  Installs mise, then runs mise install in the root module: exactly the tools
-  the module's own mise config pins (its mise.toml), nothing from parent
+  Installs mise, then runs mise install in the root module (or any directory
+  that pins its own tools, like a datafactory/synapse folder): exactly the
+  tools the module's own mise config pins (its mise.toml), nothing from parent
   directories such as the repository root. Fails, listing them all, if a
   tool the job needs isn't pinned. Optionally exports secret KEY=VALUE env
   vars for the rest of the job.
 
 inputs:
   working-directory:
-    description: Root module directory, relative to the workspace.
+    description: Root module (or factory/workspace folder) directory, relative to the workspace.
     required: false
     default: "."
   required-tools:
     description: >-
       mise tools the job needs, space- or newline-separated (opentofu, tflint,
-      trivy, terraform-docs, conftest, infracost, ...). They must be pinned in
+      trivy, terraform-docs, conftest, infracost, node, azure-cli,
+      powershell, ...). They must be pinned in
       the module's mise config; this only checks, it never adds tools.
     required: false
     default: opentofu

@@ -55,7 +55,7 @@ runs:
   steps:
     - name: Check the environment gates the apply
       shell: bash
-      run: '"${GITHUB_ACTION_PATH}/../scripts/check-environment.sh"'
+      run: '"${GITHUB_ACTION_PATH}/../../shared/scripts/check-environment.sh"'
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         APPLY_ENVIRONMENT: ${{ inputs.environment }}
@@ -63,7 +63,7 @@ runs:
     - name: Check the plan is still current
       if: inputs.preflight == 'true'
       shell: bash
-      run: '"${GITHUB_ACTION_PATH}/../scripts/apply-preflight.sh"'
+      run: '"${GITHUB_ACTION_PATH}/../../shared/scripts/apply-preflight.sh"'
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         PREFLIGHT_PATHS: ${{ inputs.preflight-paths || inputs.working-directory }}

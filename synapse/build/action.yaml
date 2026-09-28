@@ -1,0 +1,65 @@
+name: Synapse build
+description: >-
+  Validates a Synapse workspace Git folder and exports its workspace
+  template -- what "Publish" does in Synapse Studio, without Studio or a
+  workspace_publish branch. Runs offline (no Azure credentials), so it's safe
+  on PRs from forks. Upload template-dir as an artifact for synapse/plan. Run
+  opentofu/setup first, with node pinned in the folder's mise.toml.
+
+inputs:
+  working-directory:
+    description: The Synapse workspace's Git root folder (notebook/, pipeline/, ...), relative to the GitHub workspace.
+    required: false
+    default: "."
+  stack-name:
+    description: "Display name, and the template artifact's name (default: the working directory)."
+    required: false
+    default: ""
+  workspace-name:
+    description: >-
+      The development workspace's name (default: taken from its
+      <name>-WorkspaceDefaultStorage linked service). Every deployment sets
+      its own workspaceName.
+    required: false
+    default: ""
+  output-dir:
+    description: "Where the template goes (default: $RUNNER_TEMP/synapse-template)."
+    required: false
+    default: ""
+
+outputs:
+  template-dir:
+    description: Absolute path of the exported template (TemplateForWorkspace.json, TemplateParametersForWorkspace.json).
+    value: ${{ steps.build.outputs.template-dir }}
+  artifact-name:
+    description: Name to upload template-dir under, unique per folder.
+    value: ${{ steps.names.outputs.template-artifact-name }}
+  resource-count:
+    description: Artifacts in the template.
+    value: ${{ steps.build.outputs.resource-count }}
+  bundle-sha256:
+    description: SHA-256 of the export bundle that ran (Microsoft doesn't version it).
+    value: ${{ steps.build.outputs.bundle-sha256 }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve names
+      id: names
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../../shared/scripts/arm-names.sh"'
+      env:
+        SERVICE: synapse
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        STACK_NAME: ${{ inputs.stack-name }}
+        REPOSITORY_NAME: ${{ github.event.repository.name }}
+
+    - name: Validate and export
+      id: build
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/build.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        WORKSPACE_NAME: ${{ inputs.workspace-name }}
+        OUTPUT_DIR: ${{ inputs.output-dir || format('{0}/synapse-template', runner.temp) }}
+        WORK_DIR: ${{ runner.temp }}/synapse-build

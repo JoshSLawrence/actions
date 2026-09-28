@@ -2,8 +2,10 @@
 #
 # Refuses to apply a plan that no longer describes what would merge. Runs
 # after the approval and before anything is applied: an approval can come
-# hours or days after the plan, and OpenTofu only rejects a saved plan when
-# the *state* changed since -- not when the code did. So check that:
+# hours or days after the plan, and nothing else notices the code moved on
+# (OpenTofu only rejects a saved plan when the *state* changed; an ARM
+# deployment never does). Used by the opentofu, datafactory and synapse apply
+# actions. So check that:
 #
 #   - (PR runs) the PR is still open and has no newer commits: a newer push
 #     has its own plan, which is the one to review and approve, and
@@ -17,9 +19,9 @@
 #   TARGET_BRANCH     - branch the change lands on (e.g. main)
 #   TARGET_SHA        - commit of TARGET_BRANCH the plan was made against
 #   PREFLIGHT_PATHS   - what the plan depends on, space- or newline-separated:
-#                       directories (the root module, local modules outside
-#                       it; "." means any change) and/or globs such as
-#                       "modules/**" (required)
+#                       directories (the root module or factory/workspace
+#                       folder, local modules outside it; "." means any
+#                       change) and/or globs such as "modules/**" (required)
 #   PR_NUMBER, HEAD_SHA - the PR and the head commit that was planned (PR
 #                       runs only)
 #
@@ -27,7 +29,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=opentofu/scripts/common.sh
+# shellcheck source=shared/scripts/common.sh
 source "$SCRIPT_DIR/common.sh"
 
 require_tool gh "GitHub CLI (gh)"
@@ -96,12 +98,12 @@ changed="$(printf '%s\n' "${changed_files[@]+"${changed_files[@]}"}" | sed '/^$/
 # The compare API lists at most 300 files: with more, a relevant change could
 # be missing from the list. Too much has changed to be sure either way.
 if [ "$file_count" -ge 300 ]; then
-  log_error "${TARGET_BRANCH} has changed too much since this plan (${ahead_by} commits, ${file_count}+ files) to check the module is unaffected. ${RERUN_HINT}"
+  log_error "${TARGET_BRANCH} has changed too much since this plan (${ahead_by} commits, ${file_count}+ files) to check what it deploys is unaffected. ${RERUN_HINT}"
   exit 1
 fi
 if [ -n "$changed" ]; then
-  log_error "Files this plan depends on changed on ${TARGET_BRANCH} since it was made (${changed}). Applying it would revert those changes. ${RERUN_HINT} (If those paths don't affect the module, narrow the preflight-paths input.)"
+  log_error "Files this plan depends on changed on ${TARGET_BRANCH} since it was made (${changed}). Applying it would revert those changes. ${RERUN_HINT} (If those paths don't affect what this deploys, narrow the preflight-paths input.)"
   exit 1
 fi
 
-log_success "Plan is still current (${TARGET_BRANCH} is ${ahead_by} commit(s) ahead, none touching the module)"
+log_success "Plan is still current (${TARGET_BRANCH} is ${ahead_by} commit(s) ahead, none touching what it deploys)"

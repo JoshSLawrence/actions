@@ -1,0 +1,311 @@
+# Data Factory reusable workflow for ONE factory folder (the factory's Git
+# root folder), deployed once or to many environments: build the ARM template
+# once, then plan -> apply each deployment.
+#
+# No Data Factory UI "Publish", and no adf_publish branch: the build job runs
+# Microsoft's own validate/export logic on the PR branch, so a feature branch
+# can be deployed to an environment from its PR, then merged.
+#
+# A deployment is the template with one ARM parameters file -- e.g. dev and
+# prod, each with its own factoryName, endpoints and resource group. Without
+# `deployments`, the template is deployed once, with parameter-files and
+# parameters only.
+#
+# Tools: every job that runs one installs exactly what the folder's own
+# mise.toml pins (node to build; azure-cli, plus powershell for the
+# pre/post-deployment script, to deploy) -- nothing from the repository root.
+#
+# Job layout (deliberate):
+# - build: validates the folder and exports its ARM template, once. No cloud
+#   credentials, so it's safe for PRs from forks.
+# - deployments: resolves the deployments (their parameter files, resource
+#   group and environments) into a matrix.
+# - deploy: datafactory-deploy.yaml once per deployment -- each plans,
+#   comments on the PR, waits for approval and deploys on its own.
+# - result: one stable check for the factory.
+#
+# Keep the inputs shared with datafactory-deploy.yaml (and those it shares
+# with the OpenTofu and Synapse workflows) identical, and passed through
+# unchanged: .github/scripts/check-workflow-inputs.sh enforces it.
+
+name: Data Factory
+
+on:
+  workflow_call:
+    inputs:
+      # --- What to run on -----------------------------------------------------
+      working-directory:
+        description: >-
+          The factory's Git root folder (the root folder of its Git
+          configuration), relative to the repository root. It pins its own
+          tools in a mise.toml.
+        type: string
+        default: "."
+      stack-name:
+        description: >-
+          Display name in PR comments and the job summary (default: the
+          working directory).
+        type: string
+        default: ""
+      runs-on:
+        description: Runner label for every job.
+        type: string
+        default: ubuntu-latest
+      timeout-minutes:
+        description: Timeout for each job.
+        type: number
+        default: 30
+      mise-version:
+        description: "mise version to install (default: the setup action's pin)."
+        type: string
+        default: ""
+      max-parallel:
+        description: Most deployments to plan and apply at once.
+        type: number
+        default: 4
+
+      # --- Build --------------------------------------------------------------
+      factory-name:
+        description: >-
+          The development factory's name, the default of the template's
+          factoryName parameter (default: the name in factory/*.json). Every
+          deployment sets its own.
+        type: string
+        default: ""
+
+      # --- Deployments --------------------------------------------------------
+      deployments:
+        description: >-
+          ARM parameters files (.json), relative to the working directory: one
+          deployment each, planned and applied separately (e.g.
+          deployments/*.json; globs match within the folder). Each must set
+          factoryName. Empty = one deployment with parameter-files and
+          parameters only.
+        type: string
+        default: ""
+      parameter-files:
+        description: ARM parameters files every deployment uses, before its own, relative to the working directory.
+        type: string
+        default: ""
+      parameters:
+        description: >-
+          Parameter values every deployment uses, one name=value per line,
+          after the files. {deployment} is replaced with the deployment's
+          name. Values of int, bool, object and array parameters are JSON.
+        type: string
+        default: ""
+      resource-group:
+        description: Resource group to deploy to. {deployment} is replaced, e.g. rg-{deployment}.
+        type: string
+        required: true
+
+      # --- Plan ---------------------------------------------------------------
+      plan-environment:
+        description: GitHub environment for the plan jobs (no reviewers; scopes read-only credentials). {deployment} is replaced.
+        type: string
+        default: ""
+      plan-retention-days:
+        description: Days to keep the plan artifact (an approval after that fails).
+        type: number
+        default: 7
+      pr-comment:
+        description: Comment the plan (and apply result) on the PR.
+        type: boolean
+        default: true
+      what-if:
+        description: >-
+          Preview each deployment in its plan job: az deployment group what-if,
+          plus what the post-deployment script would delete. Needs Azure
+          credentials that can run what-if; false = render parameters only,
+          no Azure access.
+        type: boolean
+        default: true
+
+      # --- Apply --------------------------------------------------------------
+      apply:
+        description: Include the apply job at all. false = plan only.
+        type: boolean
+        default: true
+      apply-from-pr:
+        description: >-
+          Apply the reviewed plan from the PR, before merge. false = PRs only
+          plan; applies happen on push/dispatch runs on the default branch.
+        type: boolean
+        default: true
+      apply-environment:
+        description: >-
+          GitHub environment for the apply jobs. Give it required reviewers --
+          that's the approval gate. {deployment} is replaced, e.g.
+          "{deployment}" for a dev and a prod environment.
+        type: string
+        default: ""
+      preflight-paths:
+        description: >-
+          Paths (or globs) every deployment's plan depends on (default: the
+          working directory; each deployment's parameter files are added). A
+          change to any on the target branch since the plan makes it stale.
+        type: string
+        default: ""
+      pre-post-script:
+        description: >-
+          Run the exported PrePostDeploymentScript.ps1 around each deployment:
+          stop changed triggers before; delete resources removed from the
+          folder and start triggers after. Needs powershell pinned too.
+        type: boolean
+        default: true
+
+      # --- Cloud auth ---------------------------------------------------------
+      azure-client-id:
+        description: 'Azure client ID for OIDC (default: the AZURE_CLIENT_ID variable, environment-scoped if set there).'
+        type: string
+        default: ""
+      apply-azure-client-id:
+        description: "Separate (write) Azure identity for the apply job (default: azure-client-id)."
+        type: string
+        default: ""
+      azure-tenant-id:
+        description: "Azure tenant ID (default: the AZURE_TENANT_ID variable)."
+        type: string
+        default: ""
+      azure-subscription-id:
+        description: "Azure subscription ID (default: the AZURE_SUBSCRIPTION_ID variable)."
+        type: string
+        default: ""
+
+    secrets:
+      parameter-secrets:
+        description: >-
+          name=value lines for secure parameters, used by the what-if and the
+          deployment and never saved in an artifact. Prefer Key Vault.
+        required: false
+
+    outputs:
+      deployments:
+        description: JSON array of the deployment names ("" for the template on its own).
+        value: ${{ jobs.deployments.outputs.deployments }}
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    outputs:
+      artifact-name: ${{ steps.build.outputs.artifact-name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up tools
+        uses: $/opentofu/setup
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          required-tools: node
+          mise-version: ${{ inputs.mise-version }}
+
+      - name: Validate and export
+        id: build
+        uses: $/datafactory/build
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          stack-name: ${{ inputs.stack-name }}
+          factory-name: ${{ inputs.factory-name }}
+
+      - name: Upload template
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.build.outputs.artifact-name }}
+          path: ${{ steps.build.outputs.template-dir }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.plan-retention-days }}
+          overwrite: true
+
+  deployments:
+    name: Deployments
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.deployments.outputs.matrix }}
+      deployments: ${{ steps.deployments.outputs.deployments }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve deployments
+        id: deployments
+        uses: $/datafactory/deployments
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          deployments: ${{ inputs.deployments }}
+          parameter-files: ${{ inputs.parameter-files }}
+          parameters: ${{ inputs.parameters }}
+          resource-group: ${{ inputs.resource-group }}
+          plan-environment: ${{ inputs.plan-environment }}
+          apply-environment: ${{ inputs.apply-environment }}
+          preflight-paths: ${{ inputs.preflight-paths }}
+
+  deploy:
+    name: ${{ matrix.deployment.name || 'deploy' }}
+    needs: [build, deployments]
+    strategy:
+      # One deployment failing doesn't stop the others
+      fail-fast: false
+      max-parallel: ${{ inputs.max-parallel }}
+      matrix: ${{ fromJSON(needs.deployments.outputs.matrix) }}
+    uses: $/.github/workflows/datafactory-deploy.yaml
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      # Resolved by the build and deployments jobs
+      template-artifact: ${{ needs.build.outputs.artifact-name }}
+      deployment: ${{ matrix.deployment.name }}
+      parameter-files: ${{ matrix.deployment.parameter_files }}
+      parameters: ${{ matrix.deployment.parameters }}
+      resource-group: ${{ matrix.deployment.resource_group }}
+      plan-environment: ${{ matrix.deployment.plan_environment }}
+      apply-environment: ${{ matrix.deployment.apply_environment }}
+      preflight-paths: ${{ matrix.deployment.preflight_paths }}
+      working-directory: ${{ inputs.working-directory }}
+      stack-name: ${{ inputs.stack-name }}
+      runs-on: ${{ inputs.runs-on }}
+      timeout-minutes: ${{ inputs.timeout-minutes }}
+      mise-version: ${{ inputs.mise-version }}
+      plan-retention-days: ${{ inputs.plan-retention-days }}
+      pr-comment: ${{ inputs.pr-comment }}
+      what-if: ${{ inputs.what-if }}
+      apply: ${{ inputs.apply }}
+      apply-from-pr: ${{ inputs.apply-from-pr }}
+      pre-post-script: ${{ inputs.pre-post-script }}
+      azure-client-id: ${{ inputs.azure-client-id }}
+      apply-azure-client-id: ${{ inputs.apply-azure-client-id }}
+      azure-tenant-id: ${{ inputs.azure-tenant-id }}
+      azure-subscription-id: ${{ inputs.azure-subscription-id }}
+    secrets:
+      parameter-secrets: ${{ secrets.parameter-secrets }}
+
+  # The check for this factory, covering every deployment
+  result:
+    name: Result
+    needs: [build, deployments, deploy]
+    if: always()
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 5
+    # contents: read only to fetch this repository's result action: with
+    # none, a private copy of this repository can't be downloaded.
+    permissions:
+      contents: read
+    steps:
+      - name: Check results
+        uses: $/opentofu/result
+        with:
+          needs: ${{ toJSON(needs) }}

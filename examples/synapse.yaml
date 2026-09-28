@@ -1,0 +1,52 @@
+# A Synapse workspace's artifacts deployed to dev and prod from its Git
+# folder (synapse/): every PR validates the folder, exports its workspace
+# template, compares it with each environment's workspace, and deploys each
+# after its approval -- before merge. No Publish button, no
+# workspace_publish branch.
+#
+# Setup:
+# - synapse/ is the workspace's Git root folder (notebook/, pipeline/, ...),
+#   with a mise.toml: 'mise use node@22 azure-cli uv' in synapse/.
+# - synapse/deployments/dev.json and prod.json: ARM parameters files, each
+#   setting at least workspaceName.
+# - The workspaces don't allow public network access, so every job runs on
+#   a self-hosted runner in their network, labelled `synapse-vnet`.
+# - Environments `dev` and `prod`, with required reviewers if your plan
+#   allows.
+# - Variables AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID,
+#   and federated credentials for this repository's `pull_request`,
+#   `ref:refs/heads/main`, `environment:dev` and `environment:prod`
+#   subjects. The identity needs Reader on each workspace and, in Synapse
+#   Studio, Synapse Artifact Publisher.
+
+name: Synapse
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - synapse/**
+  push:
+    branches:
+      - main
+    paths:
+      - synapse/**
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  synapse:
+    uses: JoshSLawrence/actions/.github/workflows/synapse.yaml@v0.1.0
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      working-directory: synapse
+      deployments: deployments/*.json
+      resource-group: rg-{deployment}
+      apply-environment: "{deployment}"
+      runs-on: synapse-vnet
