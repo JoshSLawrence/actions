@@ -1,0 +1,7 @@
+# Tools for this workspace folder, and only these: node runs the export
+# bundle (build); azure-cli lists, stops and starts triggers around the
+# deployment. mise installs azure-cli with uv.
+[tools]
+azure-cli = "2.90.0"
+node = "22.23.3"
+uv = "0.12.19"

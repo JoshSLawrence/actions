@@ -82,7 +82,7 @@ apply_section() {
       if [ -n "$ENVIRONMENT" ]; then
         echo "### 🔒 Apply: awaiting approval"
         echo ""
-        echo "Review the plan above, then approve the \`${ENVIRONMENT}\` deployment on the [workflow run](${RUN_URL}) to apply exactly this plan. It's refused if the PR gets new commits, or the module changes on the target branch, first: that push plans again, and its run is the one to approve."
+        echo "Review the plan above, then approve the \`${ENVIRONMENT}\` deployment on the [workflow run](${RUN_URL}) to apply exactly this plan. It's refused if the PR gets new commits, or what it deploys changes on the target branch, first: that push plans again, and its run is the one to approve."
       else
         echo "### 🚀 Apply: running"
         echo ""
@@ -109,7 +109,7 @@ apply_section() {
     failed)
       echo "### ❌ Apply failed"
       echo ""
-      echo "See the [workflow run](${RUN_URL}) log. If \`tofu apply\` started, some changes may already be live: fix the problem and push to plan again, or roll back by running the workflow on the target branch. If the plan was refused as out of date, nothing was applied."
+      echo "See the [workflow run](${RUN_URL}) log. If the apply started, some changes may already be live: fix the problem and push to plan again, or roll back by running the workflow on the target branch. If the plan was refused as out of date, nothing was applied."
       ;;
   esac
 }

@@ -12,6 +12,8 @@ A library of reusable GitHub Actions workflows and composite actions.
 | Name | Kind | Does |
 | --- | --- | --- |
 | [OpenTofu](opentofu/README.md) | Reusable workflows + composite actions | Validate, test, lint, scan, plan and approval-gated apply for one root module, a monorepo, or a config deployed with many `.tfvars` files; PR comments; drift detection with issues |
+| [Data Factory](datafactory/README.md) | Reusable workflows + composite actions | Validate and export a factory's Git folder to an ARM template on every PR (no Publish, no `adf_publish`), what-if plans per environment, approval-gated deploys with trigger handling; PR comments |
+| [Synapse](synapse/README.md) | Reusable workflows + composite actions | The same for a Synapse workspace's artifacts (no `workspace_publish`), deployed with GitHub OIDC; PR comments |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -79,10 +81,15 @@ actions/
 │   ├── scripts/              # this repository's own checks (lint, sync)
 │   └── workflows/
 │       ├── ci.yaml           # lint + end-to-end runs of the workflows
+│       ├── datafactory-deploy.yaml
+│       ├── datafactory.yaml
 │       ├── opentofu-config.yaml
 │       ├── opentofu-deploy.yaml
 │       ├── opentofu-drift.yaml
-│       └── opentofu.yaml
+│       ├── opentofu.yaml
+│       ├── synapse-deploy.yaml
+│       └── synapse.yaml
+├── datafactory/              # build, deployments, plan, apply, scripts/
 ├── examples/                 # caller workflows to copy from
 ├── mise.toml                 # tool versions for local hooks and CI lint
 ├── opentofu/
@@ -97,8 +104,11 @@ actions/
 │   ├── result/
 │   ├── scripts/              # the logic; actions are thin wrappers
 │   └── setup/
+├── shared/
+│   └── scripts/              # helpers every area uses (common.sh, arm.sh)
+├── synapse/                  # build, deployments, plan, apply, scripts/
 └── tests/
-    └── fixtures/             # root modules CI runs the workflows against
+    └── fixtures/             # what CI runs the workflows against
 ```
 
 ## Development

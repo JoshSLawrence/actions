@@ -1,0 +1,67 @@
+name: Data Factory deployments
+description: >-
+  Resolves a factory folder's deployments -- one per ARM parameters file
+  matching `deployments`, or the template on its own -- into a matrix, each
+  with its parameter files, parameters, resource group, environments and
+  preflight paths.
+
+inputs:
+  working-directory:
+    description: The factory's Git root folder, relative to the workspace.
+    required: false
+    default: "."
+  deployments:
+    description: ARM parameters files relative to the folder, one deployment each (e.g. deployments/*.json). Must match something if set.
+    required: false
+    default: ""
+  parameter-files:
+    description: Parameters files every deployment uses, before its own.
+    required: false
+    default: ""
+  parameters:
+    description: name=value lines every deployment uses; {deployment} is replaced.
+    required: false
+    default: ""
+  resource-group:
+    description: Resource group to deploy to; {deployment} is replaced.
+    required: true
+  plan-environment:
+    description: Plan environment name; {deployment} is replaced.
+    required: false
+    default: ""
+  apply-environment:
+    description: Apply environment name; {deployment} is replaced.
+    required: false
+    default: ""
+  preflight-paths:
+    description: "Paths every deployment's plan depends on (default: the working directory)."
+    required: false
+    default: ""
+
+outputs:
+  matrix:
+    description: '{"deployment": [{"name", "parameter_files", "parameters", "resource_group", "plan_environment", "apply_environment", "preflight_paths"}, ...]}'
+    value: ${{ steps.deployments.outputs.matrix }}
+  deployments:
+    description: JSON array of the deployment names ("" for the template on its own).
+    value: ${{ steps.deployments.outputs.deployments }}
+  count:
+    description: Number of deployments.
+    value: ${{ steps.deployments.outputs.count }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve deployments
+      id: deployments
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../../shared/scripts/arm-deployments.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        DEPLOYMENTS: ${{ inputs.deployments }}
+        PARAMETER_FILES: ${{ inputs.parameter-files }}
+        PARAMETERS: ${{ inputs.parameters }}
+        RESOURCE_GROUP: ${{ inputs.resource-group }}
+        PLAN_ENVIRONMENT: ${{ inputs.plan-environment }}
+        APPLY_ENVIRONMENT: ${{ inputs.apply-environment }}
+        PREFLIGHT_PATHS: ${{ inputs.preflight-paths }}

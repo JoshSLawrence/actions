@@ -35,64 +35,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# One line saying what was planned and where the run is, so a comment that's
-# been updated several times still says which push it describes.
-context_line() {
-  local repo_url=""
-  if [ -n "${GITHUB_REPOSITORY:-}" ]; then
-    repo_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}"
-  fi
-
-  commit_ref() {
-    if [ -n "$repo_url" ]; then
-      printf "[\`%s\`](%s/commit/%s)" "${1:0:7}" "$repo_url" "$1"
-    else
-      printf "\`%s\`" "${1:0:7}"
-    fi
-  }
-
-  local parts=()
-  local head="${HEAD_SHA:-${GITHUB_SHA:-}}"
-  [ -n "$head" ] && parts+=("commit $(commit_ref "$head")")
-  # PR runs plan GitHub's merge of the PR into the target branch, not the PR
-  # branch on its own -- say so, since that's what an apply would deploy.
-  if [ -n "${PR_NUMBER:-}" ] && [ -n "${TARGET_SHA:-}" ]; then
-    parts+=("merged into \`${TARGET_BRANCH:-main}\` at $(commit_ref "$TARGET_SHA")")
-  fi
-  if [ -n "$repo_url" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
-    parts+=("[run #${GITHUB_RUN_NUMBER:-$GITHUB_RUN_ID}](${repo_url}/actions/runs/${GITHUB_RUN_ID})")
-  fi
-  parts+=("$(date -u '+%Y-%m-%d %H:%M UTC')")
-
-  local line="" part
-  for part in "${parts[@]}"; do
-    line="${line:+$line · }$part"
-  done
-  echo "<sub>$line</sub>"
-}
-
-# Print a file in a collapsible fenced block, truncated to MAX_PLAN_CHARS (at
-# a line boundary) with a pointer to the full output in the run log. A
-# four-backtick fence, so a ``` inside the plan can't close it early.
-# Usage: collapsible_block "<summary>" "<language>" "<file>"
-collapsible_block() {
-  local summary="$1" language="$2" file="$3"
-  local size
-  size=$(wc -c < "$file" | tr -d ' ')
-
-  echo "<details><summary>${summary}</summary>"
-  echo ""
-  echo "\`\`\`\`${language}"
-  if [ "$size" -gt "$MAX_PLAN_CHARS" ]; then
-    head -c "$MAX_PLAN_CHARS" "$file" | sed '$d'
-    echo "... truncated (${size} characters) -- see the run log for the full output"
-  else
-    cat "$file"
-  fi
-  echo "\`\`\`\`"
-  echo ""
-  echo "</details>"
-}
+# context_line and collapsible_block (MAX_PLAN_CHARS) are in
+# shared/scripts/common.sh
 
 if [ "$PLAN_EXIT_CODE" -ne 0 ] && [ "$PLAN_EXIT_CODE" -ne 2 ]; then
   echo "### ❌ Plan failed"

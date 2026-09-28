@@ -1,8 +1,9 @@
 # Test fixtures
 
-Root modules the CI workflow runs the reusable workflows against, so every
-PR tests the workflows and actions end to end, the way consumers use them.
-None needs a cloud account: they only touch local state.
+What the CI workflow runs the reusable workflows against, so every PR tests
+the workflows and actions end to end, the way consumers use them. None needs
+a cloud account: the OpenTofu ones only touch local state, and the Data
+Factory and Synapse ones are built (offline) and planned without what-if.
 
 - [`opentofu/basic`](opentofu/basic/): a root module with two deployments
   (`deployments/dev.tfvars` and `prod.tfvars`, each with a `.tfbackend`
@@ -14,3 +15,11 @@ None needs a cloud account: they only touch local state.
   `mise.toml`, so not a root module). Changing it selects `basic`.
 - [`opentofu/policy`](opentofu/policy/): example conftest policies shared by
   both root modules.
+- [`datafactory/basic`](datafactory/basic/): a factory's Git folder (a
+  linked service, a pipeline, a stopped trigger) with two deployments,
+  `deployments/dev.json` and `prod.json`. `pipeline/.keep` is deliberate:
+  the build must leave out files that aren't `.json`. `ci/adf-githubtest.json`
+  is a third deployment, kept apart from those, that CI deploys to a real
+  factory.
+- [`synapse/basic`](synapse/basic/): the same for a Synapse workspace, with
+  a SQL script too.

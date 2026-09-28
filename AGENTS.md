@@ -24,13 +24,27 @@ catalog, layout and principles.
 
 - **Scripts hold the logic** (`<area>/scripts/`). Composite actions
   (`<area>/<action>/action.yaml`) and workflows only wire inputs to scripts
-  through `env:`. Shared helpers live in `opentofu/scripts/common.sh`, in
-  named sections; check there before writing a helper.
+  through `env:`. Check for a helper before writing one, in named sections:
+  - `shared/scripts/common.sh`: what every area uses (logging, outputs,
+    lists, mise, globs, markdown, GitHub comments);
+  - `shared/scripts/arm.sh`: what Data Factory and Synapse share
+    (deployments of ARM parameters files, parameter layering, the export
+    bundle, plans);
+  - `opentofu/scripts/common.sh`: OpenTofu only (it sources the shared one).
+  Scripts every area runs as is (`apply-preflight.sh`,
+  `check-environment.sh`, `arm-*.sh`) live in `shared/scripts/` too.
 - **OpenTofu workflows nest:** `opentofu.yaml` (discover root modules) →
   `opentofu-config.yaml` (validate once, resolve deployments) →
   `opentofu-deploy.yaml` (plan → apply one deployment).
   `opentofu-drift.yaml` stands alone.
-  - An input means the same thing everywhere it appears.
+- **Data Factory and Synapse workflows** follow the same shape:
+  `datafactory.yaml` (build the template once, resolve deployments) →
+  `datafactory-deploy.yaml` (plan → apply one deployment); likewise
+  `synapse.yaml` → `synapse-deploy.yaml`. They reuse `opentofu/setup`,
+  `opentofu/pr-comment` and `opentofu/result`, and the opentofu input names
+  (`apply-environment`, `apply-from-pr`, ...).
+- **Workflow inputs stay in sync:**
+  - An input means the same thing everywhere it appears, across families.
   - Callers pass shared inputs through unchanged.
   - `.github/scripts/check-workflow-inputs.sh` enforces both. When you add
     or change an input, change it in every workflow that has it; the
@@ -42,14 +56,23 @@ catalog, layout and principles.
   ignores exactly those messages (user-approved). Remove it once actionlint
   supports `$/`.
 - **Composite actions find their scripts** via
-  `"${GITHUB_ACTION_PATH}/../scripts/<script>.sh"`.
-- **Tools are per root module.** Every script that runs a tool goes through
-  `cd_working_dir`, which scopes mise to the module's own `mise.toml`. That
-  means nothing from parent directories or global config. Run tools with
-  `mise exec -- <tool>`.
+  `"${GITHUB_ACTION_PATH}/../scripts/<script>.sh"`, or
+  `"${GITHUB_ACTION_PATH}/../../shared/scripts/<script>.sh"`.
+- **Tools are per root module** (or factory/workspace folder). Every script
+  that runs a tool goes through `cd_working_dir`, which scopes mise to the
+  module's own `mise.toml`. That means nothing from parent directories or
+  global config. Run tools with `mise exec -- <tool>` (`arm_az` for az).
+  mise installs `azure-cli` with `uv`, so a folder pinning one pins both.
 - **Deployments** (a root module × one `.tfvars`, plus a same-named
   `.tfbackend`) are resolved by `list_deployments` in `common.sh`, used by
-  both `deployments.sh` and `discover.sh`.
+  both `deployments.sh` and `discover.sh`. For Data Factory and Synapse, a
+  deployment is the template × one ARM parameters file, resolved by
+  `arm_list_deployments` in `arm.sh`.
+- **Data Factory and Synapse plans** hold `deploy/` (template, rendered
+  parameters, `target.json`) and `summary.md`. The digest covers `deploy/`,
+  and the apply takes its target from `target.json`, never from inputs.
+  `parameter-secrets` are merged only into temporary files at plan (what-if)
+  and apply time, never into an artifact.
 - **Paths:** composite action inputs are relative to the workspace, which is
   the repository root; var/backend files are relative to the module.
 - **Every script runs locally too.** Outputs and summaries degrade to
@@ -58,8 +81,12 @@ catalog, layout and principles.
 ## Conventions
 
 - **Pin third-party actions to a full commit SHA** with a `# vX.Y.Z` comment.
-  Dependabot updates them in `.github/` and in every `opentofu/*` action.
-  Bump `mise-version` (default in `opentofu/setup/action.yaml`) by hand.
+  The one exception to the tag comment is the Synapse deployer fork in
+  `synapse/apply`, which has no releases: bump it by hand.
+  Dependabot updates them in `.github/` and in every `opentofu/*`,
+  `datafactory/*` and `synapse/*` action. Bump by hand: `mise-version`
+  (default in `opentofu/setup/action.yaml`) and the Az PowerShell modules
+  pinned in `datafactory/scripts/pre-post-deployment.ps1`.
 - **Least privilege.** Workflows set `permissions: {}` and grant per job. A
   permission a reusable workflow's job requests becomes every caller's
   minimum, so adding one is a breaking change: update the README and
@@ -73,7 +100,8 @@ catalog, layout and principles.
 - **Error messages say what to do next**, not just what failed.
 - **Docs:** 80 columns, with tables wrapped in
   `<!-- markdownlint-disable MD013 -->`. Update the workflow descriptions,
-  `opentofu/README.md` tables and affected examples together.
+  the area README tables (`opentofu/`, `datafactory/`, `synapse/`) and
+  affected examples together.
 
 ## Shell scripts
 
@@ -92,10 +120,16 @@ catalog, layout and principles.
     markdownlint;
   - the workflow input sync check and the no-inline-scripts check;
   - the OpenTofu hooks on the fixtures.
-- Exercise changed scripts against `tests/fixtures/opentofu/` locally, e.g.
+- The apply scripts need a real factory or workspace: CI stops the Data
+  Factory and Synapse e2e runs at the plan.
+- Exercise changed scripts against `tests/fixtures/` locally, e.g.
   `WORKING_DIR=tests/fixtures/opentofu/basic opentofu/scripts/check-fmt.sh`,
   or `SEARCH_ROOT=tests/fixtures/opentofu CHANGED_ONLY=false
-  DEPLOYMENTS='deployments/*.tfvars' opentofu/scripts/discover.sh`.
+  DEPLOYMENTS='deployments/*.tfvars' opentofu/scripts/discover.sh`, or
+  `WORKING_DIR=tests/fixtures/datafactory/basic
+  datafactory/scripts/build.sh` then `plan.sh` with `TEMPLATE_DIR`,
+  `PARAMETER_FILES` and `RESOURCE_GROUP` (the same for `synapse/`). Plans
+  without `WHAT_IF` and builds need no Azure access.
 - `act` can run the composite actions in a container if a throwaway
   workflow references them with `./` (act doesn't support `$/`). CI runs
   the real workflows end to end.

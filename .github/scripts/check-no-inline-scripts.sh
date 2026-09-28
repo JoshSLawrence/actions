@@ -11,8 +11,8 @@
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
-# shellcheck source=opentofu/scripts/common.sh
-source opentofu/scripts/common.sh
+# shellcheck source=shared/scripts/common.sh
+source shared/scripts/common.sh
 
 require_tool jq
 if ! command_exists yq; then

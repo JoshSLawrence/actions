@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 #
-# Checks the OpenTofu reusable workflows stay in sync where they share
-# inputs, so an input means the same thing -- with the same type, default and
-# description -- whichever workflow a caller uses:
+# Checks the reusable workflows stay in sync where they share inputs, so an
+# input means the same thing -- with the same type, default and description
+# -- whichever workflow a caller uses:
 #
-#   opentofu.yaml         --calls-->  opentofu-config.yaml  (job: config)
-#   opentofu-config.yaml  --calls-->  opentofu-deploy.yaml  (job: deploy)
-#   opentofu-drift.yaml   shares inputs with opentofu.yaml  (no call)
+#   opentofu.yaml         --calls-->  opentofu-config.yaml     (job: config)
+#   opentofu-config.yaml  --calls-->  opentofu-deploy.yaml     (job: deploy)
+#   opentofu-drift.yaml   shares inputs with opentofu.yaml     (no call)
+#   datafactory.yaml      --calls-->  datafactory-deploy.yaml  (job: deploy)
+#   synapse.yaml          --calls-->  synapse-deploy.yaml      (job: deploy)
+#
+# Across the families, the inputs they share (runs-on, apply-environment,
+# azure-client-id, ...) must also match: opentofu-config.yaml and
+# datafactory.yaml, datafactory.yaml and synapse.yaml, and the same for the
+# deploy workflows (no call).
 #
 # For a calling pair it checks that:
 #   1. every input of the called workflow is also an input of the caller,
@@ -24,8 +31,8 @@
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
-# shellcheck source=opentofu/scripts/common.sh
-source opentofu/scripts/common.sh
+# shellcheck source=shared/scripts/common.sh
+source shared/scripts/common.sh
 
 require_tool jq
 if ! command_exists yq; then
@@ -101,7 +108,26 @@ check_pair opentofu-config.yaml opentofu-deploy.yaml deploy \
 
 check_pair opentofu-drift.yaml opentofu.yaml "" '[]' '[]' '["plan-environment"]'
 
+check_pair datafactory.yaml datafactory-deploy.yaml deploy \
+  '["deployment", "template-artifact"]' \
+  '["deployments", "max-parallel", "factory-name"]' \
+  '["parameter-files", "parameters", "resource-group", "plan-environment", "apply-environment", "preflight-paths"]'
+
+check_pair synapse.yaml synapse-deploy.yaml deploy \
+  '["deployment", "template-artifact"]' \
+  '["deployments", "max-parallel", "workspace-name"]' \
+  '["parameter-files", "parameters", "resource-group", "plan-environment", "apply-environment", "preflight-paths"]'
+
+# Across families: what each service describes its own way is COMPUTED
+check_pair opentofu-config.yaml datafactory.yaml "" '[]' '[]' \
+  '["working-directory", "deployments", "max-parallel", "preflight-paths"]'
+check_pair opentofu-deploy.yaml datafactory-deploy.yaml "" '[]' '[]' \
+  '["working-directory", "deployment"]'
+check_pair datafactory.yaml synapse.yaml "" '[]' '[]' '["working-directory", "deployments", "what-if"]'
+check_pair datafactory-deploy.yaml synapse-deploy.yaml "" '[]' '[]' \
+  '["working-directory", "template-artifact", "what-if"]'
+
 if [ "$failures" -gt 0 ]; then
-  log_error "${failures} problem(s) keeping the OpenTofu workflows in sync. See .github/scripts/check-workflow-inputs.sh for the rules."
+  log_error "${failures} problem(s) keeping the reusable workflows in sync. See .github/scripts/check-workflow-inputs.sh for the rules."
   exit 1
 fi

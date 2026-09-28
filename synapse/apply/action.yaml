@@ -1,0 +1,143 @@
+name: Synapse apply
+description: >-
+  Deploys a plan from synapse/plan -- exactly that plan, to the workspace and
+  resource group it names. First refuses a stale plan (the PR moved on, or
+  the folder changed on the target branch since it was planned) and checks
+  the plan's digest; then stops started triggers, publishes the artifacts
+  with the Synapse workspace deployer (signed in with the job's GitHub OIDC
+  token), and starts triggers again. Download the plan artifact into
+  plan-dir, sign in with azure/login, and run opentofu/setup (azure-cli
+  pinned) first, on a runner that can reach the workspace. Needs id-token:
+  write. Gate the job with an environment that requires reviewers.
+
+inputs:
+  working-directory:
+    description: The Synapse workspace's Git root folder, relative to the GitHub workspace.
+    required: false
+    default: "."
+  plan-dir:
+    description: 'Directory the plan artifact was downloaded to (default: $RUNNER_TEMP/synapse-plan).'
+    required: false
+    default: ""
+  plan-sha256:
+    description: The plan-sha256 output of synapse/plan.
+    required: true
+  parameter-secrets:
+    description: name=value lines for secure parameters.
+    required: false
+    default: ""
+  delete-artifacts:
+    description: Delete artifacts in the workspace that aren't in the template.
+    required: false
+    default: "true"
+  deploy-managed-private-endpoints:
+    description: Also deploy the template's managed private endpoints (the deployer's identity then needs Synapse Administrator).
+    required: false
+    default: "false"
+  manage-triggers:
+    description: Stop started triggers before the deployment, and start them (and those the template marks Started) after.
+    required: false
+    default: "true"
+  azure-client-id:
+    description: "Client ID of the deploying identity, for the deployer's OIDC sign-in (default: $ARM_CLIENT_ID)."
+    required: false
+    default: ""
+  azure-tenant-id:
+    description: "Tenant ID (default: $ARM_TENANT_ID)."
+    required: false
+    default: ""
+  azure-subscription-id:
+    description: "Subscription of the workspace (default: $ARM_SUBSCRIPTION_ID)."
+    required: false
+    default: ""
+  environment:
+    description: >-
+      The job's GitHub environment. Only used to warn when it has no required
+      reviewers (GitHub silently creates unprotected environments on first
+      use), which needs actions: read.
+    required: false
+    default: ""
+  preflight:
+    description: Refuse plans that are stale (see description). Only disable if something else guarantees it.
+    required: false
+    default: "true"
+  preflight-paths:
+    description: >-
+      Repository paths the plan depends on, space- or newline-separated: a
+      change to any of them on the target branch since the plan makes it
+      stale. Default: the working directory. Add parameter files outside it.
+    required: false
+    default: ""
+  github-token:
+    description: Token for the preflight's GitHub API calls.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the environment gates the apply
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../../shared/scripts/check-environment.sh"'
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        APPLY_ENVIRONMENT: ${{ inputs.environment }}
+
+    - name: Check the plan is still current
+      if: inputs.preflight == 'true'
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../../shared/scripts/apply-preflight.sh"'
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PREFLIGHT_PATHS: ${{ inputs.preflight-paths || inputs.working-directory }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        TARGET_BRANCH: ${{ github.event.pull_request.base.ref || github.ref_name }}
+        TARGET_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+
+    - name: Prepare
+      id: prepare
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/apply-prepare.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        PLAN_DIR: ${{ inputs.plan-dir || format('{0}/synapse-plan', runner.temp) }}
+        PLAN_SHA256: ${{ inputs.plan-sha256 }}
+        PARAMETER_SECRETS: ${{ inputs.parameter-secrets }}
+        MANAGE_TRIGGERS: ${{ inputs.manage-triggers }}
+        STATE_DIR: ${{ runner.temp }}/synapse-apply
+
+    # Upstream Azure/Synapse-workspace-deployment only signs in with a client
+    # secret or an Azure VM's managed identity. This fork adds GitHub OIDC
+    # (federatedIdentity); there's no release to pin, so it's pinned to a
+    # commit. Keep it in step with upstream's releases.
+    - name: Deploy artifacts
+      id: deploy
+      uses: JoshSLawrence/Synapse-workspace-deployment@8bbfbf7aa46c5734d6b7215aaf8f618770eeee7a # feature/federated-identity-support
+      with:
+        operation: deploy
+        TargetWorkspaceName: ${{ steps.prepare.outputs.workspace-name }}
+        TemplateFile: ${{ steps.prepare.outputs.template-file }}
+        ParametersFile: ${{ steps.prepare.outputs.parameters-file }}
+        Environment: Azure Public
+        resourceGroup: ${{ steps.prepare.outputs.resource-group }}
+        clientId: ${{ inputs.azure-client-id || env.ARM_CLIENT_ID }}
+        tenantId: ${{ inputs.azure-tenant-id || env.ARM_TENANT_ID }}
+        subscriptionId: ${{ inputs.azure-subscription-id || env.ARM_SUBSCRIPTION_ID }}
+        federatedIdentity: "true"
+        DeleteArtifactsNotInTemplate: ${{ inputs.delete-artifacts }}
+        deployManagedPrivateEndpoint: ${{ inputs.deploy-managed-private-endpoints }}
+
+    # Always, once prepare has written the parameters file: it holds the
+    # secrets, and triggers stopped before a failed deployment must restart
+    - name: Finish
+      if: always() && steps.prepare.outputs.state-dir != ''
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/apply-finish.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        STATE_DIR: ${{ steps.prepare.outputs.state-dir }}
+        TEMPLATE_FILE: ${{ steps.prepare.outputs.template-file }}
+        WORKSPACE_NAME: ${{ steps.prepare.outputs.workspace-name }}
+        DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+        MANAGE_TRIGGERS: ${{ inputs.manage-triggers }}

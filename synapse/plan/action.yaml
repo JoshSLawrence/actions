@@ -1,0 +1,125 @@
+name: Synapse plan
+description: >-
+  Plans one deployment of an exported Synapse workspace template: renders its
+  parameters (every name checked against the template), optionally compares
+  it with the live workspace (new artifacts, and those the deployment
+  deletes), and writes a markdown summary. Fails after writing the summary,
+  so it can still be posted. Upload plan-dir as an artifact for
+  synapse/apply. With what-if, sign in with azure/login and run
+  opentofu/setup (azure-cli pinned) first, on a runner that can reach the
+  workspace.
+
+inputs:
+  working-directory:
+    description: The Synapse workspace's Git root folder, relative to the GitHub workspace.
+    required: false
+    default: "."
+  template-dir:
+    description: The exported template (synapse/build's template-dir, or its downloaded artifact).
+    required: true
+  deployment:
+    description: Deployment name (its parameters file's), for the names and title. Empty for the template on its own.
+    required: false
+    default: ""
+  parameter-files:
+    description: ARM parameters files relative to the working directory, in order, space- or newline-separated.
+    required: false
+    default: ""
+  parameters:
+    description: >-
+      Parameter values, one name=value per line, after the files. Values of
+      int, bool, object and array parameters are JSON.
+    required: false
+    default: ""
+  parameter-secrets:
+    description: name=value lines for secure parameters; only their names are used here, never their values.
+    required: false
+    default: ""
+  resource-group:
+    description: Resource group of the target workspace.
+    required: true
+  what-if:
+    description: Compare with the live workspace (needs az signed in, network access to it, and Synapse Artifact User).
+    required: false
+    default: "false"
+  delete-artifacts:
+    description: Whether the apply deletes artifacts that aren't in the template; the comparison then lists them.
+    required: false
+    default: "true"
+  plan-dir:
+    description: "Directory for the plan (default: $RUNNER_TEMP/synapse-plan) -- the plan artifact."
+    required: false
+    default: ""
+  stack-name:
+    description: "Display name for the summary, comment and artifact names (default: the working directory)."
+    required: false
+    default: ""
+  environment:
+    description: >-
+      Environment the plan will be applied in, if any. Part of the names, so
+      each folder/deployment/environment gets its own comment and artifact.
+    required: false
+    default: ""
+
+outputs:
+  key:
+    description: Unique key for this folder/deployment/environment -- the comment-key for opentofu/pr-comment.
+    value: ${{ steps.names.outputs.key }}
+  artifact-name:
+    description: Plan artifact name derived from key.
+    value: ${{ steps.names.outputs.artifact-name }}
+  title:
+    description: Heading for the PR comment.
+    value: ${{ steps.names.outputs.title }}
+  has-changes:
+    description: "Always 'true' once planned: every deployment republishes every artifact."
+    value: ${{ steps.plan.outputs.has-changes }}
+  plan-sha256:
+    description: SHA-256 of the plan; pass it to synapse/apply.
+    value: ${{ steps.plan.outputs.plan-sha256 }}
+  plan-dir:
+    description: Absolute path of the plan directory.
+    value: ${{ steps.plan.outputs.plan-dir }}
+  summary-file:
+    description: Absolute path of the markdown plan summary (written on failure too).
+    value: ${{ steps.plan.outputs.summary-file }}
+  workspace-name:
+    description: The target workspace.
+    value: ${{ steps.plan.outputs.workspace-name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve names
+      id: names
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../../shared/scripts/arm-names.sh"'
+      env:
+        SERVICE: synapse
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        STACK_NAME: ${{ inputs.stack-name }}
+        DEPLOYMENT: ${{ inputs.deployment }}
+        APPLY_ENVIRONMENT: ${{ inputs.environment }}
+        REPOSITORY_NAME: ${{ github.event.repository.name }}
+
+    - name: Plan
+      id: plan
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/plan.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        TEMPLATE_DIR: ${{ inputs.template-dir }}
+        PLAN_DIR: ${{ inputs.plan-dir || format('{0}/synapse-plan', runner.temp) }}
+        WORK_DIR: ${{ runner.temp }}/synapse-plan-work
+        DEPLOYMENT: ${{ inputs.deployment }}
+        PARAMETER_FILES: ${{ inputs.parameter-files }}
+        PARAMETERS: ${{ inputs.parameters }}
+        PARAMETER_SECRETS: ${{ inputs.parameter-secrets }}
+        RESOURCE_GROUP: ${{ inputs.resource-group }}
+        WHAT_IF: ${{ inputs.what-if }}
+        DELETE_ARTIFACTS: ${{ inputs.delete-artifacts }}
+        TITLE: ${{ steps.names.outputs.title }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        TARGET_BRANCH: ${{ github.event.pull_request.base.ref || github.ref_name }}
+        TARGET_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
