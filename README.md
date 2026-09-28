@@ -1,5 +1,8 @@
 # actions
 
+[![CI](https://github.com/JoshSLawrence/actions/actions/workflows/ci.yaml/badge.svg)](https://github.com/JoshSLawrence/actions/actions/workflows/ci.yaml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A library of reusable GitHub Actions workflows and composite actions.
 
 ## Catalog
