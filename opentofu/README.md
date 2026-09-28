@@ -385,7 +385,8 @@ WORKING_DIR=infra DEPLOYMENTS='deployments/*.tfvars' opentofu/scripts/deployment
   - **Contents:** the plan summary (plus the cost and policy sections) and
     where the apply stands: awaiting approval, applying after merge,
     blocked by policy, applied (and by whose approval), or failed.
-  - **History:** earlier versions stay in the comment's edit history.
+  - **History:** earlier versions stay in the comment's edit history, and a
+    footer on the comment points readers to it (the **edited** menu).
   - **Out-of-order runs:** a run for an outdated PR head leaves the comment
     alone.
   - **Size:** plan output is truncated to fit GitHub's limit; the full plan

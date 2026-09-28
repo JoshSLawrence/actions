@@ -142,6 +142,10 @@ fit_github_body "$SUMMARY_COPY" "the [workflow run](${RUN_URL})'s job summary"
     echo ""
     echo "$section"
   fi
+  # The comment is rewritten by every run, so point readers at GitHub's edit
+  # history for earlier plans and apply results
+  echo ""
+  echo "<sub>📜 This comment is updated in place by every run. For earlier plans and apply results, open the <b>edited</b> menu at the top of this comment.</sub>"
 } > "$BODY_FILE"
 
 # The oldest match wins, should two runs ever have raced to create it
