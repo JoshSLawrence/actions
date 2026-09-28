@@ -34,7 +34,7 @@ PLAN_JSON="$(abs_path "$PLAN_JSON")"
 FRAGMENT_FILE="$(abs_path "$FRAGMENT_FILE")"
 
 if ! is_true "${COST_ESTIMATE:-true}"; then
-  echo "<sub>💰 No cost estimate: Infracost is turned off for this deployment (the \`cost-estimate\` input).</sub>" > "$FRAGMENT_FILE"
+  echo "<sub>No cost estimate: Infracost is turned off for this deployment</sub>" > "$FRAGMENT_FILE"
   log_info "Cost estimates are off; noted in the plan summary"
   exit 0
 fi
