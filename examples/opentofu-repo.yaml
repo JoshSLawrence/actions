@@ -7,7 +7,8 @@
 # - Environment `production`, with required reviewers if your plan allows.
 # - Variables AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID, and
 #   federated credentials for this repository's `pull_request`,
-#   `ref:refs/heads/main` and `environment:production` subjects.
+#   `ref:refs/heads/main` and `environment:production` subjects (see
+#   Setup in opentofu/README.md for the subject format).
 
 name: OpenTofu
 

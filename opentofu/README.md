@@ -210,9 +210,14 @@ them, whatever changed) with the same plan action, lock-free.
    - Variables scoped to an environment win in that environment's jobs, so
      each environment can hold its own identity.
    - Add a federated credential for each subject the jobs present:
-     `repo:<owner>/<repo>:environment:<name>`, or
-     `repo:<owner>/<repo>:pull_request` for a plan job without an
-     environment.
+     `<prefix>:environment:<name>`; for jobs without an environment,
+     `<prefix>:pull_request` (PR plans) and `<prefix>:ref:refs/heads/main`
+     (push, dispatch and drift runs).
+   - `<prefix>` is `repo:<owner>/<repo>`, or on newer repositories
+     `repo:<owner>@<owner-id>/<repo>@<repo-id>`. Get yours with
+     `gh api repos/<owner>/<repo>/actions/oidc/customization/sub`
+     (`sub_claim_prefix`). A mismatch fails `tofu init` with AADSTS700213,
+     which quotes the subject presented.
    - The azurerm backend and providers fetch OIDC tokens themselves. Set
      `azure-login: true` only if your configuration shells out to the az
      CLI.
