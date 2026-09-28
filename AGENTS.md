@@ -81,8 +81,9 @@ catalog, layout and principles.
 ## Conventions
 
 - **Pin third-party actions to a full commit SHA** with a `# vX.Y.Z` comment.
-  The one exception to the tag comment is the Synapse deployer fork in
-  `synapse/apply`, which has no releases: bump it by hand.
+  The Synapse deployer in `synapse/apply` is a fork adding GitHub OIDC to an
+  upstream release (`v<upstream>-oidc.N`): port and bump it by hand when
+  upstream releases.
   Dependabot updates them in `.github/` and in every `opentofu/*`,
   `datafactory/*` and `synapse/*` action. Bump by hand: `mise-version`
   (default in `opentofu/setup/action.yaml`) and the Az PowerShell modules

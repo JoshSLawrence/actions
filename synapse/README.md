@@ -70,7 +70,7 @@ A complete caller is in [`examples/synapse.yaml`](../examples/synapse.yaml).
 - **The deployer is a fork.** Upstream
   [`Azure/Synapse-workspace-deployment`][upstream] only signs in with a
   client secret or an Azure VM's managed identity. `synapse/apply` uses
-  [a fork][fork] that adds GitHub OIDC, pinned to a commit.
+  [a fork][fork] that adds GitHub OIDC to upstream's V1.9.2.
 - **Triggers** are stopped before the deployment (the deployer can't update
   or delete a started trigger) and started after: those the template marks
   `Started`, and those that were running and the template doesn't mark
@@ -87,7 +87,7 @@ A complete caller is in [`examples/synapse.yaml`](../examples/synapse.yaml).
 - **Each deployment sets `workspaceName`** instead of `factoryName`.
 
 [upstream]: https://github.com/Azure/Synapse-workspace-deployment
-[fork]: https://github.com/JoshSLawrence/Synapse-workspace-deployment/tree/feature/federated-identity-support
+[fork]: https://github.com/JoshSLawrence/Synapse-workspace-deployment/releases/tag/v1.9.2-oidc.1
 
 ## How it works
 

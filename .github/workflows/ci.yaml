@@ -144,8 +144,6 @@ jobs:
   # Stopped, so the factory never runs anything.
   e2e-datafactory-azure:
     name: E2E datafactory (Azure)
-    # Dependabot's runs get no OIDC token, so they can't reach Azure
-    if: github.actor != 'dependabot[bot]'
     uses: $/.github/workflows/datafactory.yaml
     permissions:
       actions: read
@@ -159,6 +157,11 @@ jobs:
       resource-group: rg-dataplatform
       plan-environment: "{deployment}"
       apply-environment: "{deployment}"
+      # Dependabot's runs get no OIDC token, so they can't reach Azure: they
+      # build and plan offline instead of skipping the job, so the required
+      # Result check still reports
+      what-if: ${{ github.actor != 'dependabot[bot]' }}
+      apply: ${{ github.actor != 'dependabot[bot]' }}
 
   # The same for a Synapse workspace
   e2e-synapse:

@@ -13,7 +13,7 @@ permissions: {}
 
 jobs:
   drift:
-    uses: JoshSLawrence/actions/.github/workflows/opentofu-drift.yaml@v0.0.1
+    uses: JoshSLawrence/actions/.github/workflows/opentofu-drift.yaml@v0.1.0
     permissions:
       contents: read
       id-token: write

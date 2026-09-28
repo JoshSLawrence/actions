@@ -24,7 +24,7 @@ Reference a reusable workflow from a job:
 ```yaml
 jobs:
   opentofu:
-    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.0.1
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.1.0
     permissions:
       actions: read
       contents: read
@@ -38,7 +38,7 @@ jobs:
 Or reference a composite action from a step:
 
 ```yaml
-- uses: JoshSLawrence/actions/opentofu/plan@v0.0.1
+- uses: JoshSLawrence/actions/opentofu/plan@v0.1.0
   with:
     working-directory: infra
 ```
