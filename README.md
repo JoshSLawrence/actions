@@ -121,4 +121,4 @@ pre-commit install
 
 CI runs the same hooks (`Lint`), plus end-to-end runs of the reusable
 workflows against [`tests/fixtures/`](tests/fixtures/). See
-[AGENTS.md](AGENTS.md) for conventions.
+[CLAUDE.md](CLAUDE.md) (also `AGENTS.md`) for conventions.
