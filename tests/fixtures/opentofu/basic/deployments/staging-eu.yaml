@@ -1,7 +1,10 @@
 # Exercises the declared settings end to end: CI's staging environment holds
 # E2E_PROBE_VAR and E2E_PROBE_SECRET, and the repository E2E_REPO_VAR (a
-# repository-level fallback). A missing one fails the job.
+# repository-level fallback). A missing one fails the job. Both the plan and
+# the apply job run in staging, so both resolve them there; without
+# plan-environment, the plan would only see repository-level values.
 environment: staging
+plan-environment: staging
 vars:
   - E2E_PROBE_VAR
   - E2E_REPO_VAR
