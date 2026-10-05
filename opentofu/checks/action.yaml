@@ -4,7 +4,7 @@ description: >-
   terraform-docs, and tofu test, each toggled by an input. Every enabled check
   runs even if an earlier one fails, so one run reports every problem; a
   results table goes to the job summary. Needs no cloud credentials unless
-  the tests do. Run opentofu/setup first, with the tools the enabled checks
+  the tests do. Run shared/setup first, with the tools the enabled checks
   need.
 
 inputs:
@@ -56,6 +56,10 @@ inputs:
     description: Pass -verbose to tofu test.
     required: false
     default: "false"
+  var-files:
+    description: "-var-file paths for tofu test, relative to the working directory (e.g. a deployment's .tfvars)."
+    required: false
+    default: ""
   github-token:
     description: Authenticates TFLint plugin downloads (avoids GitHub API rate limits).
     required: false
@@ -123,6 +127,7 @@ runs:
         WORKING_DIR: ${{ inputs.working-directory }}
         TEST_FILTER: ${{ inputs.test-filter }}
         TEST_VERBOSE: ${{ inputs.test-verbose }}
+        VAR_FILES: ${{ inputs.var-files }}
         MODULES_GITHUB_TOKEN: ${{ inputs.modules-token || inputs.github-token }}
 
     - name: Summarize checks

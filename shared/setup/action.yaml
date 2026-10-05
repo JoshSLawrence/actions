@@ -1,0 +1,140 @@
+name: Setup
+description: >-
+  Installs mise, then runs mise install in one directory (an OpenTofu root
+  module, a factory or workspace folder): exactly the tools its own mise
+  config pins (its mise.toml), nothing from parent directories such as the
+  repository root, or from global config. Fails, listing them all, if a
+  tool the job needs isn't pinned. Optionally exports what a deployment file
+  declares (literal values, GitHub variables and secrets by name), or
+  KEY=VALUE settings, as environment variables for the rest of the job.
+
+inputs:
+  working-directory:
+    description: The directory whose tools to install, relative to the workspace.
+    required: false
+    default: "."
+  required-tools:
+    description: >-
+      mise tools the job needs, space- or newline-separated (e.g. opentofu,
+      tflint, trivy, node, azure-cli). They must be pinned in the
+      directory's mise config; this only checks, it never adds tools.
+    required: true
+  mise-version:
+    description: >-
+      mise version to install (default: 2026.9.12). Pinned rather than latest
+      so a mise release can't change behaviour under you; bump it
+      deliberately.
+    required: false
+    default: ""
+  github-token:
+    description: Token for GitHub API calls while installing tools (avoids rate limits).
+    required: false
+    default: ${{ github.token }}
+  deployment-file:
+    description: >-
+      The deployment file that declares env, var-names and secret-names, for
+      messages. Set it to export them; empty exports nothing declared.
+    required: false
+    default: ""
+  environment:
+    description: The job's GitHub environment, for messages.
+    required: false
+    default: ""
+  env-json:
+    description: JSON object of literal values to export, NAME -> value.
+    required: false
+    default: ""
+  var-names:
+    description: >-
+      GitHub variables to export, space-separated: NAME, or
+      EXPORT_NAME=GITHUB_NAME. Each resolves in the job's environment, else
+      at repository or organization level; a missing one fails the step.
+    required: false
+    default: ""
+  secret-names:
+    description: The same for GitHub secrets, masked in the log.
+    required: false
+    default: ""
+  vars-json:
+    description: The job's toJSON(vars), to look var-names up in.
+    required: false
+    default: ""
+  secrets-json:
+    description: >-
+      The job's toJSON(secrets), to look secret-names up in. Pass it only
+      when secret-names is set.
+    required: false
+    default: ""
+  env-vars:
+    description: >-
+      KEY=VALUE lines that aren't secret to export as environment variables
+      for the rest of the job. Blank lines and lines starting with # are
+      skipped.
+    required: false
+    default: ""
+  env-secrets:
+    description: >-
+      KEY=VALUE lines that are secret, exported after env-vars (overriding
+      them) and masked in the log.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # Only installs mise itself: tools are installed next, scoped to the
+    # directory. mise-action also trusts every mise config under the
+    # workspace (MISE_TRUSTED_CONFIG_PATHS). Its env/PATH export is off
+    # because it would read configs above the directory; the scripts run
+    # tools with `mise exec`, which applies the directory's [env].
+    - name: Install mise
+      uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+      with:
+        # The default lives here rather than on the input, so callers passing
+        # an empty string through (like the reusable workflows) get it too.
+        # Dependabot doesn't update it; bump it by hand now and then.
+        version: ${{ inputs.mise-version || '2026.9.12' }}
+        working_directory: ${{ inputs.working-directory }}
+        install: false
+        env: false
+        export_path: false
+        github_token: ${{ inputs.github-token }}
+
+    - name: Install the directory's tools
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/mise-install.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        REQUIRED_TOOLS: ${{ inputs.required-tools }}
+        MISE_GITHUB_TOKEN: ${{ inputs.github-token }}
+
+    - name: Export declared settings
+      if: inputs.deployment-file != ''
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/export-declared.sh"'
+      env:
+        DEPLOYMENT_FILE: ${{ inputs.deployment-file }}
+        JOB_ENVIRONMENT: ${{ inputs.environment }}
+        ENV_JSON: ${{ inputs.env-json }}
+        VAR_NAMES: ${{ inputs.var-names }}
+        SECRET_NAMES: ${{ inputs.secret-names }}
+        VARS_JSON: ${{ inputs.vars-json }}
+        SECRETS_JSON: ${{ inputs.secrets-json }}
+
+    - name: Export settings
+      if: inputs.env-vars != ''
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/export-env.sh"'
+      env:
+        ENV_VARS: ${{ inputs.env-vars }}
+        SOURCE: env-vars
+        MASK: "false"
+
+    - name: Export secrets
+      if: inputs.env-secrets != ''
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/export-env.sh"'
+      env:
+        ENV_VARS: ${{ inputs.env-secrets }}
+        SOURCE: env-secrets
+        MASK: "true"

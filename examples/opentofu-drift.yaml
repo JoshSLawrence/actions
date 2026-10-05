@@ -1,6 +1,6 @@
 # Nightly drift detection: an issue (labelled `drift`) per drifted
-# deployment, closed once the drift is gone. Use the same search-root and
-# deployments as the deploy workflow.
+# deployment, closed once the drift is gone. Use the same search-root as the
+# deploy workflow.
 
 name: OpenTofu drift
 
@@ -13,11 +13,10 @@ permissions: {}
 
 jobs:
   drift:
-    uses: JoshSLawrence/actions/.github/workflows/opentofu-drift.yaml@v0.1.0
+    uses: JoshSLawrence/actions/.github/workflows/opentofu-drift.yaml@v0.2.0
     permissions:
       contents: read
       id-token: write
       issues: write
     with:
       search-root: iac
-      deployments: deployments/*.tfvars

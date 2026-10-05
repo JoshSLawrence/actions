@@ -5,10 +5,10 @@ resource "random_pet" "this" {
   length = 2
 }
 
-# A local module outside this root module: discovery follows the source, so a
-# change under ../modules/label selects this module too.
+# A child module inside this root module: a change under modules/label is a
+# change to this module, so it selects every deployment of it.
 module "label" {
-  source = "../modules/label"
+  source = "./modules/label"
 
   name = random_pet.this.id
   tags = var.tags

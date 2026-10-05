@@ -18,9 +18,9 @@
 #
 # Outputs:
 #   key                    - "<service>:<stack>", plus ":<deployment>" and
-#                            ":<environment>" when set (the environment only
-#                            when it isn't the same as the deployment)
-#   artifact-name          - plan artifact name derived from key
+#                            ":<environment>" when set
+#   artifact-name          - plan artifact name derived from key (see
+#                            artifact_name)
 #   template-artifact-name - build artifact name (per folder, not deployment)
 #   title                  - e.g. Data Factory: `adf` · `prod` → `production`
 #
@@ -29,7 +29,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=shared/scripts/common.sh
-source "$SCRIPT_DIR/common.sh"
+source "$SCRIPT_DIR/../../shared/scripts/common.sh"
 
 require_env SERVICE
 case "$SERVICE" in
@@ -51,20 +51,13 @@ fi
 stack="${STACK_NAME:-$dir}"
 deployment="${DEPLOYMENT:-}"
 environment="${APPLY_ENVIRONMENT:-}"
-if [ "$environment" = "$deployment" ]; then
-  environment=""
-fi
 
-# The service prefix keeps these apart from an OpenTofu stack in the same
-# directory: PR comments are found by key.
+# The service prefix keeps a Data Factory and a Synapse folder at the same
+# path apart: PR comments are found by key.
 key="${SERVICE}:${stack}${deployment:+:${deployment}}${environment:+:${environment}}"
 
-# Artifact names can't contain " : < > | * ? \ / or CR/LF
-sanitize() {
-  printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-'
-}
-artifact_name="${SERVICE}-plan-$(sanitize "${stack}${deployment:+:${deployment}}${environment:+:${environment}}")"
-template_artifact_name="${SERVICE}-template-$(sanitize "$stack")"
+artifact="$(artifact_name "${SERVICE}-plan" "${stack}${deployment:+:${deployment}}${environment:+:${environment}}")"
+template_artifact="$(artifact_name "${SERVICE}-template" "$stack")"
 
 title="${label}: \`${stack}\`"
 if [ -n "$deployment" ]; then
@@ -74,8 +67,8 @@ if [ -n "$environment" ]; then
   title="${title} → \`${environment}\`"
 fi
 
-log_config stack key artifact_name template_artifact_name title
+log_config stack key artifact template_artifact title
 set_output key "$key"
-set_output artifact-name "$artifact_name"
-set_output template-artifact-name "$template_artifact_name"
+set_output artifact-name "$artifact"
+set_output template-artifact-name "$template_artifact"
 set_output title "$title"

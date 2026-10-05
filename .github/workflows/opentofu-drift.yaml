@@ -1,6 +1,5 @@
-# OpenTofu drift detection: plans every deployment of every root module
-# under a directory -- a single config, a monorepo, and/or a config deployed
-# with many .tfvars files -- against the default branch, and reports any
+# OpenTofu drift detection: plans every deployment (deployments/<name>.yaml)
+# of every root module under a directory against the default branch, and reports any
 # with changes: the live infrastructure (or its state) no longer matches the
 # configuration. Run it on a schedule:
 #
@@ -39,30 +38,9 @@ on:
         default: ""
       modules:
         description: >-
-          Run exactly these module paths, ignoring changes -- e.g. from a
-          workflow_dispatch input. Each must be a discovered root module.
-        type: string
-        default: ""
-
-      # --- Deployments --------------------------------------------------------
-      deployments:
-        description: >-
-          .tfvars files, relative to each root module: one deployment each,
-          planned and applied separately (e.g. deployments/*.tfvars; globs
-          match within the module). A .tfbackend file next to one, with the
-          same name, is added to its backend config. A module they match
-          nothing in is deployed on its own.
-        type: string
-        default: ""
-      var-files:
-        description: Var files every deployment uses, before its own .tfvars, relative to the working directory.
-        type: string
-        default: ""
-      backend-config:
-        description: >-
-          -backend-config values every deployment uses, one per line (key=value,
-          or a file relative to the working directory). {deployment} is
-          replaced with the deployment's name, e.g. key=infra-{deployment}.tfstate.
+          Run exactly these module paths, every deployment, ignoring changes
+          -- e.g. from a workflow_dispatch input. Each must be a discovered
+          root module.
         type: string
         default: ""
 
@@ -84,7 +62,8 @@ on:
       plan-environment:
         description: >-
           GitHub environment for the drift checks (no reviewers; scopes
-          read-only credentials). {deployment} is replaced.
+          read-only credentials). Default: each deployment's
+          plan-environment.
         type: string
         default: ""
 
@@ -162,10 +141,8 @@ jobs:
           modules: ${{ inputs.modules }}
           # Drift can be anywhere, whatever the last commit changed
           changed-only: "false"
-          deployments: ${{ inputs.deployments }}
-          var-files: ${{ inputs.var-files }}
-          backend-config: ${{ inputs.backend-config }}
-          plan-environment: ${{ inputs.plan-environment }}
+          # Not yet in line with the deployment files' environments
+          require-environments: "false"
 
   drift:
     name: ${{ matrix.deployment.path }}${{ matrix.deployment.name && format(' · {0}', matrix.deployment.name) || '' }}
@@ -177,7 +154,7 @@ jobs:
       max-parallel: ${{ inputs.max-parallel }}
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
     runs-on: ${{ inputs.runs-on }}
-    environment: ${{ matrix.deployment.plan_environment }}
+    environment: ${{ inputs.plan-environment || matrix.deployment.plan_environment }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
@@ -203,12 +180,12 @@ jobs:
           allow-no-subscriptions: ${{ env.ARM_SUBSCRIPTION_ID == '' }}
 
       - name: Set up tools
-        uses: $/opentofu/setup
+        uses: $/shared/setup
         with:
           working-directory: ${{ matrix.deployment.path }}
           required-tools: opentofu
           mise-version: ${{ inputs.mise-version }}
-          env-vars: ${{ secrets.env-vars }}
+          env-secrets: ${{ secrets.env-vars }}
 
       - name: Plan
         id: plan
@@ -217,7 +194,6 @@ jobs:
           working-directory: ${{ matrix.deployment.path }}
           deployment: ${{ matrix.deployment.name }}
           var-files: ${{ matrix.deployment.var_files }}
-          backend-config: ${{ matrix.deployment.backend_config }}
           modules-token: ${{ secrets.modules-token }}
 
       - name: Report drift
@@ -242,6 +218,6 @@ jobs:
       contents: read
     steps:
       - name: Check results
-        uses: $/opentofu/result
+        uses: $/shared/result
         with:
           needs: ${{ toJSON(needs) }}

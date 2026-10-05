@@ -29,7 +29,7 @@
 # - result: one stable check for the workspace.
 #
 # Keep the inputs shared with synapse-deploy.yaml (and those it shares with
-# the OpenTofu and Data Factory workflows) identical, and passed through
+# the Data Factory workflows) identical, and passed through
 # unchanged: .github/scripts/check-workflow-inputs.sh enforces it.
 
 name: Synapse
@@ -210,7 +210,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up tools
-        uses: $/opentofu/setup
+        uses: $/shared/setup
         with:
           working-directory: ${{ inputs.working-directory }}
           required-tools: node
@@ -317,6 +317,6 @@ jobs:
       contents: read
     steps:
       - name: Check results
-        uses: $/opentofu/result
+        uses: $/shared/result
         with:
           needs: ${{ toJSON(needs) }}

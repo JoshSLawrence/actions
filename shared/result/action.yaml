@@ -1,4 +1,4 @@
-name: OpenTofu result
+name: Result
 description: >-
   Fails unless every job in `needs` succeeded or was skipped -- the single
   check to require in branch protection. Use it in a job with `if: always()`.

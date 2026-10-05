@@ -6,7 +6,7 @@ description: >-
   script would delete, and writes a markdown summary. Fails after writing the
   summary, so it can still be posted. Upload plan-dir as an artifact for
   datafactory/apply when has-changes is true. With what-if, sign in with
-  azure/login and run opentofu/setup (azure-cli pinned) first.
+  azure/login and run shared/setup (azure-cli pinned) first.
 
 inputs:
   working-directory:
@@ -62,7 +62,7 @@ inputs:
 
 outputs:
   key:
-    description: Unique key for this folder/deployment/environment -- the comment-key for opentofu/pr-comment.
+    description: Unique key for this folder/deployment/environment -- the comment-key for shared/pr-comment.
     value: ${{ steps.names.outputs.key }}
   artifact-name:
     description: Plan artifact name derived from key.
@@ -92,7 +92,7 @@ runs:
     - name: Resolve names
       id: names
       shell: bash
-      run: '"${GITHUB_ACTION_PATH}/../../shared/scripts/arm-names.sh"'
+      run: '"${GITHUB_ACTION_PATH}/../../arm/scripts/arm-names.sh"'
       env:
         SERVICE: datafactory
         WORKING_DIRECTORY: ${{ inputs.working-directory }}

@@ -1,0 +1,2 @@
+# No deployments/: the module is deployed once, as it is.
+environment: opentofu-fixture

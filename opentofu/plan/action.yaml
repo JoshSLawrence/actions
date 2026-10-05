@@ -5,7 +5,7 @@ description: >-
   optionally with an Infracost estimate and a conftest policy check. Fails if
   the plan or the policy check fails -- after writing the summary, so it can
   still be posted. Upload plan-dir as an artifact only when this succeeds and
-  has-changes is true. Run opentofu/setup first.
+  has-changes is true. Run shared/setup first.
 
 inputs:
   working-directory:
@@ -13,30 +13,20 @@ inputs:
     required: false
     default: "."
   deployment:
-    description: Deployment name (its .tfvars file's), for the names and title. Empty for a module on its own.
+    description: Deployment name (deployments/<name>.yaml), for the names and title. Empty for a module deployed as is.
     required: false
     default: ""
   var-files:
-    description: -var-file paths relative to the working directory, space- or newline-separated.
-    required: false
-    default: ""
-  backend-config:
     description: >-
-      -backend-config values, one per line: key=value, or a file (e.g. a
-      .tfbackend) relative to the working directory. Pass the same to
-      opentofu/apply.
+      -var-file paths relative to the working directory, space- or
+      newline-separated: the deployment's deployments/<name>.tfvars, which
+      can also set its backend's variables. Pass the same to opentofu/apply.
     required: false
     default: ""
   plan-dir:
     description: >-
       Directory for tfplan and summary.md -- the plan artifact (default:
       $RUNNER_TEMP/tofu-plan).
-    required: false
-    default: ""
-  stack-name:
-    description: >-
-      Display name for the summary, comment and artifact names (default: the
-      working directory, or the repository name for the root).
     required: false
     default: ""
   environment:
@@ -91,7 +81,7 @@ inputs:
 
 outputs:
   key:
-    description: Unique key for this module/deployment/environment -- the comment-key for opentofu/pr-comment.
+    description: Unique key for this module/deployment/environment -- the comment-key for shared/pr-comment.
     value: ${{ steps.names.outputs.key }}
   artifact-name:
     description: Plan artifact name derived from key.
@@ -127,7 +117,6 @@ runs:
       run: '"${GITHUB_ACTION_PATH}/../scripts/names.sh"'
       env:
         WORKING_DIRECTORY: ${{ inputs.working-directory }}
-        STACK_NAME: ${{ inputs.stack-name }}
         DEPLOYMENT: ${{ inputs.deployment }}
         APPLY_ENVIRONMENT: ${{ inputs.environment }}
         REPOSITORY_NAME: ${{ github.event.repository.name }}
@@ -141,7 +130,6 @@ runs:
         PLAN_DIR: ${{ inputs.plan-dir || format('{0}/tofu-plan', runner.temp) }}
         WORK_DIR: ${{ runner.temp }}/tofu-plan-work
         VAR_FILES: ${{ inputs.var-files }}
-        BACKEND_CONFIG: ${{ inputs.backend-config }}
         MODULES_GITHUB_TOKEN: ${{ inputs.modules-token || inputs.github-token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

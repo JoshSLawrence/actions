@@ -1,10 +1,14 @@
 name: OpenTofu discover
 description: >-
-  Finds the root modules under a directory -- directories with *.tf files and
-  their own mise.toml -- and selects the ones a PR or push affects (their own
-  files, local modules they use, or shared paths). Outputs a matrix of
-  modules, and one of every module's deployments (.tfvars files). Check out
-  with fetch-depth: 0 so changes can be diffed.
+  Finds the root modules under a directory, at any depth -- directories with
+  *.tf files and their own mise.toml -- and selects what a PR or push
+  affects: every deployment of a module whose own files (child modules and
+  tests included) or shared paths changed, or just the deployments whose
+  deployments/<name>.yaml or <name>.tfvars changed. Outputs a matrix of
+  modules, and one of every selected deployment. Then fails unless every
+  GitHub environment they use already exists: GitHub would otherwise create
+  a missing one, unprotected, when a job names it (needs actions read).
+  Check out with fetch-depth 0 so changes can be diffed.
 
 inputs:
   search-root:
@@ -16,46 +20,43 @@ inputs:
     required: false
     default: ""
   modules:
-    description: Run exactly these module paths, ignoring changes (e.g. from a workflow_dispatch input).
+    description: Run exactly these module paths, every deployment, ignoring changes (e.g. from a workflow_dispatch input).
     required: false
     default: ""
   changed-only:
-    description: On pull_request and push runs, select only affected modules. Other events select all.
+    description: On pull_request and push runs, select only what changed. Other events select everything.
     required: false
     default: "true"
   shared-paths:
     description: >-
-      Globs whose change affects every module (e.g. .github/workflows/**),
+      Globs whose change selects everything (e.g. .github/workflows/**),
       space- or newline-separated. Also added to each module's preflight
       paths.
     required: false
     default: ""
-  deployments:
-    description: >-
-      .tfvars globs/paths relative to each module, one deployment each (e.g.
-      deployments/*.tfvars). A module they match nothing in runs on its own.
+  require-environments:
+    description: '"true" to fail unless every environment the selected deployments use exists.'
+    required: false
+    default: "true"
+  also-required-environments:
+    description: Further environments that must exist, space-separated (e.g. the integration tests').
     required: false
     default: ""
-  var-files:
-    description: Var files every deployment uses (for deployments-matrix).
+  github-token:
+    description: "Token to check the environments exist with (needs actions: read)."
     required: false
-    default: ""
-  backend-config:
-    description: Backend config every deployment uses, one per line; {deployment} is replaced (for deployments-matrix).
-    required: false
-    default: ""
-  plan-environment:
-    description: Plan environment name; {deployment} is replaced (for deployments-matrix).
-    required: false
-    default: ""
+    default: ${{ github.token }}
 
 outputs:
   matrix:
-    description: '{"module": [{"path": ..., "preflight_paths": ...}, ...]} for strategy.matrix.'
+    description: '{"module": [{"path", "deployments"}, ...]} for strategy.matrix; deployments is a JSON array string.'
     value: ${{ steps.discover.outputs.matrix }}
   deployments-matrix:
-    description: '{"deployment": [...]} -- every deployment of every selected module, with its path.'
+    description: '{"deployment": [...]} -- every selected deployment of every selected module, with its path.'
     value: ${{ steps.discover.outputs.deployments-matrix }}
+  environments:
+    description: The GitHub environments the selected deployments use, space-separated.
+    value: ${{ steps.discover.outputs.environments }}
   modules:
     description: JSON array of the selected module paths.
     value: ${{ steps.discover.outputs.modules }}
@@ -79,10 +80,14 @@ runs:
         MODULES: ${{ inputs.modules }}
         CHANGED_ONLY: ${{ inputs.changed-only }}
         SHARED_PATHS: ${{ inputs.shared-paths }}
-        DEPLOYMENTS: ${{ inputs.deployments }}
-        VAR_FILES: ${{ inputs.var-files }}
-        BACKEND_CONFIG: ${{ inputs.backend-config }}
-        PLAN_ENVIRONMENT: ${{ inputs.plan-environment }}
         EVENT_NAME: ${{ github.event_name }}
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
         BEFORE_SHA: ${{ github.event.before }}
+
+    - name: Check the environments exist
+      if: inputs.require-environments == 'true'
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../../shared/scripts/require-environments.sh"'
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        ENVIRONMENTS: ${{ steps.discover.outputs.environments }} ${{ inputs.also-required-environments }}

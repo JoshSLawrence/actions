@@ -11,8 +11,9 @@
 #                          plan artifact (default: $RUNNER_TEMP/tofu-plan)
 #   PLAN_SHA256          - expected digest of tfplan, from the plan job
 #                          (required in GitHub Actions)
-#   BACKEND_CONFIG       - the same -backend-config values the plan used, one
-#                          per line (optional)
+#   VAR_FILES            - the same -var-file paths the plan used, relative
+#                          to WORKING_DIR: init needs the backend's variables
+#                          (optional)
 #   MODULES_GITHUB_TOKEN - lets init fetch module sources from private GitHub
 #                          repositories (optional)
 #
@@ -30,7 +31,7 @@ if is_github_actions; then
   require_env PLAN_SHA256 "It comes from the plan job's plan-sha256 output; check the workflow passes it to the apply action."
 fi
 
-log_config WORKING_DIR PLAN_DIR PLAN_SHA256 BACKEND_CONFIG
+log_config WORKING_DIR PLAN_DIR PLAN_SHA256 VAR_FILES
 
 if [ ! -f "$PLAN_DIR/tfplan" ]; then
   log_error "No plan file at ${PLAN_DIR}/tfplan. Plan artifacts expire (plan-retention-days); re-run the whole workflow to plan again."

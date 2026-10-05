@@ -1,17 +1,33 @@
-# OpenTofu reusable workflow for a repository: point it at a directory, and
-# it validates, plans and applies every root module ("config") under it --
-# one (a single-root repository) or many (a monorepo) -- and every
-# deployment of each (one per .tfvars file matching `deployments`).
+# OpenTofu for a repository: point it at a directory, and it validates,
+# tests, plans and applies every root module under it, at any depth -- one
+# (a single-root repository) or many (a monorepo), nested or not -- and
+# every deployment of each.
+#
+#   <root module>/          *.tf, and a mise.toml pinning its tools
+#   └── deployments/
+#       ├── beans.yaml      deployment "beans": its environment, and the
+#       │                   variables and secrets it gets
+#       └── beans.tfvars    its OpenTofu variables (optional)
+#
+# (or one deployment.yaml in the module root, to deploy it once as is)
 #
 # - discover: finds the root modules under search-root (directories with
-#   *.tf files and their own mise.toml) and, on pull_request/push runs, keeps
-#   the ones the change affects: their own files, local modules they use, or
-#   shared-paths. See opentofu/scripts/discover.sh.
-# - config: opentofu-config.yaml once per selected root module (a matrix):
-#   validated once, then each deployment plans, comments on the PR, waits
-#   for approval and applies on its own. Every input below except the
-#   discovery ones applies to every module.
+#   *.tf files and their own mise.toml). On pull_request/push runs it keeps
+#   what the change affects: every deployment of a module whose own files
+#   (child modules and tests included) or shared-paths changed; only the
+#   deployments whose .yaml or .tfvars changed otherwise. It fails unless
+#   every environment those deployments name exists. See
+#   opentofu/scripts/discover.sh.
+# - config: per selected root module (a matrix), validated once, then each
+#   selected deployment tests, plans, comments on the PR, waits for approval
+#   and applies on its own (opentofu-config.yaml -> opentofu-deploy.yaml,
+#   the building blocks of this workflow; call this one).
 # - result: the single check to require in branch protection.
+#
+# Each deployment's file declares what its jobs export as environment
+# variables (provider settings, credentials): literal values, and GitHub
+# variables and secrets by name, resolved in each job's environment. See
+# opentofu/README.md.
 #
 # Keep the inputs shared with opentofu-config.yaml identical, and passed
 # through unchanged: .github/scripts/check-workflow-inputs.sh (a pre-commit
@@ -35,21 +51,23 @@ on:
         default: ""
       modules:
         description: >-
-          Run exactly these module paths, ignoring changes -- e.g. from a
-          workflow_dispatch input. Each must be a discovered root module.
+          Run exactly these module paths, every deployment, ignoring changes
+          -- e.g. from a workflow_dispatch input. Each must be a discovered
+          root module.
         type: string
         default: ""
       changed-only:
         description: >-
-          On pull_request and push runs, only run the modules the change
-          affects. Other events (workflow_dispatch, schedule) run every module.
+          On pull_request and push runs, only run what the change affects.
+          Other events (workflow_dispatch, schedule) run everything.
         type: boolean
         default: true
       shared-paths:
         description: >-
-          Globs whose change affects every module (e.g.
-          .github/workflows/opentofu.yaml). Also make a plan stale in the
-          apply preflight.
+          Globs whose change runs everything (e.g.
+          .github/workflows/opentofu.yaml, or iac/modules/** for modules
+          shared between root modules). Also make a plan stale in the apply
+          preflight.
         type: string
         default: ""
 
@@ -70,28 +88,6 @@ on:
         description: Most jobs of one matrix to run at once (root modules, and each one's deployments).
         type: number
         default: 4
-
-      # --- Deployments --------------------------------------------------------
-      deployments:
-        description: >-
-          .tfvars files, relative to each root module: one deployment each,
-          planned and applied separately (e.g. deployments/*.tfvars; globs
-          match within the module). A .tfbackend file next to one, with the
-          same name, is added to its backend config. A module they match
-          nothing in is deployed on its own.
-        type: string
-        default: ""
-      var-files:
-        description: Var files every deployment uses, before its own .tfvars, relative to the working directory.
-        type: string
-        default: ""
-      backend-config:
-        description: >-
-          -backend-config values every deployment uses, one per line (key=value,
-          or a file relative to the working directory). {deployment} is
-          replaced with the deployment's name, e.g. key=infra-{deployment}.tfstate.
-        type: string
-        default: ""
 
       # --- Checks -------------------------------------------------------------
       fmt:
@@ -131,29 +127,31 @@ on:
         type: boolean
         default: false
       integration-tests:
-        description: Run tofu test again with cloud credentials, after validate passes.
+        description: >-
+          Run tofu test again per deployment, before its plan, with its .tfvars
+          and the variables and secrets its file declares (after validate
+          passes).
         type: boolean
         default: false
       integration-test-filter:
-        description: 'Test files for the integration job (default: all).'
+        description: 'Test files for the integration jobs (default: all).'
         type: string
         default: ""
       integration-test-environment:
-        description: GitHub environment for the integration job (approval gate, scoped credentials).
+        description: >-
+          GitHub environment for the integration jobs (approval gate; the
+          deployments' declared variables and secrets resolve there). Must
+          exist.
         type: string
         default: ""
       integration-test-timeout-minutes:
         description: >-
-          Timeout for the integration job. Generous: a timeout kills tofu test
+          Timeout for the integration jobs. Generous: a timeout kills tofu test
           mid-apply, leaking what it created.
         type: number
         default: 90
 
       # --- Plan ---------------------------------------------------------------
-      plan-environment:
-        description: GitHub environment for the plan jobs (no reviewers; scopes read-only credentials). {deployment} is replaced.
-        type: string
-        default: ""
       plan-retention-days:
         description: Days to keep the plan artifact (an approval after that fails).
         type: number
@@ -198,50 +196,14 @@ on:
           plan; applies happen on push/dispatch runs on the default branch.
         type: boolean
         default: true
-      apply-environment:
-        description: >-
-          GitHub environment for the apply jobs. Give it required reviewers --
-          that's the approval gate. {deployment} is replaced, e.g.
-          "{deployment}" for a dev and a prod environment.
-        type: string
-        default: ""
-      # --- Cloud auth ---------------------------------------------------------
-      azure-client-id:
-        description: 'Azure client ID for OIDC (default: the AZURE_CLIENT_ID variable, environment-scoped if set there).'
-        type: string
-        default: ""
-      apply-azure-client-id:
-        description: "Separate (write) Azure identity for the apply job (default: azure-client-id)."
-        type: string
-        default: ""
-      azure-tenant-id:
-        description: "Azure tenant ID (default: the AZURE_TENANT_ID variable)."
-        type: string
-        default: ""
-      azure-subscription-id:
-        description: "Azure subscription ID (default: the AZURE_SUBSCRIPTION_ID variable)."
-        type: string
-        default: ""
-      azure-login:
-        description: Also run azure/login, for configurations that shell out to the az CLI.
-        type: boolean
-        default: false
 
     secrets:
-      env-vars:
-        description: KEY=VALUE lines exported (masked) in the integration, plan and apply jobs -- credentials for other providers, TF_VAR_*, TF_ENCRYPTION.
-        required: false
-      apply-env-vars:
-        description: KEY=VALUE lines for the apply job only, added after (and overriding) env-vars.
-        required: false
       modules-token:
         description: Token that can read private GitHub repositories used as module/policy sources.
         required: false
       infracost-api-key:
         description: Infracost API key, for cost-estimate.
         required: false
-
-
 
     outputs:
       modules:
@@ -256,6 +218,7 @@ jobs:
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 10
     permissions:
+      actions: read # check the deployments' environments exist
       contents: read
     outputs:
       matrix: ${{ steps.discover.outputs.matrix }}
@@ -277,7 +240,8 @@ jobs:
           modules: ${{ inputs.modules }}
           changed-only: ${{ inputs.changed-only }}
           shared-paths: ${{ inputs.shared-paths }}
-          deployments: ${{ inputs.deployments }}
+          # Checked before any job names it, with the deployments' own
+          also-required-environments: ${{ inputs.integration-tests && inputs.integration-test-environment || '' }}
 
   config:
     name: ${{ matrix.module.path }}
@@ -295,17 +259,14 @@ jobs:
       id-token: write
       pull-requests: write
     with:
-      # Resolved per module by discovery: the module, the local modules it
-      # uses and shared-paths; and deployments, or "" where they match nothing
+      # Resolved per module by discovery: the deployments the change
+      # selected, read from their files
       working-directory: ${{ matrix.module.path }}
-      preflight-paths: ${{ matrix.module.preflight_paths }}
       deployments: ${{ matrix.module.deployments }}
       runs-on: ${{ inputs.runs-on }}
       timeout-minutes: ${{ inputs.timeout-minutes }}
       mise-version: ${{ inputs.mise-version }}
       max-parallel: ${{ inputs.max-parallel }}
-      var-files: ${{ inputs.var-files }}
-      backend-config: ${{ inputs.backend-config }}
       fmt: ${{ inputs.fmt }}
       validate: ${{ inputs.validate }}
       tflint: ${{ inputs.tflint }}
@@ -319,7 +280,6 @@ jobs:
       integration-test-filter: ${{ inputs.integration-test-filter }}
       integration-test-environment: ${{ inputs.integration-test-environment }}
       integration-test-timeout-minutes: ${{ inputs.integration-test-timeout-minutes }}
-      plan-environment: ${{ inputs.plan-environment }}
       plan-retention-days: ${{ inputs.plan-retention-days }}
       pr-comment: ${{ inputs.pr-comment }}
       policy: ${{ inputs.policy }}
@@ -330,15 +290,7 @@ jobs:
       cost-estimate: ${{ inputs.cost-estimate }}
       apply: ${{ inputs.apply }}
       apply-from-pr: ${{ inputs.apply-from-pr }}
-      apply-environment: ${{ inputs.apply-environment }}
-      azure-client-id: ${{ inputs.azure-client-id }}
-      apply-azure-client-id: ${{ inputs.apply-azure-client-id }}
-      azure-tenant-id: ${{ inputs.azure-tenant-id }}
-      azure-subscription-id: ${{ inputs.azure-subscription-id }}
-      azure-login: ${{ inputs.azure-login }}
     secrets:
-      env-vars: ${{ secrets.env-vars }}
-      apply-env-vars: ${{ secrets.apply-env-vars }}
       modules-token: ${{ secrets.modules-token }}
       infracost-api-key: ${{ secrets.infracost-api-key }}
 
@@ -356,6 +308,6 @@ jobs:
       contents: read
     steps:
       - name: Check results
-        uses: $/opentofu/result
+        uses: $/shared/result
         with:
           needs: ${{ toJSON(needs) }}

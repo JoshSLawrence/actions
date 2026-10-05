@@ -1,57 +1,68 @@
 #!/usr/bin/env bash
 #
-# Finds the root modules under SEARCH_ROOT and decides which to run, for the
-# reusable workflow's matrix. A root module is a directory with *.tf files
-# and its own mise config (mise.toml or .mise.toml) -- every root module pins
-# its own tools, so the mise config doubles as the marker. That covers a
-# single-root repository (SEARCH_ROOT is the module) and a monorepo alike.
+# Finds the root modules under SEARCH_ROOT, at any depth, and decides which
+# of them -- and which of their deployments -- to run. A root module is a
+# directory with *.tf files and its own mise config (mise.toml or
+# .mise.toml): every root module pins its own tools, so the mise config
+# doubles as the marker. Root modules may nest inside each other.
 #
-# On pull_request and push runs only the modules a change affects are
-# selected (CHANGED_ONLY). A changed file affects:
-#   - the root module it belongs to: the deepest one containing it, unless
-#     the file is inside a local module directory nested deeper still (a
-#     root module at "." doesn't claim files of the root modules nested
-#     under it, nor of a shared modules/ directory it doesn't use),
-#   - every root module that uses the directory it's in as a local module
-#     (source = "../modules/x", found by following local sources
-#     recursively), and
-#   - every root module, if it matches SHARED_PATHS.
-# Any other event, or a diff that can't be computed, selects every module:
-# planning too much is safe, skipping a module isn't.
+# A deployment is a deployments/<name>.yaml file, with an optional
+# deployments/<name>.tfvars of the same name, or a deployment.yaml in the
+# module root (see "Deployments" in common.sh). On pull_request and push
+# runs only what a change affects is selected (CHANGED_ONLY). A changed file
+# belongs to the deepest root module containing it -- its .tf files, child
+# modules (e.g. modules/x below it), tests, lock file, mise.toml -- and
+# selects:
+#   - deployments/<name>.yaml or <name>.tfvars: just that deployment (one
+#     whose .yaml was deleted is only warned about: nothing destroys what it
+#     managed);
+#   - anything else: every deployment of that module, or the module alone
+#     (validated and tested) if it has none.
+# A file matching SHARED_PATHS selects everything. Any other file -- outside
+# every root module, including a module directory shared between root
+# modules -- selects nothing: list it in SHARED_PATHS if it should.
+# Any other event, MODULES, or a diff that can't be computed selects every
+# deployment of the modules concerned: planning too much is safe, skipping
+# one isn't.
+#
+# Every module's deployment layout is checked (see deployment_layout_problems
+# in common.sh), and the selected deployments' files are parsed: a problem
+# anywhere fails the run, listing them all. Root module paths can't contain
+# whitespace.
 #
 # Environment variables:
 #   SEARCH_ROOT  - directory to search, relative to the repository root
 #                  (default: .)
 #   EXCLUDE      - globs of module paths to skip, space- or newline-separated
 #                  (e.g. "legacy/**")
-#   MODULES      - run exactly these modules (paths), ignoring changes; each
-#                  must be a discovered root module (optional)
-#   CHANGED_ONLY - "true" to select only affected modules on PR/push runs
+#   MODULES      - run exactly these modules (paths), every deployment,
+#                  ignoring changes; each must be a discovered root module
+#                  (optional)
+#   CHANGED_ONLY - "true" to select only what changed on PR/push runs
 #                  (default: true)
-#   SHARED_PATHS - globs whose change affects every module, e.g.
-#                  ".github/workflows/opentofu.yaml" (optional). Also added to
-#                  each module's preflight paths.
-#   DEPLOYMENTS  - .tfvars globs/paths relative to each module, one
-#                  deployment each (see "Deployments" in common.sh). A module
-#                  they match nothing in is planned on its own.
-#   VAR_FILES, BACKEND_CONFIG, PLAN_ENVIRONMENT
-#                - shared deployment settings, for deployments-matrix
+#   SHARED_PATHS - globs whose change selects everything, e.g.
+#                  ".github/workflows/opentofu.yaml" or "iac/modules/**"
+#                  (optional). Also added to each deployment's preflight
+#                  paths.
 #   EVENT_NAME   - github.event_name
 #   BASE_SHA     - base commit of the PR (pull_request runs)
 #   BEFORE_SHA   - commit before the push (push runs)
 #   HEAD_REF     - commit to diff to (default: HEAD)
 #
 # Outputs:
-#   matrix      - {"module":[{"path", "preflight_paths", "deployments"}, ...]}
-#                 where deployments is DEPLOYMENTS, or "" for a module it
-#                 matches nothing in
+#   matrix       - {"module":[{"path", "deployments"}, ...]}
+#                  where deployments is a JSON array string of the selected
+#                  deployments (see deployment_json in common.sh): "[]" for
+#                  a module that's only validated and tested
 #   deployments-matrix
-#               - {"deployment":[...]}: every deployment of every selected
-#                 module, flattened (see deployment_json, plus "path"), for
-#                 jobs that run per deployment directly (drift detection)
-#   modules     - JSON array of the selected module paths
-#   count       - number of selected modules
-#   has-modules - "true" if any module is selected
+#                - {"deployment":[...]}: every selected deployment of every
+#                  selected module, flattened (plus "path"), for jobs that
+#                  run per deployment directly
+#   environments - the GitHub environments the selected deployments use,
+#                  space-separated (for require-environments.sh)
+#   modules      - JSON array of the selected module paths
+#   count        - number of selected modules
+#   has-modules  - "true" if any module is selected
 #
 
 set -euo pipefail
@@ -62,10 +73,11 @@ source "$SCRIPT_DIR/common.sh"
 
 require_tool jq
 require_tool git
+require_tool yq
 
 CHANGED_ONLY="${CHANGED_ONLY:-true}"
 HEAD_REF="${HEAD_REF:-HEAD}"
-log_config SEARCH_ROOT EXCLUDE MODULES CHANGED_ONLY SHARED_PATHS DEPLOYMENTS EVENT_NAME BASE_SHA BEFORE_SHA
+log_config SEARCH_ROOT EXCLUDE MODULES CHANGED_ONLY SHARED_PATHS EVENT_NAME BASE_SHA BEFORE_SHA
 
 if ! search_root="$(normalize_path "${SEARCH_ROOT:-.}")"; then
   log_error "search-root '${SEARCH_ROOT}' climbs out of the repository. Use a path relative to the repository root."
@@ -103,54 +115,57 @@ if [ ${#modules[@]} -eq 0 ]; then
 fi
 log_info "Root modules under ${search_root}: ${modules[*]}"
 
-# Local module directories a root module uses, followed recursively, as
-# repository-relative paths. Directories inside the module are left out:
-# the module's own path already covers them.
-declare -A DEPS
-local_deps() {
-  local module="$1" dir file source dep
-  local -a queue=("$module") found=()
-  local -A seen=(["$module"]=1)
-  while [ ${#queue[@]} -gt 0 ]; do
-    dir="${queue[0]}"
-    queue=("${queue[@]:1}")
-    for file in "$dir"/*.tf; do
-      [ -f "$file" ] || continue
-      while IFS= read -r source; do
-        dep="$(normalize_path "${dir}/${source}")" || continue
-        [ -d "$dep" ] || continue
-        [ -n "${seen[$dep]+set}" ] && continue
-        seen["$dep"]=1
-        queue+=("$dep")
-        if [ "$module" != "." ] && [[ "$dep" != "$module" && "$dep" != "$module"/* ]]; then
-          found+=("$dep")
-        fi
-      done < <(grep -hoE 'source[[:space:]]*=[[:space:]]*"\.\.?/[^"]*"' "$file" | sed -E 's/.*"(.*)"/\1/' || true)
-    done
-  done
-  printf '%s\n' "${found[@]+"${found[@]}"}" | sed '/^$/d' | sort -u
-}
-
-ALL_DEPS=()
+# Paths are passed between jobs as space-separated lists, so a space would
+# split one path into two; deployment names are checked with the layout.
+# Refuse every problem up front, by name.
+problems=()
 for module in "${modules[@]}"; do
-  DEPS["$module"]="$(local_deps "$module")"
-  while IFS= read -r dep; do
-    [ -n "$dep" ] && ALL_DEPS+=("$dep")
-  done <<< "${DEPS[$module]}"
+  if [[ "$module" =~ [[:space:]] ]]; then
+    problems+=("'${module}' contains whitespace, which isn't supported in root module paths. Rename it (e.g. with - or _), or exclude it.")
+    continue
+  fi
+  while IFS= read -r problem; do
+    [ -n "$problem" ] && problems+=("$problem")
+  done < <(deployment_layout_problems "$module")
 done
+if [ ${#problems[@]} -gt 0 ]; then
+  for problem in "${problems[@]}"; do
+    log_error "$problem"
+  done
+  exit 1
+fi
 
 # --- Select ----------------------------------------------------------------
+#
+# ALL[module]: run every deployment, for REASON[module]. CHANGED[module]: only
+# these changed deployments. A module is selected if either is set.
 
-declare -A SELECTED
-declare -A REASON
-select_all() {
-  local reason="$1" module
-  for module in "${modules[@]}"; do
-    SELECTED["$module"]=1
+declare -A ALL CHANGED REASON
+select_module() {
+  local module="$1" reason="$2"
+  if [ -z "${ALL[$module]+set}" ]; then
+    ALL["$module"]=1
     REASON["$module"]="$reason"
+  fi
+}
+select_all() {
+  local module
+  for module in "${modules[@]}"; do
+    select_module "$module" "$1"
   done
 }
 
+# Path of a file relative to a root module
+module_relative() {
+  local module="$1" file="$2"
+  if [ "$module" = "." ]; then
+    echo "$file"
+  else
+    echo "${file#"${module}/"}"
+  fi
+}
+
+deleted_deployments=()
 if [ -n "${MODULES:-}" ]; then
   while IFS= read -r wanted; do
     wanted="$(normalize_path "$wanted")" || wanted="?"
@@ -164,8 +179,7 @@ if [ -n "${MODULES:-}" ]; then
       log_error "modules input: '${wanted}' isn't a root module under ${search_root} (found: ${modules[*]})."
       exit 1
     fi
-    SELECTED["$wanted"]=1
-    REASON["$wanted"]="listed in modules"
+    select_module "$wanted" "listed in modules"
   done < <(list_items "$MODULES")
 else
   base=""
@@ -176,21 +190,24 @@ else
   elif [ "${EVENT_NAME:-}" = "push" ] && [ -n "${BEFORE_SHA:-}" ] && [[ ! "$BEFORE_SHA" =~ ^0+$ ]]; then
     base="$BEFORE_SHA"
   else
-    select_all "${EVENT_NAME:-this} run: every module"
+    select_all "${EVENT_NAME:-this} run: everything"
   fi
 
   if [ -n "$base" ]; then
-    if ! changed="$(git diff --name-only "$base" "$HEAD_REF" 2>&1)"; then
-      log_warn "Couldn't diff ${base:0:7}..${HEAD_REF} (${changed##*$'\n'}), so every module is selected. Check out with fetch-depth: 0."
-      select_all "diff unavailable: every module"
+    # --no-renames: a renamed deployment shows as its old files (deleted) and
+    # its new ones (added), so both are handled
+    if ! changed="$(git diff --name-only --no-renames "$base" "$HEAD_REF" 2>&1)"; then
+      log_warn "Couldn't diff ${base:0:7}..${HEAD_REF} (${changed##*$'\n'}), so everything is selected. Check out with fetch-depth: 0."
+      select_all "diff unavailable: everything"
       changed=""
     fi
 
     while IFS= read -r file; do
       [ -z "$file" ] && continue
+      # Every file is still looked at once everything is selected: it can
+      # be a deleted deployment, which is warned about below
       if matches_any_glob "$file" "${SHARED_PATHS:-}"; then
         select_all "shared path changed (${file})"
-        break
       fi
       # The deepest root module containing the file owns it
       owner="" owner_len=-1
@@ -204,29 +221,17 @@ else
           fi
         fi
       done
-      # A file in a local module directory below the owner belongs to that
-      # local module: only the modules using it (below) are affected
-      for dep in "${ALL_DEPS[@]+"${ALL_DEPS[@]}"}"; do
-        if [[ "$file" == "$dep"/* ]] && [ "${#dep}" -gt "$owner_len" ]; then
-          owner=""
-          break
-        fi
-      done
-      if [ -n "$owner" ] && [ -z "${SELECTED[$owner]+set}" ]; then
-        SELECTED["$owner"]=1
-        REASON["$owner"]="changed"
+      [ -z "$owner" ] && continue
+      relative="$(module_relative "$owner" "$file")"
+      if ! name="$(deployment_of_file "$relative")"; then
+        select_module "$owner" "changed"
+      elif [ -f "${owner}/${DEPLOYMENTS_DIR}/${name}.yaml" ]; then
+        # Its .yaml or .tfvars changed, or the .tfvars was deleted: the
+        # deployment still exists, with new inputs
+        CHANGED["$owner"]+="${name}"$'\n'
+      else
+        deleted_deployments+=("${owner}/${DEPLOYMENTS_DIR}/${name}")
       fi
-      # ...and every module using the file's directory as a local module
-      for module in "${modules[@]}"; do
-        [ -n "${SELECTED[$module]+set}" ] && continue
-        while IFS= read -r dep; do
-          if [ -n "$dep" ] && [[ "$file" == "$dep"/* ]]; then
-            SELECTED["$module"]=1
-            REASON["$module"]="local module ${dep} changed"
-            break
-          fi
-        done <<< "${DEPS[$module]}"
-      done
     done <<< "$changed"
 
     # A deleted root module isn't discovered, so nothing destroys what it
@@ -241,65 +246,78 @@ else
   fi
 fi
 
+# Likewise a deleted deployment: its .yaml is gone, so nothing plans it
+mapfile -t deleted_deployments < <(printf '%s\n' "${deleted_deployments[@]+"${deleted_deployments[@]}"}" | sed '/^$/d' | sort -u)
+for deployment in "${deleted_deployments[@]+"${deleted_deployments[@]}"}"; do
+  log_warn "${deployment}.yaml was deleted, so that deployment isn't planned. Removing it doesn't destroy what it managed: plan its resources away (or run 'tofu destroy' with its settings) before deleting it."
+done
+
 # --- Output ----------------------------------------------------------------
 
 matrix_entries=()
 deployment_entries=()
 selected=()
-declare -A DEPLOYMENT_NAMES
+failed=false
+declare -A SUMMARY
 for module in "${modules[@]}"; do
-  [ -n "${SELECTED[$module]+set}" ] || continue
+  if [ -n "${ALL[$module]+set}" ]; then
+    selected_names=""
+  elif [ -n "${CHANGED[$module]:-}" ]; then
+    selected_names="$(sed '/^$/d' <<< "${CHANGED[$module]}" | LC_ALL=C sort -u)"
+    REASON["$module"]="deployments changed"
+  else
+    continue
+  fi
   selected+=("$module")
-  preflight="$(printf '%s\n%s\n%s\n' "$module" "${DEPS[$module]}" "$(list_items "${SHARED_PATHS:-}")" | sed '/^$/d')"
+  preflight="$(printf '%s\n%s\n' "$module" "$(list_items "${SHARED_PATHS:-}")" | sed '/^$/d')"
 
-  # The deployments input applies to every module; one it matches nothing
-  # in is planned on its own
-  patterns="${DEPLOYMENTS:-}"
-  if ! module_deployments="$(PREFLIGHT_PATHS="$preflight" list_deployments "$module")"; then
-    exit 1
+  if ! module_deployments="$(NAMES="$selected_names" PREFLIGHT_PATHS="$preflight" list_deployments "$module")"; then
+    failed=true
+    continue
   fi
   if [ -z "$module_deployments" ]; then
-    patterns=""
-    module_deployments="$(DEPLOYMENTS="" PREFLIGHT_PATHS="$preflight" list_deployments "$module")" || exit 1
+    SUMMARY["$module"]="validate and test only: no deployment files"
+  else
+    # What applies where, e.g. `beans` → `prod`
+    SUMMARY["$module"]="$(jq -r '"\(if .name == "" then "(module as is)" else "`\(.name)`" end) → `\(.apply_environment)`"' \
+      <<< "$module_deployments" | paste -sd, - | sed 's/,/, /g')"
   fi
-  DEPLOYMENT_NAMES["$module"]="$(jq -r '.name' <<< "$module_deployments" | paste -sd, - | sed 's/,/, /g')"
 
-  matrix_entries+=("$(jq -cn --arg path "$module" --arg preflight "$preflight" --arg deployments "$patterns" \
-    '{path: $path, preflight_paths: $preflight, deployments: $deployments}')")
+  deployments_json="$(jq -cs '.' <<< "${module_deployments:-}")"
+  matrix_entries+=("$(jq -cn --arg path "$module" --arg deployments "$deployments_json" \
+    '{path: $path, deployments: $deployments}')")
   while IFS= read -r deployment; do
-    deployment_entries+=("$(jq -c --arg path "$module" '. + {path: $path}' <<< "$deployment")")
+    [ -n "$deployment" ] && deployment_entries+=("$(jq -c --arg path "$module" '. + {path: $path}' <<< "$deployment")")
   done <<< "$module_deployments"
 done
+if [ "$failed" = true ]; then
+  log_error "Fix the deployment files above and push again."
+  exit 1
+fi
 
 matrix="$(printf '%s\n' "${matrix_entries[@]+"${matrix_entries[@]}"}" | jq -cs '{module: .}')"
 deployments_matrix="$(printf '%s\n' "${deployment_entries[@]+"${deployment_entries[@]}"}" | jq -cs '{deployment: .}')"
+environments="$(jq -r '.deployment[] | .apply_environment, .plan_environment | select(. != "")' <<< "$deployments_matrix" | LC_ALL=C sort -u | paste -sd' ' -)"
 selected_json="$(printf '%s\n' "${selected[@]+"${selected[@]}"}" | sed '/^$/d' | jq -Rcs 'split("\n") | map(select(. != ""))')"
 
 {
   echo "### OpenTofu root modules under \`${search_root}\`"
   echo ""
-  echo "| Module | Runs | Deployments | Local modules |"
-  echo "| --- | --- | --- | --- |"
+  echo "| Module | Runs | Deployments |"
+  echo "| --- | --- | --- |"
   for module in "${modules[@]}"; do
-    deps=""
-    while IFS= read -r dep; do
-      [ -n "$dep" ] && deps+="\`${dep}\` "
-    done <<< "${DEPS[$module]}"
-    if [ -n "${SELECTED[$module]+set}" ]; then
-      runs="✅ ${REASON[$module]}"
-      names="${DEPLOYMENT_NAMES[$module]}"
-      names="${names:-(module as is)}"
+    if [ -n "${SUMMARY[$module]+set}" ]; then
+      echo "| \`${module}\` | ✅ ${REASON[$module]} | ${SUMMARY[$module]} |"
     else
-      runs="⏭️ unchanged"
-      names="–"
+      echo "| \`${module}\` | ⏭️ unchanged | – |"
     fi
-    echo "| \`${module}\` | ${runs} | ${names} | ${deps:-–} |"
   done
   echo ""
 } | tee >(append_step_summary) | sed 's/^/  /'
 
 set_output matrix "$matrix"
 set_output deployments-matrix "$deployments_matrix"
+set_output environments "$environments"
 set_output modules "$selected_json"
 set_output count "${#selected[@]}"
 if [ ${#selected[@]} -gt 0 ]; then

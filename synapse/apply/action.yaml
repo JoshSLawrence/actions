@@ -6,7 +6,7 @@ description: >-
   the plan's digest; then stops started triggers, publishes the artifacts
   with the Synapse workspace deployer (signed in with the job's GitHub OIDC
   token), and starts triggers again. Download the plan artifact into
-  plan-dir, sign in with azure/login, and run opentofu/setup (azure-cli
+  plan-dir, sign in with azure/login, and run shared/setup (azure-cli
   pinned) first, on a runner that can reach the workspace. Needs id-token:
   write. Gate the job with an environment that requires reviewers.
 

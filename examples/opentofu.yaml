@@ -1,0 +1,62 @@
+# Every OpenTofu root module under iac/ -- at any depth, nested or not --
+# validated, planned and applied, each deployment in its own environment:
+#
+#   iac/
+#   ├── identity/                 root module
+#   │   ├── backend.tf            backend "azurerm" { key = var.state_key ... }
+#   │   ├── deployments/
+#   │   │   ├── dev.tfvars
+#   │   │   ├── dev.yaml          deployment "dev": environment dev
+#   │   │   ├── prod-eastus.tfvars
+#   │   │   └── prod-eastus.yaml  deployment "prod-eastus": environment prod
+#   │   ├── main.tf
+#   │   ├── mise.toml             pins opentofu, tflint and trivy
+#   │   └── modules/              child modules of identity; no mise.toml
+#   └── network/                  another root module, laid out the same
+#
+# Each deployment's .tfvars sets its own state key
+# (state_key = "identity-prod-eastus"), which the backend block reads, and
+# its .yaml where it applies and which credentials its jobs get:
+#
+#   environment: prod
+#   plan-environment: prod-plan
+#   env:
+#     ARM_USE_OIDC: "true"
+#   vars: [ARM_CLIENT_ID, ARM_TENANT_ID, ARM_SUBSCRIPTION_ID]
+#
+# PRs run only what they change: every deployment of a module whose code
+# changed, or just the deployments whose .yaml or .tfvars changed.
+#
+# Setup, for Azure with OIDC (no secrets):
+# - Environments `dev` and `prod` with required reviewers, and `dev-plan`
+#   and `prod-plan` without (the deployment files name them). Create them
+#   first: the run fails, naming it, if an environment doesn't exist.
+# - Variables: ARM_TENANT_ID and ARM_SUBSCRIPTION_ID at repository level;
+#   ARM_CLIENT_ID in each environment, its identity's client ID (read-only
+#   identities in the plan environments).
+# - Federated credentials for the subjects `environment:<each of them>`
+#   (see Deployment files in opentofu/README.md for the subject format).
+
+name: OpenTofu
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  opentofu:
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.2.0
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      search-root: iac

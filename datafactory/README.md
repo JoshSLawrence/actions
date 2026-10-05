@@ -76,9 +76,9 @@ can only narrow them. A complete caller, with the setup it needs, is in
 
 - **Factory folder:** the factory's Git root folder (the *root folder* of
   its Git configuration: `pipeline/`, `dataset/`, `linkedService/`, ...). It
-  pins its own tools in a `mise.toml`, exactly like an OpenTofu root module:
-  `node` to build; `azure-cli` (and `uv`, which mise installs it with) and
-  `powershell` to deploy. Nothing from the repository root is used.
+  pins its own tools in a `mise.toml`: `node` to build; `azure-cli` (and
+  `uv`, which mise installs it with) and `powershell` to deploy. Nothing
+  from the repository root is used.
 - **Deployment:** the template deployed with one ARM parameters file, e.g.
   `deployments/dev.json` and `deployments/prod.json`, each to its own
   factory. It's named after its file (`prod.json` or `prod.parameters.json`
@@ -159,9 +159,18 @@ approval.
 3. **Apply environments** with required reviewers, one per deployment with
    `apply-environment: "{deployment}"`. The apply warns when its environment
    has no required reviewers.
-4. **Azure OIDC**, as for [OpenTofu](../opentofu/README.md#setup): the
-   variables `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`
-   (environment-scoped ones win), and a federated credential per subject.
+4. **Azure OIDC.** No secrets are needed: set the variables
+   `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`
+   (environment-scoped ones win in that environment's jobs).
+   - Add a federated credential for each subject the jobs present:
+     `<prefix>:environment:<name>`; for jobs without an environment,
+     `<prefix>:pull_request` (PR plans) and `<prefix>:ref:refs/heads/main`
+     (push and dispatch runs).
+   - `<prefix>` is `repo:<owner>/<repo>`, or on newer repositories
+     `repo:<owner>@<owner-id>/<repo>@<repo-id>`. Get yours with
+     `gh api repos/<owner>/<repo>/actions/oidc/customization/sub`
+     (`sub_claim_prefix`). A mismatch fails sign-in with AADSTS700213,
+     which quotes the subject presented.
    - The apply identity needs **Data Factory Contributor** on the factory's
      resource group: it deploys, stops and starts triggers, and deletes
      resources.
@@ -228,8 +237,8 @@ the deployment's resolved `parameter-files`, `parameters` and
 
 The workflows are made of these; use them directly for a different job
 layout. Each action's inputs are documented in its `action.yaml`. Run
-[`opentofu/setup`](../opentofu/setup/action.yaml) first in every job that
-runs a tool (it installs the folder's mise tools, whatever the folder is).
+[`shared/setup`](../shared/setup/action.yaml) first in every job that
+runs a tool (it installs the folder's mise tools).
 
 <!-- markdownlint-disable MD013 -->
 
@@ -239,14 +248,15 @@ runs a tool (it installs the folder's mise tools, whatever the folder is).
 | [`datafactory/deployments`](deployments/action.yaml) | The folder's deployments as a matrix |
 | [`datafactory/plan`](plan/action.yaml) | Render parameters, optional what-if and deletions preview, summary |
 | [`datafactory/apply`](apply/action.yaml) | Environment check, stale-plan preflight, digest check, pre/post script around the ARM deployment |
-| [`opentofu/pr-comment`](../opentofu/pr-comment/action.yaml) | Create or update the PR comment for one deployment |
-| [`opentofu/result`](../opentofu/result/action.yaml) | Roll a workflow's jobs up into one check |
+| [`shared/pr-comment`](../shared/pr-comment/action.yaml) | Create or update the PR comment for one deployment |
+| [`shared/result`](../shared/result/action.yaml) | Roll a workflow's jobs up into one check |
 
 <!-- markdownlint-enable MD013 -->
 
-The logic is in [`scripts/`](scripts/) and
-[`../shared/scripts/`](../shared/scripts/) (`arm.sh` holds what Data Factory
-and Synapse share). Every script runs locally too, e.g.:
+The logic is in [`scripts/`](scripts/), [`../arm/scripts/`](../arm/scripts/)
+(what Data Factory and Synapse share) and the shared library,
+[`../shared/scripts/`](../shared/scripts/). Every script runs locally too,
+e.g.:
 
 ```bash
 WORKING_DIR=adf datafactory/scripts/build.sh
@@ -263,8 +273,7 @@ WORKING_DIR=adf TEMPLATE_DIR=/tmp/datafactory-template PARAMETER_FILES=deploymen
 - **Global parameters** are deployed only if the factory includes them in
   the ARM template (Manage → ARM template).
 - **The factory itself** (identity, networking, Git configuration) isn't in
-  the template: manage it with OpenTofu, e.g. with
-  [`opentofu.yaml`](../opentofu/README.md).
+  the template: manage it with infrastructure as code, such as OpenTofu.
 - **A failed deployment leaves stopped triggers stopped**, as Microsoft's
   script does; a successful re-run starts them again.
 

@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# Common functions for every area's scripts (opentofu/*, datafactory/*,
-# synapse/*), in sections: logging, preconditions and step outputs, lists,
-# the working directory and mise, paths and globs, deployments, markdown
-# summaries, and GitHub comments/issues. Source it with:
+# The shared library: generic functions every area's scripts use
+# (opentofu/*, datafactory/*, synapse/*, arm/*, shared/*, .github/scripts/*),
+# in sections: logging, preconditions and step outputs, lists, the working
+# directory and mise, paths and globs, markdown summaries, and GitHub
+# comments/issues. Nothing area-specific belongs here: that goes in the
+# area's own helpers (opentofu/scripts/common.sh, arm/scripts/arm.sh), which
+# source this. Source it with:
 #
 #   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   # shellcheck source=shared/scripts/common.sh
 #   source "$SCRIPT_DIR/../../shared/scripts/common.sh"
 #
-# (opentofu/scripts/common.sh sources it too, so OpenTofu scripts get these
-# plus the OpenTofu helpers.) Every script also runs outside GitHub Actions
-# (for debugging against a local checkout): outputs and summaries are then
-# just logged.
+# Every script also runs outside GitHub Actions (for debugging against a
+# local checkout): outputs and summaries are then just logged.
 
 # --- Logging ------------------------------------------------------------------
 
@@ -175,6 +176,44 @@ file_sha256() {
   fi
 }
 
+# Print the SHA-256 of a string. Usage: text_sha256 "<text>"
+text_sha256() {
+  if command_exists sha256sum; then
+    printf '%s' "$1" | sha256sum | cut -d' ' -f1
+  else
+    printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
+  fi
+}
+
+# Print an artifact name for a key that must be unique within a run (e.g.
+# "<stack>:<deployment>:<environment>"). Artifact names can't contain
+# " : < > | * ? \ / or CR/LF, so the key is made readable by replacing those,
+# which can map two keys to one name ("a/b" and "a-b"); a digest of the
+# exact key keeps every name distinct.
+# Usage: artifact_name "<prefix>" "<key>"
+artifact_name() {
+  local readable digest
+  readable="$(printf '%s' "$2" | tr -c 'A-Za-z0-9._-' '-')"
+  digest="$(text_sha256 "$2")"
+  echo "${1}-${readable}-${digest:0:12}"
+}
+
+# Mask a value in the rest of the job's log. The runner decodes %25, %0D and
+# %0A in a workflow command's data, so they're encoded first (as the Actions
+# toolkit's setSecret does): otherwise a value containing "%25" would mask
+# the decoded text, not the value as written. Outside Actions: nothing.
+# Usage: mask_value "<value>"
+mask_value() {
+  local value="$1"
+  if ! is_github_actions || [ -z "$value" ]; then
+    return 0
+  fi
+  value="${value//%/%25}"
+  value="${value//$'\r'/%0D}"
+  value="${value//$'\n'/%0A}"
+  echo "::add-mask::${value}"
+}
+
 # Print one SHA-256 for a whole directory: the digest of its files' relative
 # paths and digests, in a fixed order, so it changes if any file is added,
 # removed, renamed or edited. Usage: dir_sha256 "<dir>"
@@ -188,6 +227,42 @@ dir_sha256() {
   ) > "${TMPDIR:-/tmp}/dir_sha256.$$" || return 1
   file_sha256 "${TMPDIR:-/tmp}/dir_sha256.$$"
   rm -f "${TMPDIR:-/tmp}/dir_sha256.$$"
+}
+
+# --- Environment variable names ----------------------------------------------
+
+# Print why NAME can't be exported as an environment variable for a job's
+# tools, or nothing if it can. Names that would take over the runner or the
+# job (PATH, BASH_ENV, GITHUB_*, RUNNER_*, ACTIONS_*, ...) are refused rather
+# than silently exported -- except the GitHub provider's own GITHUB_*
+# settings, which configurations that manage GitHub need and the runner never
+# sets. Usage: problem="$(env_name_problem "<name>")"
+env_name_problem() {
+  local name="$1"
+  local reserved='^(PATH|BASH_ENV|ENV|LD_PRELOAD|LD_LIBRARY_PATH|NODE_OPTIONS|GITHUB_.*|RUNNER_.*|ACTIONS_.*)$'
+  local github_provider='^GITHUB_(TOKEN|OWNER|BASE_URL|APP_ID|APP_INSTALLATION_ID|APP_PEM_FILE)$'
+  if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "'${name}' isn't a valid environment variable name: names must match [A-Za-z_][A-Za-z0-9_]*."
+  elif [[ "$name" =~ $reserved ]] && ! [[ "$name" =~ $github_provider ]]; then
+    echo "'${name}' controls the runner itself, not a tool, so it can't be set. (Of the GITHUB_* names, only the GitHub provider's are allowed: GITHUB_TOKEN, GITHUB_OWNER, GITHUB_BASE_URL, GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, GITHUB_APP_PEM_FILE.)"
+  fi
+}
+
+# Export NAME=VALUE for the rest of the job through $GITHUB_ENV, with a random
+# heredoc delimiter so a value can't end the assignment early and inject
+# further variables. Values may span lines. Outside Actions: nothing.
+# Usage: export_job_env "<name>" "<value>"
+export_job_env() {
+  local delimiter
+  if [ -z "${GITHUB_ENV:-}" ]; then
+    return 0
+  fi
+  delimiter="EOF_$(openssl rand -hex 16)"
+  {
+    echo "${1}<<${delimiter}"
+    echo "${2}"
+    echo "${delimiter}"
+  } >> "$GITHUB_ENV"
 }
 
 # --- Lists (inputs are space- or newline-separated) ---------------------------
@@ -207,7 +282,7 @@ list_items() {
 }
 
 # Like list_items, but one item per line: items may contain spaces (e.g.
-# backend-config values). Blank lines and # comments are skipped.
+# name=value parameters). Blank lines and # comments are skipped.
 list_lines() {
   local line
   while IFS= read -r line || [ -n "$line" ]; do
@@ -223,7 +298,7 @@ list_lines() {
 
 # cd into WORKING_DIR (required) and scope mise to the module (see
 # scope_mise_to_module). "Module" here is whatever directory pins its own
-# tools: an OpenTofu root module, a Data Factory or a Synapse folder.
+# tools: an OpenTofu root module, a factory or workspace folder.
 cd_working_dir() {
   require_env "WORKING_DIR" "Set the working-directory input to the directory to run in (e.g. the root module or factory folder)."
   if ! cd "${WORKING_DIR}"; then
@@ -244,7 +319,7 @@ cd_working_dir() {
 #   shuts out a runner's (or your machine's) ~/.config/mise and /etc/mise.
 #   Installed tools are unaffected: they live in mise's data directory.
 scope_mise_to_module() {
-  local nowhere="/nonexistent/opentofu-actions-mise"
+  local nowhere="/nonexistent/actions-mise"
   MISE_CEILING_PATHS="$(cd .. && pwd -P)"
   export MISE_CEILING_PATHS
   export MISE_CONFIG_DIR="$nowhere"
@@ -255,7 +330,7 @@ scope_mise_to_module() {
 
 ensure_mise() {
   if ! command_exists mise; then
-    log_error "mise is not installed or not on PATH. Run the opentofu/setup action earlier in the job."
+    log_error "mise is not installed or not on PATH. Run the shared/setup action earlier in the job."
     exit 1
   fi
 }
@@ -367,21 +442,6 @@ normalize_path() {
     joined="$(printf '%s/' "${out[@]}")"
     echo "${joined%/}"
   fi
-}
-
-# --- Deployments --------------------------------------------------------------
-
-# Replace "{deployment}" in a setting with the deployment's name. Settings
-# that use it (e.g. an apply-environment of "{deployment}") need a named
-# deployment, so a directory without deployments is an error.
-# Usage: expand_deployment_placeholder <setting> <value> <deployment> <dir>
-expand_deployment_placeholder() {
-  local setting="$1" value="$2" name="$3" dir="$4"
-  if [[ "$value" == *"{deployment}"* ]] && [ -z "$name" ]; then
-    log_error "${setting} uses {deployment}, but ${dir} has no deployments (files matching the deployments input), so there's no name to put there."
-    return 1
-  fi
-  echo "${value//"{deployment}"/$name}"
 }
 
 # --- Markdown summaries -------------------------------------------------------

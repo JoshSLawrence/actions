@@ -1,7 +1,7 @@
-name: OpenTofu PR comment
+name: PR comment
 description: >-
-  Creates or updates one PR comment per root module and environment with the
-  plan summary and the apply status. Edited in place on every run (history is
+  Creates or updates one PR comment per root module or folder, deployment
+  and environment with the plan summary and the apply status. Edited in place on every run (history is
   in the comment's edit log); a run for an outdated PR head leaves it alone.
   Does nothing outside pull_request runs. Needs pull-requests: write.
 
@@ -9,12 +9,12 @@ inputs:
   comment-key:
     description: >-
       Identifies this comment among others on the PR, e.g.
-      "<working-directory>:<environment>". Unique per root module/environment.
+      the plan action's key output. Unique per folder/deployment/environment.
     required: true
   title:
     description: Comment heading.
     required: false
-    default: OpenTofu
+    default: Plan
   summary-file:
     description: Plan summary markdown (the summary-file output of opentofu/plan, datafactory/plan or synapse/plan).
     required: false

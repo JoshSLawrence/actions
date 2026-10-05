@@ -1,17 +1,22 @@
-# CI for this library: lint everything, then run the OpenTofu reusable
-# workflows end to end -- from this commit -- against the test fixtures, the
-# same way a consumer calls them.
+# CI for this library: lint everything (including the OpenTofu discovery
+# tests), then run the reusable workflows end to end -- from this commit --
+# against the test fixtures, the same way a consumer calls them.
 #
 # The OpenTofu fixtures need no cloud account (random_pet/terraform_data,
-# local state), so the e2e runs plan, comment on the PR, and apply without an
-# approval environment. The Data Factory and Synapse fixtures build (offline)
-# and plan without what-if, which needs no Azure either. One more run deploys
-# the Data Factory fixture to a real, otherwise empty factory
-# (adf-githubtest), through the adf-githubtest environment: its variables
-# hold the identity, whose only federated credential is for that
-# environment. Require "Lint", "E2E repo / Result", "E2E config / Result",
-# "E2E drift / Result", "E2E datafactory / Result", "E2E synapse / Result"
-# and "E2E datafactory (Azure) / Result" in branch protection.
+# local state), so the e2e runs plan, comment on the PR, and apply in the
+# opentofu-fixture and staging environments, which have no reviewers. They
+# must exist: the workflow refuses to run in an environment that doesn't
+# (GitHub would create it, unprotected), so create them once in Settings ->
+# Environments. staging also holds the E2E_PROBE_VAR variable and the
+# E2E_PROBE_SECRET secret, and the repository the E2E_REPO_VAR variable,
+# which the staging-eu fixture deployment declares. The Data Factory and Synapse fixtures
+# build (offline) and plan without what-if, which needs no Azure either.
+# One more run deploys the Data Factory fixture to a real, otherwise empty
+# factory (adf-githubtest), through the adf-githubtest environment: its
+# variables hold the identity, whose only federated credential is for that
+# environment. Require "Lint", "E2E repo / Result", "E2E plan only /
+# Result", "E2E drift / Result", "E2E datafactory / Result", "E2E synapse /
+# Result" and "E2E datafactory (Azure) / Result" in branch protection.
 
 name: CI
 
@@ -55,11 +60,13 @@ jobs:
           # Authenticated tflint plugin downloads avoid GitHub API rate limits
           GITHUB_TOKEN: ${{ github.token }}
 
-  # The repository entry point: discovers both fixture root modules and
-  # deploys each -- basic twice (deployments/dev and prod .tfvars, each with
-  # its own .tfbackend), minimal on its own -- with every default check, the
-  # shared policy, and apply. changed-only is off so every PR exercises all
-  # of them, whatever it changed.
+  # The entry point, end to end: discovers every fixture root module --
+  # basic (deployments dev, prod and staging-eu; staging-eu resolves a
+  # variable and a secret from the staging environment and a variable from
+  # the repository), minimal (deployed as is through its deployment.yaml)
+  # and minimal/nested (a root module inside another) -- with every default
+  # check, the shared policy, and apply. changed-only is off so every PR exercises all of them, whatever
+  # it changed (tests/opentofu/discover-test.sh covers change detection).
   e2e-repo:
     name: E2E repo
     uses: $/.github/workflows/opentofu.yaml
@@ -71,30 +78,33 @@ jobs:
     with:
       search-root: tests/fixtures/opentofu
       changed-only: false
-      deployments: deployments/*.tfvars
       policy: true
       policy-path: tests/fixtures/opentofu/policy
 
-  # One config directly, with toggles flipped: one deployment, the docs
-  # check on, other checks off, policies pulled from a URL, plan only, and
-  # its own PR comment
-  e2e-config:
-    name: E2E config
-    uses: $/.github/workflows/opentofu-config.yaml
+  # The same workflow with toggles flipped: one module picked with modules,
+  # the docs check on, other checks off, policies pulled from a URL, and
+  # plan only. After e2e-repo, and without PR comments: its plans would
+  # otherwise cancel e2e-repo's (same module, deployment and environment)
+  # and edit its comments.
+  e2e-plan-only:
+    name: E2E plan only
+    needs: e2e-repo
+    if: ${{ !cancelled() }}
+    uses: $/.github/workflows/opentofu.yaml
     permissions:
       actions: read
       contents: read
       id-token: write
       pull-requests: write
     with:
-      working-directory: tests/fixtures/opentofu/basic
-      stack-name: basic (config, plan only)
-      deployments: deployments/dev.tfvars
+      search-root: tests/fixtures/opentofu
+      modules: tests/fixtures/opentofu/basic
       docs: true
       tflint: false
       trivy: false
       tests: false
       apply: false
+      pr-comment: false
       # The same fixture policy as e2e-repo, but pulled with policy-source
       # (conftest pull) instead of read from policy-path. The PR head, not
       # github.sha: a PR's merge commit can't be cloned by ref.
@@ -114,7 +124,6 @@ jobs:
       issues: write
     with:
       search-root: tests/fixtures/opentofu
-      deployments: deployments/*.tfvars
       create-issues: false
 
   # A factory with two deployments (deployments/dev.json and prod.json):

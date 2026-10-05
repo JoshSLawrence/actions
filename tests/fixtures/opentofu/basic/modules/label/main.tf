@@ -1,5 +1,5 @@
-# A local child module shared by root modules. It has no mise.toml, so
-# discovery doesn't treat it as a root module of its own.
+# A child module of basic, local to it. It has no mise.toml, so discovery
+# doesn't treat it as a root module of its own.
 terraform {
   required_version = ">= 1.9.0"
 }

@@ -1,0 +1,9 @@
+# Exercises the declared settings end to end: CI's staging environment holds
+# E2E_PROBE_VAR and E2E_PROBE_SECRET, and the repository E2E_REPO_VAR (a
+# repository-level fallback). A missing one fails the job.
+environment: staging
+vars:
+  - E2E_PROBE_VAR
+  - E2E_REPO_VAR
+secrets:
+  - PROBE_SECRET=E2E_PROBE_SECRET

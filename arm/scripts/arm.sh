@@ -9,8 +9,8 @@
 #   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   # shellcheck source=shared/scripts/common.sh
 #   source "$SCRIPT_DIR/../../shared/scripts/common.sh"
-#   # shellcheck source=shared/scripts/arm.sh
-#   source "$SCRIPT_DIR/../../shared/scripts/arm.sh"
+#   # shellcheck source=arm/scripts/arm.sh
+#   source "$SCRIPT_DIR/../../arm/scripts/arm.sh"
 
 # --- Deployments --------------------------------------------------------------
 #
@@ -20,6 +20,19 @@
 # resource group. It's named after its file (deployments/prod.json, or
 # prod.parameters.json -> "prod"). Without deployments, the template is
 # deployed once, with only the shared parameter files and parameters.
+
+# Replace "{deployment}" in a setting with the deployment's name. Settings
+# that use it (e.g. an apply-environment of "{deployment}") need a named
+# deployment, so a directory without deployments is an error.
+# Usage: expand_deployment_placeholder <setting> <value> <deployment> <dir>
+expand_deployment_placeholder() {
+  local setting="$1" value="$2" name="$3" dir="$4"
+  if [[ "$value" == *"{deployment}"* ]] && [ -z "$name" ]; then
+    log_error "${setting} uses {deployment}, but ${dir} has no deployments (files matching the deployments input), so there's no name to put there."
+    return 1
+  fi
+  echo "${value//"{deployment}"/$name}"
+}
 
 # Print a deployment's name from its parameters file path
 arm_deployment_name() {
@@ -254,9 +267,7 @@ arm_mask_secrets() {
   local line
   while IFS= read -r line; do
     [[ "$line" == *=* ]] || continue
-    if is_github_actions && [ -n "${line#*=}" ]; then
-      echo "::add-mask::${line#*=}"
-    fi
+    mask_value "${line#*=}"
   done < <(list_lines "${PARAMETER_SECRETS:-}")
 }
 

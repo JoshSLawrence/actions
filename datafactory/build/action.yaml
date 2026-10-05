@@ -4,7 +4,7 @@ description: >-
   "Validate all" and "Publish" do in the Data Factory UI, without the UI or an
   adf_publish branch. Runs offline (no Azure credentials), so it's safe on PRs
   from forks. Upload template-dir as an artifact for datafactory/plan. Run
-  opentofu/setup first, with node pinned in the folder's mise.toml.
+  shared/setup first, with node pinned in the folder's mise.toml.
 
 inputs:
   working-directory:
@@ -47,7 +47,7 @@ runs:
     - name: Resolve names
       id: names
       shell: bash
-      run: '"${GITHUB_ACTION_PATH}/../../shared/scripts/arm-names.sh"'
+      run: '"${GITHUB_ACTION_PATH}/../../arm/scripts/arm-names.sh"'
       env:
         SERVICE: datafactory
         WORKING_DIRECTORY: ${{ inputs.working-directory }}

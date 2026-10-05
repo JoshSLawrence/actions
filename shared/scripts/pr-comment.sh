@@ -2,7 +2,8 @@
 #
 # Creates or updates the plan/apply comment on a PR: the plan summary plus
 # where the apply stands. There's one comment per PR and COMMENT_KEY (i.e.
-# per root module and environment), edited in place by every run, so the PR
+# per root module or folder, deployment and environment), edited in place by
+# every run, so the PR
 # shows the latest plan instead of a growing stack of stale ones. Earlier
 # versions stay in the comment's edit history, and every run's summary stays
 # on its run page.
@@ -13,7 +14,7 @@
 #   PR_NUMBER         - PR to comment on. Unset (not a PR run): does nothing.
 #   HEAD_SHA          - PR head commit this run planned
 #   COMMENT_KEY       - identifies this comment among others on the PR
-#   TITLE             - comment heading (default: OpenTofu)
+#   TITLE             - comment heading (default: Plan)
 #   SUMMARY_FILE      - plan summary markdown. If missing (the run failed
 #                       before planning), a pointer to the run log is posted.
 #   APPLY_STATUS      - none, awaiting-approval, after-merge, blocked,
@@ -27,7 +28,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=opentofu/scripts/common.sh
+# shellcheck source=shared/scripts/common.sh
 source "$SCRIPT_DIR/common.sh"
 
 if [ -z "${PR_NUMBER:-}" ]; then
@@ -51,6 +52,9 @@ case "$APPLY_STATUS" in
     ;;
 esac
 
+# Named before there was more than OpenTofu; kept so the comments already on
+# open PRs are still found. Keys differ per area (Data Factory and Synapse
+# prefix theirs with the service).
 MARKER="<!-- opentofu-actions:${COMMENT_KEY} -->"
 COMMENT_AUTHOR="${COMMENT_AUTHOR:-github-actions[bot]}"
 REPO_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}"
@@ -134,7 +138,7 @@ fit_github_body "$SUMMARY_COPY" "the [workflow run](${RUN_URL})'s job summary"
 
 {
   echo "$MARKER"
-  echo "## ${TITLE:-OpenTofu}"
+  echo "## ${TITLE:-Plan}"
   echo ""
   cat "$SUMMARY_COPY"
   section="$(apply_section)"

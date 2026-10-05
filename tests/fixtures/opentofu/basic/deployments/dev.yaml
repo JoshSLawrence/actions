@@ -1,0 +1,6 @@
+# No dev.tfvars: this deployment sets its OpenTofu variables as TF_VAR_*
+# literals instead, and leans on the defaults for the rest.
+environment: opentofu-fixture
+env:
+  TF_VAR_state_path: dev.tfstate
+  TF_VAR_name_prefix: dev

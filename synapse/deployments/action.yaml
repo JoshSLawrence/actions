@@ -55,7 +55,7 @@ runs:
     - name: Resolve deployments
       id: deployments
       shell: bash
-      run: '"${GITHUB_ACTION_PATH}/../../shared/scripts/arm-deployments.sh"'
+      run: '"${GITHUB_ACTION_PATH}/../../arm/scripts/arm-deployments.sh"'
       env:
         WORKING_DIR: ${{ inputs.working-directory }}
         DEPLOYMENTS: ${{ inputs.deployments }}

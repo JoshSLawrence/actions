@@ -30,6 +30,18 @@ repos:
         language: system
         files: ^\.github/(workflows/(opentofu|datafactory|synapse).*\.yaml|scripts/check-workflow-inputs\.sh)$
         pass_filenames: false
+      - id: opentofu-discover-tests
+        name: OpenTofu discovery tests
+        entry: tests/opentofu/discover-test.sh
+        language: system
+        files: ^(opentofu/scripts/(common|discover|names)\.sh|shared/scripts/common\.sh|tests/opentofu/.*)$
+        pass_filenames: false
+      - id: export-declared-tests
+        name: Declared settings export tests
+        entry: tests/shared/export-declared-test.sh
+        language: system
+        files: ^(shared/scripts/(common|export-declared)\.sh|tests/shared/.*)$
+        pass_filenames: false
       - id: check-no-inline-scripts
         name: No inline scripts in run steps
         entry: .github/scripts/check-no-inline-scripts.sh
