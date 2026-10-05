@@ -356,7 +356,12 @@ jobs:
     needs: plan
     # PR runs apply only with apply-from-pr; other runs (push, dispatch) only
     # on the default branch -- use environment branch policies for more.
+    # !cancelled() and the plan's own result: without a status function the
+    # implied success() also needs integration-tests to have succeeded, and
+    # it's usually skipped, which would skip this too.
     if: >-
+      !cancelled() &&
+      needs.plan.result == 'success' &&
       inputs.apply &&
       needs.plan.outputs.has-changes == 'true' &&
       (

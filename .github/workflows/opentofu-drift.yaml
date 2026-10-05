@@ -185,6 +185,13 @@ jobs:
           working-directory: ${{ matrix.deployment.path }}
           required-tools: opentofu
           mise-version: ${{ inputs.mise-version }}
+          # The deployment file's literals and variables (its TF_VAR_*, its
+          # identity); secrets still come from env-vars below
+          deployment-file: ${{ format('{0}/{1}', matrix.deployment.path, matrix.deployment.file) }}
+          environment: ${{ inputs.plan-environment || matrix.deployment.plan_environment }}
+          env-json: ${{ matrix.deployment.env_json }}
+          var-names: ${{ matrix.deployment.vars }}
+          vars-json: ${{ toJSON(vars) }}
           env-secrets: ${{ secrets.env-vars }}
 
       - name: Plan
