@@ -48,7 +48,7 @@ runs:
     # read configs above the module; the scripts run tools with `mise exec`,
     # which applies the module's [env].
     - name: Install mise
-      uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
       with:
         # The default lives here rather than on the input, so callers passing
         # an empty string through (like the reusable workflow) get it too.
