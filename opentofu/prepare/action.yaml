@@ -99,6 +99,10 @@ inputs:
     description: '"true" if the plan-azure-client-secret secret was passed.'
     required: false
     default: "false"
+  checks-runs-on:
+    description: The checks-runs-on input.
+    required: false
+    default: ""
   integration-test-runs-on:
     description: The integration-test-runs-on input.
     required: false
@@ -160,6 +164,7 @@ runs:
         PLAN_AZURE_CLIENT_ID: ${{ inputs.plan-azure-client-id }}
         HAS_AZURE_CLIENT_SECRET: ${{ inputs.has-azure-client-secret }}
         HAS_PLAN_AZURE_CLIENT_SECRET: ${{ inputs.has-plan-azure-client-secret }}
+        CHECKS_RUNS_ON: ${{ inputs.checks-runs-on }}
         INTEGRATION_TEST_RUNS_ON: ${{ inputs.integration-test-runs-on }}
         PLAN_RUNS_ON: ${{ inputs.plan-runs-on }}
         APPLY_RUNS_ON: ${{ inputs.apply-runs-on }}

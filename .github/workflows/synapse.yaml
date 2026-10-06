@@ -31,7 +31,8 @@
 #
 # Runners: every runs-on input is a label, or JSON when it starts with { or
 # [ -- an array of labels or a runner group -- which each job's runs-on
-# parses. plan-runs-on and apply-runs-on override runs-on for those jobs.
+# parses. build-runs-on, plan-runs-on and apply-runs-on override runs-on for
+# those jobs.
 #
 # Keep the inputs shared with synapse-deploy.yaml (and those it shares with
 # the Data Factory workflows) identical, and passed through
@@ -63,6 +64,10 @@ on:
           {"group": "my-group"} or {"group": "my-group", "labels": ["linux"]}.
         type: string
         default: ubuntu-latest
+      build-runs-on:
+        description: "Runner of the build job, in the same forms (default: runs-on)."
+        type: string
+        default: ""
       plan-runs-on:
         description: "Runner of each deployment's plan job, in the same forms (default: runs-on)."
         type: string
@@ -214,7 +219,12 @@ permissions: {}
 jobs:
   build:
     name: Build
-    runs-on: ${{ (startsWith(inputs.runs-on, '{') || startsWith(inputs.runs-on, '[')) && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    runs-on: >-
+      ${{
+        (startsWith(inputs.build-runs-on || inputs.runs-on, '{') || startsWith(inputs.build-runs-on || inputs.runs-on, '['))
+        && fromJSON(inputs.build-runs-on || inputs.runs-on)
+        || inputs.build-runs-on || inputs.runs-on
+      }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read

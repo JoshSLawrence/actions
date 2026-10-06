@@ -212,6 +212,8 @@ expect_refused "a runner that isn't valid JSON" "plan-runs-on: '{\"group\": x}' 
   validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod PLAN_RUNS_ON='{"group": x}'
 expect_refused "a runner group with an unknown key" "apply-runs-on: '{\"grop\": \"g\"}' isn't a runner" \
   validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod APPLY_RUNS_ON='{"grop": "g"}'
+expect_refused "a runner group whose labels aren't strings" "checks-runs-on: '{\"group\": \"g\", \"labels\": [1]}' isn't a runner" \
+  validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod CHECKS_RUNS_ON='{"group": "g", "labels": [1]}'
 expect_refused "a label with a space" "integration-test-runs-on: 'self hosted' isn't a label" \
   validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod INTEGRATION_TEST_RUNS_ON='self hosted'
 

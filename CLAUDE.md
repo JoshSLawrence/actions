@@ -82,13 +82,13 @@ catalog, layout and principles.
   actionlint 1.7.12 doesn't know `$/` yet: `.github/actionlint.yaml`
   ignores exactly those messages (user-approved). Remove it once actionlint
   supports `$/`.
-- **Runners:** `runs-on` is every job's runner; the jobs that reach the
-  cloud (integration tests, plan, apply) also take their own
-  (`plan-runs-on`, ...), which falls back to it. Each is a label, or JSON
-  when it starts with `{` or `[` (an array of labels or a runner group),
-  parsed by the job's `runs-on` expression: copy that expression to a new
-  job. OpenTofu checks the overrides up front (`runs_on_problem` in
-  `shared/scripts/common.sh`).
+- **Runners:** `runs-on` is every job's runner; the jobs that do the work
+  (OpenTofu checks, integration tests, plan, apply; Data Factory and
+  Synapse build, plan, apply) also take their own (`plan-runs-on`, ...),
+  which falls back to it. Each is a label, or JSON when it starts with `{`
+  or `[` (an array of labels or a runner group), parsed by the job's
+  `runs-on` expression: copy that expression to a new job. OpenTofu checks
+  the overrides up front (`runs_on_problem` in `shared/scripts/common.sh`).
 - **Composite actions find their scripts** via
   `"${GITHUB_ACTION_PATH}/../scripts/<script>.sh"`, or
   `"${GITHUB_ACTION_PATH}/../../shared/scripts/<script>.sh"` (and

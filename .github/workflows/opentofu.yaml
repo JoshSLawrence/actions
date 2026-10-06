@@ -22,10 +22,11 @@
 #   plan, checks its digest, then applies exactly that plan.
 # - result: the call's one check, for branch protection.
 #
-# Runners: integration-tests, plan and apply can each run somewhere else
-# than runs-on (e.g. a runner group that can reach private endpoints). Every
-# runs-on input is a label, or JSON when it starts with { or [ -- an array
-# of labels or a runner group -- which each job's runs-on parses.
+# Runners: checks, integration-tests, plan and apply can each run somewhere
+# else than runs-on (e.g. a runner group that can reach private endpoints,
+# or an image with the tools already installed). Every runs-on input is a
+# label, or JSON when it starts with { or [ -- an array of labels or a
+# runner group -- which each job's runs-on parses.
 #
 # See opentofu/README.md, and docs/design/opentofu-per-root-module.md for
 # why it's shaped this way.
@@ -214,6 +215,10 @@ on:
           {"group": "my-group"} or {"group": "my-group", "labels": ["linux"]}.
         type: string
         default: ubuntu-latest
+      checks-runs-on:
+        description: "Runner of the checks job, in the same forms (default: runs-on)."
+        type: string
+        default: ""
       integration-test-runs-on:
         description: "Runner of the integration test job, in the same forms (default: runs-on)."
         type: string
@@ -315,6 +320,7 @@ jobs:
           plan-azure-client-id: ${{ inputs.plan-azure-client-id }}
           has-azure-client-secret: ${{ secrets.azure-client-secret != '' }}
           has-plan-azure-client-secret: ${{ secrets.plan-azure-client-secret != '' }}
+          checks-runs-on: ${{ inputs.checks-runs-on }}
           integration-test-runs-on: ${{ inputs.integration-test-runs-on }}
           plan-runs-on: ${{ inputs.plan-runs-on }}
           apply-runs-on: ${{ inputs.apply-runs-on }}
@@ -341,7 +347,12 @@ jobs:
     name: Checks
     needs: prepare
     if: inputs.checks
-    runs-on: ${{ (startsWith(inputs.runs-on, '{') || startsWith(inputs.runs-on, '[')) && fromJSON(inputs.runs-on) || inputs.runs-on }}
+    runs-on: >-
+      ${{
+        (startsWith(inputs.checks-runs-on || inputs.runs-on, '{') || startsWith(inputs.checks-runs-on || inputs.runs-on, '['))
+        && fromJSON(inputs.checks-runs-on || inputs.runs-on)
+        || inputs.checks-runs-on || inputs.runs-on
+      }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read

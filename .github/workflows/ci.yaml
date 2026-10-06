@@ -127,7 +127,8 @@ jobs:
         shared/**
 
   # A module without var files, providers or a lock file. It doesn't pin
-  # terraform-docs, so docs is off.
+  # terraform-docs, so docs is off. Checks get their runner as an object
+  # with one label.
   e2e-tofu-minimal:
     name: E2E tofu minimal
     uses: $/.github/workflows/opentofu.yaml
@@ -141,6 +142,7 @@ jobs:
       apply-environment: opentofu-fixture
       changed-only: false
       docs: false
+      checks-runs-on: '{"labels": "ubuntu-latest"}'
 
   # The one check for every OpenTofu call above
   e2e-opentofu:
@@ -220,3 +222,4 @@ jobs:
       resource-group: rg-fixture-{deployment}
       what-if: false
       apply: false
+      build-runs-on: '["ubuntu-latest"]'

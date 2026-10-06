@@ -157,6 +157,7 @@ Lists take one item per line, or items separated by spaces. Without
 | `apply-from-pr`                    | `true`               | Apply the reviewed plan from the PR, before merge                      |
 | **Runners**                        |                      |                                                                        |
 | `runs-on`                          | `ubuntu-latest`      | Runner of every job without its own: a label, or JSON                  |
+| `checks-runs-on`                   | `runs-on`            | Runner of the checks job                                               |
 | `integration-test-runs-on`         | `runs-on`            | Runner of the integration test job                                     |
 | `plan-runs-on`                     | `runs-on`            | Runner of the plan job                                                 |
 | `apply-runs-on`                    | `runs-on`            | Runner of the apply job                                                |
@@ -348,11 +349,16 @@ repositories need nothing. For private GitHub repositories:
 
 ## Runners
 
-Every job runs on `runs-on`, except the three that use cloud credentials
-when given their own: `integration-test-runs-on`, `plan-runs-on` and
-`apply-runs-on`. Use them when only those jobs need a particular runner,
-e.g. a runner group of GitHub-hosted runners in your private network, or a
-self-hosted runner; prepare, checks and result stay on `runs-on`.
+Every job runs on `runs-on`, except those given their own runner:
+`checks-runs-on`, `integration-test-runs-on`, `plan-runs-on` and
+`apply-runs-on`. prepare and result, which only check inputs and collect
+results, always run on `runs-on`. Use the overrides to send only some jobs
+to a particular runner, e.g.:
+
+- plan, apply and integration tests to a runner group of GitHub-hosted
+  runners in your private network;
+- checks to a self-hosted runner or custom image with your tools already
+  installed.
 
 Each takes a label, or JSON when it starts with `{` or `[`: an array of
 labels (the runner needs all of them), or a runner group, with or without
@@ -365,8 +371,16 @@ labels:
       integration-test-runs-on: '["self-hosted", "linux"]'
 ```
 
-The prepare job checks all three up front. A runner group must be
-available to the calling repository.
+The prepare job checks them up front. A runner group must be available to
+the calling repository.
+
+**Tools on a custom image.** Every job still installs mise (`mise-version`)
+and runs `mise install` for the module's own `mise.toml`, which skips any
+tool version already in mise's data directory: `MISE_DATA_DIR`, else
+`$XDG_DATA_HOME/mise`, else `~/.local/share/mise`, for the runner's user.
+Install the exact versions your modules pin there (`mise install` in each
+module when building the image); a different version is downloaded as
+usual, and tools set only in the image's global mise config are ignored.
 
 ## Branch protection
 
