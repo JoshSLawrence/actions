@@ -65,7 +65,8 @@ jobs:
   # detection); e2e-tofu-staging keeps it on.
 
   # Every default check with the call's var file, the shared policy from
-  # policy-path, and apply.
+  # policy-path, and apply. The plan and apply jobs get their runners in the
+  # JSON forms (an array of labels, a group-less runner object).
   e2e-tofu-dev:
     name: E2E tofu basic-dev
     uses: $/.github/workflows/opentofu.yaml
@@ -81,6 +82,8 @@ jobs:
       changed-only: false
       policy: true
       policy-path: tests/fixtures/opentofu/policy
+      plan-runs-on: '["ubuntu-latest"]'
+      apply-runs-on: '{"labels": ["ubuntu-latest"]}'
 
   # Plan only, with the same policy pulled from a URL (conftest pull)
   # instead. The PR head, not github.sha: a PR's merge commit can't be
@@ -124,7 +127,8 @@ jobs:
         shared/**
 
   # A module without var files, providers or a lock file. It doesn't pin
-  # terraform-docs, so docs is off.
+  # terraform-docs, so docs is off. Checks get their runner as an object
+  # with one label.
   e2e-tofu-minimal:
     name: E2E tofu minimal
     uses: $/.github/workflows/opentofu.yaml
@@ -138,6 +142,7 @@ jobs:
       apply-environment: opentofu-fixture
       changed-only: false
       docs: false
+      checks-runs-on: '{"labels": "ubuntu-latest"}'
 
   # The one check for every OpenTofu call above
   e2e-opentofu:
@@ -172,6 +177,8 @@ jobs:
       resource-group: rg-fixture-{deployment}
       what-if: false
       apply: false
+      # Every job without its own runner gets it as JSON
+      runs-on: '["ubuntu-latest"]'
 
   # The same fixture, deployed for real: what-if against the live factory,
   # then the pre-deployment script, the ARM deployment and the
@@ -215,3 +222,4 @@ jobs:
       resource-group: rg-fixture-{deployment}
       what-if: false
       apply: false
+      build-runs-on: '["ubuntu-latest"]'

@@ -24,7 +24,7 @@ Reference a reusable workflow from a job:
 ```yaml
 jobs:
   opentofu:
-    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.2.0
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.3.0
     permissions:
       actions: read
       contents: read

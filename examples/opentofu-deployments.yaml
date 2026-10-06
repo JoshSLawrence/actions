@@ -42,7 +42,7 @@ permissions: {}
 jobs:
   dev:
     name: identity-dev
-    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.2.0
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.3.0
     permissions:
       actions: read
       contents: read
@@ -61,7 +61,7 @@ jobs:
   prod-eastus:
     name: identity-prod-eastus
     needs: dev
-    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.2.0
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.3.0
     permissions:
       actions: read
       contents: read
@@ -83,7 +83,7 @@ jobs:
   prod-westus:
     name: identity-prod-westus
     needs: dev
-    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.2.0
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.3.0
     permissions:
       actions: read
       contents: read
@@ -114,6 +114,6 @@ jobs:
       contents: read
     steps:
       - name: Check results
-        uses: JoshSLawrence/actions/shared/result@v0.2.0
+        uses: JoshSLawrence/actions/shared/result@v0.3.0
         with:
           needs: ${{ toJSON(needs) }}

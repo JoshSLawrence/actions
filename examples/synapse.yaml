@@ -9,8 +9,9 @@
 #   with a mise.toml: 'mise use node@22 azure-cli uv' in synapse/.
 # - synapse/deployments/dev.json and prod.json: ARM parameters files, each
 #   setting at least workspaceName.
-# - The workspaces don't allow public network access, so every job runs on
-#   a self-hosted runner in their network, labelled `synapse-vnet`.
+# - The workspaces don't allow public network access, so the plan and apply
+#   jobs run on a self-hosted runner in their network, labelled
+#   `synapse-vnet`; the build runs on GitHub-hosted runners.
 # - Environments `dev` and `prod`, with required reviewers if your plan
 #   allows.
 # - Variables AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID,
@@ -38,7 +39,7 @@ permissions: {}
 
 jobs:
   synapse:
-    uses: JoshSLawrence/actions/.github/workflows/synapse.yaml@v0.2.0
+    uses: JoshSLawrence/actions/.github/workflows/synapse.yaml@v0.3.0
     permissions:
       actions: read
       contents: read
@@ -49,4 +50,5 @@ jobs:
       deployments: deployments/*.json
       resource-group: rg-{deployment}
       apply-environment: "{deployment}"
-      runs-on: synapse-vnet
+      plan-runs-on: synapse-vnet
+      apply-runs-on: synapse-vnet

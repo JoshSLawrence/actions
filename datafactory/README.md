@@ -219,7 +219,10 @@ accept spaces or newlines. `{deployment}` is replaced where noted.
 | `apply-environment` | none | Environment with required reviewers; `{deployment}` |
 | `preflight-paths` | working directory | What plans depend on; parameter files are added |
 | `pre-post-script` | `true` | Run the export's pre/post-deployment script |
-| `runs-on` | `ubuntu-latest` | Runner label for every job |
+| `runs-on` | `ubuntu-latest` | Runner of every job without its own: a label, or JSON (below) |
+| `build-runs-on` | `runs-on` | Runner of the build job |
+| `plan-runs-on` | `runs-on` | Runner of each deployment's plan job |
+| `apply-runs-on` | `runs-on` | Runner of each deployment's apply job |
 | `timeout-minutes` | `30` | Timeout for each job |
 | `max-parallel` | `4` | Most deployments at once |
 | `mise-version` | `2026.9.12` | mise version |
@@ -238,6 +241,22 @@ accept spaces or newlines. `{deployment}` is replaced where noted.
 | `datafactory-deploy.yaml` | `has-changes`, `applied` | Whether the plan had changes / was applied |
 
 <!-- markdownlint-enable MD013 -->
+
+The build, plan and apply jobs run on `runs-on` unless given their own
+runner: e.g. plan and apply on a runner group that can reach Azure, build
+on an image with the folder's tools installed. deployments and result
+always run on `runs-on`. Each runner input takes a label, or JSON when it
+starts with `{` or `[`: an array of labels (the runner needs all of them),
+or a runner group, with or without labels:
+
+```yaml
+    with:
+      build-runs-on: '["self-hosted", "linux"]'
+      plan-runs-on: '{"group": "private-network"}'
+      apply-runs-on: '{"group": "private-network", "labels": ["linux-x64"]}'
+```
+
+A runner group must be available to the calling repository.
 
 `datafactory-deploy.yaml` is the building block: plan and apply of one
 deployment, taking a `template-artifact` (datafactory/build's output) and

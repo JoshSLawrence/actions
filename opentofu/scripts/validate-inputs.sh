@@ -11,6 +11,7 @@
 #   CHECKS, TESTS, TEST_FILTER, INTEGRATION_TESTS, INTEGRATION_TEST_FILTER
 #   POLICY, POLICY_PATH, POLICY_SOURCE, COST_ESTIMATE
 #   AZURE_CLIENT_ID, AZURE_TENANT_ID, PLAN_AZURE_CLIENT_ID
+#   CHECKS_RUNS_ON, INTEGRATION_TEST_RUNS_ON, PLAN_RUNS_ON, APPLY_RUNS_ON
 #   HAS_INFRACOST_API_KEY, HAS_AZURE_CLIENT_SECRET,
 #   HAS_PLAN_AZURE_CLIENT_SECRET
 #                 - "true" if that secret was passed
@@ -32,7 +33,8 @@ source "$SCRIPT_DIR/common.sh"
 
 log_config WORKING_DIR VAR_FILES NAME APPLY_ENVIRONMENT EXTRA_PATHS CHECKS TESTS TEST_FILTER \
   INTEGRATION_TESTS INTEGRATION_TEST_FILTER POLICY POLICY_PATH POLICY_SOURCE COST_ESTIMATE \
-  AZURE_CLIENT_ID AZURE_TENANT_ID PLAN_AZURE_CLIENT_ID IS_FORK_PR IS_DEPENDABOT
+  AZURE_CLIENT_ID AZURE_TENANT_ID PLAN_AZURE_CLIENT_ID CHECKS_RUNS_ON INTEGRATION_TEST_RUNS_ON \
+  PLAN_RUNS_ON APPLY_RUNS_ON IS_FORK_PR IS_DEPENDABOT
 
 problems=()
 problem() {
@@ -153,6 +155,25 @@ fi
 while IFS= read -r line; do
   [ -n "$line" ] && problem "$line"
 done <<< "$azure"
+
+# --- Runners ---------------------------------------------------------------------
+
+# Checked here, or GitHub only refuses one when its job starts, perhaps
+# after minutes of other jobs. Empty: the job runs on runs-on, which needs no check (this job
+# runs on it).
+check_runs_on() {
+  local found
+  if [ -n "$2" ]; then
+    found="$(runs_on_problem "$1" "$2")"
+    if [ -n "$found" ]; then
+      problem "$found"
+    fi
+  fi
+}
+check_runs_on checks-runs-on "${CHECKS_RUNS_ON:-}"
+check_runs_on integration-test-runs-on "${INTEGRATION_TEST_RUNS_ON:-}"
+check_runs_on plan-runs-on "${PLAN_RUNS_ON:-}"
+check_runs_on apply-runs-on "${APPLY_RUNS_ON:-}"
 
 # --- Result ----------------------------------------------------------------------
 

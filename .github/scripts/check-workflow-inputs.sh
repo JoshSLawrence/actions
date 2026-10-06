@@ -96,12 +96,12 @@ check_pair() {
 
 check_pair datafactory.yaml datafactory-deploy.yaml deploy \
   '["deployment", "template-artifact"]' \
-  '["deployments", "max-parallel", "factory-name"]' \
+  '["deployments", "max-parallel", "factory-name", "build-runs-on"]' \
   '["parameter-files", "parameters", "resource-group", "plan-environment", "apply-environment", "preflight-paths"]'
 
 check_pair synapse.yaml synapse-deploy.yaml deploy \
   '["deployment", "template-artifact"]' \
-  '["deployments", "max-parallel", "workspace-name"]' \
+  '["deployments", "max-parallel", "workspace-name", "build-runs-on"]' \
   '["parameter-files", "parameters", "resource-group", "plan-environment", "apply-environment", "preflight-paths"]'
 
 # Across the ARM services: what each describes its own way is COMPUTED

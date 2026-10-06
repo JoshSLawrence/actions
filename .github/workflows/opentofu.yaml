@@ -5,7 +5,7 @@
 #
 #   jobs:
 #     prod:
-#       uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.2.0
+#       uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.3.0
 #       with:
 #         working-directory: iac/identity
 #         var-files: deployments/prod.tfvars
@@ -21,6 +21,12 @@
 # - apply: waits for the apply environment's approval, refuses a stale
 #   plan, checks its digest, then applies exactly that plan.
 # - result: the call's one check, for branch protection.
+#
+# Runners: checks, integration-tests, plan and apply can each run somewhere
+# else than runs-on (e.g. a runner group that can reach private endpoints,
+# or an image with the tools already installed). Every runs-on input is a
+# label, or JSON when it starts with { or [ -- an array of labels or a
+# runner group -- which each job's runs-on parses.
 #
 # See opentofu/README.md, and docs/design/opentofu-per-root-module.md for
 # why it's shaped this way.
@@ -203,9 +209,28 @@ on:
 
       # --- Runners ------------------------------------------------------------
       runs-on:
-        description: Runner label for every job.
+        description: >-
+          Runner of every job without its own below: a label, or JSON (from
+          { or [) for an array of labels or a runner group, e.g.
+          {"group": "my-group"} or {"group": "my-group", "labels": ["linux"]}.
         type: string
         default: ubuntu-latest
+      checks-runs-on:
+        description: "Runner of the checks job, in the same forms (default: runs-on)."
+        type: string
+        default: ""
+      integration-test-runs-on:
+        description: "Runner of the integration test job, in the same forms (default: runs-on)."
+        type: string
+        default: ""
+      plan-runs-on:
+        description: "Runner of the plan job, in the same forms (default: runs-on)."
+        type: string
+        default: ""
+      apply-runs-on:
+        description: "Runner of the apply job, in the same forms (default: runs-on)."
+        type: string
+        default: ""
       timeout-minutes:
         description: Timeout for each job.
         type: number
@@ -251,7 +276,7 @@ env:
 jobs:
   prepare:
     name: Prepare
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ (startsWith(inputs.runs-on, '{') || startsWith(inputs.runs-on, '[')) && fromJSON(inputs.runs-on) || inputs.runs-on }}
     timeout-minutes: 10
     permissions:
       actions: read # check the environments exist
@@ -295,6 +320,10 @@ jobs:
           plan-azure-client-id: ${{ inputs.plan-azure-client-id }}
           has-azure-client-secret: ${{ secrets.azure-client-secret != '' }}
           has-plan-azure-client-secret: ${{ secrets.plan-azure-client-secret != '' }}
+          checks-runs-on: ${{ inputs.checks-runs-on }}
+          integration-test-runs-on: ${{ inputs.integration-test-runs-on }}
+          plan-runs-on: ${{ inputs.plan-runs-on }}
+          apply-runs-on: ${{ inputs.apply-runs-on }}
 
       # Every tool any enabled option needs is pinned in the module's
       # mise.toml: checked here, without installing, so a missing pin fails
@@ -318,7 +347,12 @@ jobs:
     name: Checks
     needs: prepare
     if: inputs.checks
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: >-
+      ${{
+        (startsWith(inputs.checks-runs-on || inputs.runs-on, '{') || startsWith(inputs.checks-runs-on || inputs.runs-on, '['))
+        && fromJSON(inputs.checks-runs-on || inputs.runs-on)
+        || inputs.checks-runs-on || inputs.runs-on
+      }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
@@ -371,7 +405,12 @@ jobs:
       (needs.checks.result == 'success' || needs.checks.result == 'skipped') &&
       (github.event_name != 'pull_request' ||
         (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'))
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: >-
+      ${{
+        (startsWith(inputs.integration-test-runs-on || inputs.runs-on, '{') || startsWith(inputs.integration-test-runs-on || inputs.runs-on, '['))
+        && fromJSON(inputs.integration-test-runs-on || inputs.runs-on)
+        || inputs.integration-test-runs-on || inputs.runs-on
+      }}
     environment: ${{ inputs.integration-test-environment }}
     # Never cancelled by a newer push: that kills tofu test mid-apply,
     # leaking whatever it created (the same goes for hitting the timeout).
@@ -433,7 +472,12 @@ jobs:
       (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped') &&
       (github.event_name != 'pull_request' ||
         (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'))
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: >-
+      ${{
+        (startsWith(inputs.plan-runs-on || inputs.runs-on, '{') || startsWith(inputs.plan-runs-on || inputs.runs-on, '['))
+        && fromJSON(inputs.plan-runs-on || inputs.runs-on)
+        || inputs.plan-runs-on || inputs.runs-on
+      }}
     environment: ${{ inputs.plan-environment }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     # A newer push supersedes a plan in progress. Safe to cancel: plans don't
@@ -547,7 +591,12 @@ jobs:
         (github.event_name != 'pull_request' &&
           github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
       )
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: >-
+      ${{
+        (startsWith(inputs.apply-runs-on || inputs.runs-on, '{') || startsWith(inputs.apply-runs-on || inputs.runs-on, '['))
+        && fromJSON(inputs.apply-runs-on || inputs.runs-on)
+        || inputs.apply-runs-on || inputs.runs-on
+      }}
     # Waits here for a reviewer's approval. Federated credentials bound to
     # this environment only work once approved.
     environment: ${{ inputs.apply-environment }}
@@ -623,7 +672,7 @@ jobs:
     name: Result
     needs: [prepare, checks, integration-tests, plan, apply]
     if: always()
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ (startsWith(inputs.runs-on, '{') || startsWith(inputs.runs-on, '[')) && fromJSON(inputs.runs-on) || inputs.runs-on }}
     timeout-minutes: 5
     # contents: read only to fetch this repository's result action: with
     # none, a private copy of this repository can't be downloaded.

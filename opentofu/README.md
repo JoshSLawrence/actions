@@ -20,6 +20,7 @@ The design and the decisions behind it are in
 - [Policy](#policy)
 - [Azure](#azure)
 - [Private modules and policies](#private-modules-and-policies)
+- [Runners](#runners)
 - [Branch protection](#branch-protection)
 - [Setup](#setup)
 - [PR comments](#pr-comments)
@@ -34,7 +35,7 @@ One job per deployment. A module deployed once:
 ```yaml
 jobs:
   network:
-    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.2.0
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.3.0
     permissions:
       actions: read
       contents: read
@@ -155,7 +156,11 @@ Lists take one item per line, or items separated by spaces. Without
 | `apply`                            | `true`               | Include the apply job (`false` = plan only)                            |
 | `apply-from-pr`                    | `true`               | Apply the reviewed plan from the PR, before merge                      |
 | **Runners**                        |                      |                                                                        |
-| `runs-on`                          | `ubuntu-latest`      | Runner label for every job                                             |
+| `runs-on`                          | `ubuntu-latest`      | Runner of every job without its own: a label, or JSON                  |
+| `checks-runs-on`                   | `runs-on`            | Runner of the checks job                                               |
+| `integration-test-runs-on`         | `runs-on`            | Runner of the integration test job                                     |
+| `plan-runs-on`                     | `runs-on`            | Runner of the plan job                                                 |
+| `apply-runs-on`                    | `runs-on`            | Runner of the apply job                                                |
 | `timeout-minutes`                  | `30`                 | Timeout for each job                                                   |
 | `mise-version`                     | the setup pin        | The mise version; the module's `mise.toml` pins its tools              |
 
@@ -342,6 +347,41 @@ repositories need nothing. For private GitHub repositories:
   fine-grained personal access token with read-only Contents on them,
   stored as a secret. Without it, the run's `GITHUB_TOKEN` is used.
 
+## Runners
+
+Every job runs on `runs-on`, except those given their own runner:
+`checks-runs-on`, `integration-test-runs-on`, `plan-runs-on` and
+`apply-runs-on`. prepare and result, which only check inputs and collect
+results, always run on `runs-on`. Use the overrides to send only some jobs
+to a particular runner, e.g.:
+
+- plan, apply and integration tests to a runner group of GitHub-hosted
+  runners in your private network;
+- checks to a self-hosted runner or custom image with your tools already
+  installed.
+
+Each takes a label, or JSON when it starts with `{` or `[`: an array of
+labels (the runner needs all of them), or a runner group, with or without
+labels:
+
+```yaml
+    with:
+      plan-runs-on: '{"group": "private-network"}'
+      apply-runs-on: '{"group": "private-network", "labels": ["linux-x64"]}'
+      integration-test-runs-on: '["self-hosted", "linux"]'
+```
+
+The prepare job checks them up front. A runner group must be available to
+the calling repository.
+
+**Tools on a custom image.** Every job still installs mise (`mise-version`)
+and runs `mise install` for the module's own `mise.toml`, which skips any
+tool version already in mise's data directory: `MISE_DATA_DIR`, else
+`$XDG_DATA_HOME/mise`, else `~/.local/share/mise`, for the runner's user.
+Install the exact versions your modules pin there (`mise install` in each
+module when building the image); a different version is downloaded as
+usual, and tools set only in the image's global mise config are ignored.
+
 ## Branch protection
 
 Each call ends with a `result` job, which passes only if every job of the
@@ -364,7 +404,7 @@ every call, and require only its check:
       contents: read
     steps:
       - name: Check results
-        uses: JoshSLawrence/actions/shared/result@v0.2.0
+        uses: JoshSLawrence/actions/shared/result@v0.3.0
         with:
           needs: ${{ toJSON(needs) }}
 ```
@@ -441,7 +481,8 @@ Before any job runs, the prepare job checks:
 - `cost-estimate` has its `infracost-api-key`; `policy` has a
   `policy-source` or a `policy-path`, and every `policy-path` directory
   exists (set `policy-path: ""` to use only `policy-source`); test filters
-  match files; `extra-paths` stay in the repository; `name` is usable.
+  match files; `extra-paths` stay in the repository; `name` is usable;
+- the jobs' own runners (`plan-runs-on`, ...) are a label or valid JSON.
 
 ## PR comments
 

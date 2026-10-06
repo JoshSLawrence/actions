@@ -12,8 +12,9 @@
 # and parameters only.
 #
 # Synapse artifacts are deployed through the workspace's development
-# endpoint, not ARM: a workspace without public network access needs runs-on
-# to be a runner in its network (for what-if plans and for applies).
+# endpoint, not ARM: a workspace without public network access needs
+# apply-runs-on and plan-runs-on (for what-if), or runs-on, to be a runner in
+# its network.
 #
 # Tools: every job that runs one installs exactly what the folder's own
 # mise.toml pins (node to build; azure-cli for triggers and what-if) --
@@ -27,6 +28,11 @@
 # - deploy: synapse-deploy.yaml once per deployment -- each plans, comments
 #   on the PR, waits for approval and deploys on its own.
 # - result: one stable check for the workspace.
+#
+# Runners: every runs-on input is a label, or JSON when it starts with { or
+# [ -- an array of labels or a runner group -- which each job's runs-on
+# parses. build-runs-on, plan-runs-on and apply-runs-on override runs-on for
+# those jobs.
 #
 # Keep the inputs shared with synapse-deploy.yaml (and those it shares with
 # the Data Factory workflows) identical, and passed through
@@ -52,9 +58,24 @@ on:
         type: string
         default: ""
       runs-on:
-        description: Runner label for every job.
+        description: >-
+          Runner of every job without its own below: a label, or JSON (from
+          { or [) for an array of labels or a runner group, e.g.
+          {"group": "my-group"} or {"group": "my-group", "labels": ["linux"]}.
         type: string
         default: ubuntu-latest
+      build-runs-on:
+        description: "Runner of the build job, in the same forms (default: runs-on)."
+        type: string
+        default: ""
+      plan-runs-on:
+        description: "Runner of each deployment's plan job, in the same forms (default: runs-on)."
+        type: string
+        default: ""
+      apply-runs-on:
+        description: "Runner of each deployment's apply job, in the same forms (default: runs-on)."
+        type: string
+        default: ""
       timeout-minutes:
         description: Timeout for each job.
         type: number
@@ -198,7 +219,12 @@ permissions: {}
 jobs:
   build:
     name: Build
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: >-
+      ${{
+        (startsWith(inputs.build-runs-on || inputs.runs-on, '{') || startsWith(inputs.build-runs-on || inputs.runs-on, '['))
+        && fromJSON(inputs.build-runs-on || inputs.runs-on)
+        || inputs.build-runs-on || inputs.runs-on
+      }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
@@ -235,7 +261,7 @@ jobs:
 
   deployments:
     name: Deployments
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ (startsWith(inputs.runs-on, '{') || startsWith(inputs.runs-on, '[')) && fromJSON(inputs.runs-on) || inputs.runs-on }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -287,6 +313,8 @@ jobs:
       working-directory: ${{ inputs.working-directory }}
       stack-name: ${{ inputs.stack-name }}
       runs-on: ${{ inputs.runs-on }}
+      plan-runs-on: ${{ inputs.plan-runs-on }}
+      apply-runs-on: ${{ inputs.apply-runs-on }}
       timeout-minutes: ${{ inputs.timeout-minutes }}
       mise-version: ${{ inputs.mise-version }}
       plan-retention-days: ${{ inputs.plan-retention-days }}
@@ -309,7 +337,7 @@ jobs:
     name: Result
     needs: [build, deployments, deploy]
     if: always()
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ (startsWith(inputs.runs-on, '{') || startsWith(inputs.runs-on, '[')) && fromJSON(inputs.runs-on) || inputs.runs-on }}
     timeout-minutes: 5
     # contents: read only to fetch this repository's result action: with
     # none, a private copy of this repository can't be downloaded.
