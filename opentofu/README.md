@@ -20,6 +20,7 @@ The design and the decisions behind it are in
 - [Policy](#policy)
 - [Azure](#azure)
 - [Private modules and policies](#private-modules-and-policies)
+- [Runners](#runners)
 - [Branch protection](#branch-protection)
 - [Setup](#setup)
 - [PR comments](#pr-comments)
@@ -155,7 +156,10 @@ Lists take one item per line, or items separated by spaces. Without
 | `apply`                            | `true`               | Include the apply job (`false` = plan only)                            |
 | `apply-from-pr`                    | `true`               | Apply the reviewed plan from the PR, before merge                      |
 | **Runners**                        |                      |                                                                        |
-| `runs-on`                          | `ubuntu-latest`      | Runner label for every job                                             |
+| `runs-on`                          | `ubuntu-latest`      | Runner of every job without its own: a label, or JSON                  |
+| `integration-test-runs-on`         | `runs-on`            | Runner of the integration test job                                     |
+| `plan-runs-on`                     | `runs-on`            | Runner of the plan job                                                 |
+| `apply-runs-on`                    | `runs-on`            | Runner of the apply job                                                |
 | `timeout-minutes`                  | `30`                 | Timeout for each job                                                   |
 | `mise-version`                     | the setup pin        | The mise version; the module's `mise.toml` pins its tools              |
 
@@ -342,6 +346,28 @@ repositories need nothing. For private GitHub repositories:
   fine-grained personal access token with read-only Contents on them,
   stored as a secret. Without it, the run's `GITHUB_TOKEN` is used.
 
+## Runners
+
+Every job runs on `runs-on`, except the three that use cloud credentials
+when given their own: `integration-test-runs-on`, `plan-runs-on` and
+`apply-runs-on`. Use them when only those jobs need a particular runner,
+e.g. a runner group of GitHub-hosted runners in your private network, or a
+self-hosted runner; prepare, checks and result stay on `runs-on`.
+
+Each takes a label, or JSON when it starts with `{` or `[`: an array of
+labels (the runner needs all of them), or a runner group, with or without
+labels:
+
+```yaml
+    with:
+      plan-runs-on: '{"group": "private-network"}'
+      apply-runs-on: '{"group": "private-network", "labels": ["linux-x64"]}'
+      integration-test-runs-on: '["self-hosted", "linux"]'
+```
+
+The prepare job checks all three up front. A runner group must be
+available to the calling repository.
+
 ## Branch protection
 
 Each call ends with a `result` job, which passes only if every job of the
@@ -441,7 +467,8 @@ Before any job runs, the prepare job checks:
 - `cost-estimate` has its `infracost-api-key`; `policy` has a
   `policy-source` or a `policy-path`, and every `policy-path` directory
   exists (set `policy-path: ""` to use only `policy-source`); test filters
-  match files; `extra-paths` stay in the repository; `name` is usable.
+  match files; `extra-paths` stay in the repository; `name` is usable;
+- the jobs' own runners (`plan-runs-on`, ...) are a label or valid JSON.
 
 ## PR comments
 

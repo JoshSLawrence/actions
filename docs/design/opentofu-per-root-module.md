@@ -285,7 +285,10 @@ Without `var-files`, the module uses its defaults (and its
 | `apply`                            | `true`               | Include the apply job (`false` = plan only)                            |
 | `apply-from-pr`                    | `true`               | Apply the reviewed plan from the PR, before merge                      |
 | **Runners**                        |                      |                                                                        |
-| `runs-on`                          | `ubuntu-latest`      | Runner label for every job                                             |
+| `runs-on`                          | `ubuntu-latest`      | Runner of every job without its own: a label, or JSON                  |
+| `integration-test-runs-on`         | `runs-on`            | Runner of the integration test job                                     |
+| `plan-runs-on`                     | `runs-on`            | Runner of the plan job                                                 |
+| `apply-runs-on`                    | `runs-on`            | Runner of the apply job                                                |
 | `timeout-minutes`                  | `30`                 | Timeout for each job                                                   |
 | `mise-version`                     | the setup pin        | The mise version; the module's `mise.toml` pins its tools              |
 
@@ -356,6 +359,8 @@ what to do about each:
 - `extra-paths` stay inside the repository.
 - `test-filter` and `integration-test-filter` match at least one file.
 - `name` is usable in names (letters, digits, `.`, `_`, `-`).
+- `integration-test-runs-on`, `plan-runs-on` and `apply-runs-on`, when
+  given, are a label or a JSON array of labels or runner group.
 
 On a pull request from a fork, or one Dependabot runs, secrets (and the
 OIDC token) are never passed and nothing is planned, so secret-dependent
@@ -683,6 +688,12 @@ Settled in review, with what we gave up, so they can be revisited:
 - **A real Azure run in CI later.** The Data Factory e2e already uses a
   real identity through OIDC; an OpenTofu fixture planning against Azure
   can reuse it.
+- **Runners per credentialed job.** `integration-test-runs-on`,
+  `plan-runs-on` and `apply-runs-on` override `runs-on` for the jobs that
+  reach the cloud, e.g. a runner group in a private network; the others
+  never need one. Each is a label or JSON (from `{` or `[`), the forms
+  `runs-on` itself takes, rather than separate group and label inputs per
+  job. A plain label stays as before.
 - **Integration tests use the apply identity**, documented; a separate
   `integration-test-azure-client-id` is added when a caller needs one.
 

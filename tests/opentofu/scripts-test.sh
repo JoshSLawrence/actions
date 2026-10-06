@@ -2,9 +2,10 @@
 #
 # Tests the OpenTofu workflow's own scripts, which run before anything is
 # planned: change detection (changes.sh), input validation
-# (validate-inputs.sh), the Azure credentials mapping (azure-env.sh), and
-# the plan names (names.sh). Change detection runs in throwaway Git
-# repositories, the way a pull_request run does. Run by pre-commit and CI.
+# (validate-inputs.sh, runners included), the Azure credentials mapping
+# (azure-env.sh), and the plan names (names.sh). Change detection runs in
+# throwaway Git repositories, the way a pull_request run does. Run by
+# pre-commit and CI.
 # Needs git, jq.
 #
 
@@ -204,6 +205,15 @@ expect_refused "a plan identity without the apply identity" "plan-azure-client-i
 expect_refused "a plan secret without a plan client ID" "plan-azure-client-id isn't" \
   validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod AZURE_CLIENT_ID=c AZURE_TENANT_ID=t \
   HAS_PLAN_AZURE_CLIENT_SECRET=true
+expect "runners: a label, an array of labels, a runner group" prod \
+  "$(valid INTEGRATION_TEST_RUNS_ON=self-hosted PLAN_RUNS_ON='["self-hosted", "linux"]' \
+    APPLY_RUNS_ON=$'{"group": "private-network",\n "labels": ["linux-x64"]}\n')"
+expect_refused "a runner that isn't valid JSON" "plan-runs-on: '{\"group\": x}' isn't valid JSON" \
+  validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod PLAN_RUNS_ON='{"group": x}'
+expect_refused "a runner group with an unknown key" "apply-runs-on: '{\"grop\": \"g\"}' isn't a runner" \
+  validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod APPLY_RUNS_ON='{"grop": "g"}'
+expect_refused "a label with a space" "integration-test-runs-on: 'self hosted' isn't a label" \
+  validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod INTEGRATION_TEST_RUNS_ON='self hosted'
 
 cases=$((cases + 1))
 if output_of name validate-inputs.sh WORKING_DIR=iac/app VAR_FILES=missing.tfvars \

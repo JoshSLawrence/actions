@@ -277,6 +277,40 @@ list_lines() {
   done <<< "${1:-}"
 }
 
+# --- Runners ------------------------------------------------------------------
+
+# Print what's wrong with a runs-on input's value, or nothing if GitHub can
+# use it. The workflows read a value starting with { or [ as JSON, in the
+# forms runs-on itself takes: an array of labels, or a runner group,
+# {"group": ..., "labels": ...}, with either key or both (labels: one or an
+# array). Anything else is one label. Usage: runs_on_problem <input> <value>
+runs_on_problem() {
+  local input="$1" value="$2" hint
+  hint="Pass one label (e.g. ubuntu-latest), a JSON array of labels (e.g. [\"self-hosted\", \"linux\"]) or a JSON runner group (e.g. {\"group\": \"my-group\"} or {\"group\": \"my-group\", \"labels\": [\"linux\"]})."
+  case "$value" in
+    "{"* | "["*)
+      require_tool jq
+      if ! jq -e . > /dev/null 2>&1 <<< "$value"; then
+        echo "${input}: '${value}' isn't valid JSON. ${hint}"
+      elif ! jq -e '
+          def labels: (type == "string" and . != "")
+            or (type == "array" and length > 0 and all(type == "string" and . != ""));
+          if type == "array" then labels
+          else length > 0 and (keys - ["group", "labels"]) == []
+            and ((has("group") | not) or (.group | type == "string" and . != ""))
+            and ((has("labels") | not) or (.labels | labels))
+          end' > /dev/null <<< "$value"; then
+        echo "${input}: '${value}' isn't a runner GitHub accepts. ${hint}"
+      fi
+      ;;
+    *)
+      if [ -z "$value" ] || [[ "$value" =~ [[:space:]] ]]; then
+        echo "${input}: '${value}' isn't a label (labels have no spaces, and JSON must start with { or [). ${hint}"
+      fi
+      ;;
+  esac
+}
+
 # --- Working directory and mise -----------------------------------------------
 
 # cd into WORKING_DIR (required) and scope mise to the module (see

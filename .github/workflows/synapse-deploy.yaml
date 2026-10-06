@@ -19,7 +19,12 @@
 #
 # Synapse artifacts are deployed through the workspace's development
 # endpoint (https://<workspace>.dev.azuresynapse.net), not ARM: a workspace
-# without public network access needs runs-on to be a runner in its network.
+# without public network access needs apply-runs-on and plan-runs-on (for
+# what-if), or runs-on, to be a runner in its network.
+#
+# Runners: every runs-on input is a label, or JSON when it starts with { or
+# [ -- an array of labels or a runner group -- which each job's runs-on
+# parses. plan-runs-on and apply-runs-on override runs-on for those jobs.
 #
 # The composite actions are referenced with the self-repository syntax
 # (uses: $/...), which resolves to this repository at the exact commit being
@@ -68,9 +73,20 @@ on:
         type: string
         required: true
       runs-on:
-        description: Runner label for every job.
+        description: >-
+          Runner of every job without its own below: a label, or JSON (from
+          { or [) for an array of labels or a runner group, e.g.
+          {"group": "my-group"} or {"group": "my-group", "labels": ["linux"]}.
         type: string
         default: ubuntu-latest
+      plan-runs-on:
+        description: "Runner of each deployment's plan job, in the same forms (default: runs-on)."
+        type: string
+        default: ""
+      apply-runs-on:
+        description: "Runner of each deployment's apply job, in the same forms (default: runs-on)."
+        type: string
+        default: ""
       timeout-minutes:
         description: Timeout for each job.
         type: number
@@ -179,7 +195,12 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: >-
+      ${{
+        (startsWith(inputs.plan-runs-on || inputs.runs-on, '{') || startsWith(inputs.plan-runs-on || inputs.runs-on, '['))
+        && fromJSON(inputs.plan-runs-on || inputs.runs-on)
+        || inputs.plan-runs-on || inputs.runs-on
+      }}
     environment: ${{ inputs.plan-environment }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     # A newer push supersedes a plan in progress. Safe to cancel: plans
@@ -289,7 +310,12 @@ jobs:
         (github.event_name != 'pull_request' &&
           github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
       )
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: >-
+      ${{
+        (startsWith(inputs.apply-runs-on || inputs.runs-on, '{') || startsWith(inputs.apply-runs-on || inputs.runs-on, '['))
+        && fromJSON(inputs.apply-runs-on || inputs.runs-on)
+        || inputs.apply-runs-on || inputs.runs-on
+      }}
     # Waits here for a reviewer's approval. Environment-scoped secrets,
     # variables and Azure federated credentials only apply once approved.
     environment: ${{ inputs.apply-environment }}

@@ -50,7 +50,8 @@ jobs:
       resource-group: rg-{deployment}
       apply-environment: "{deployment}"
       # A runner that can reach the workspace (see Setup)
-      runs-on: synapse-vnet
+      plan-runs-on: synapse-vnet
+      apply-runs-on: synapse-vnet
 ```
 
 A complete caller is in [`examples/synapse.yaml`](../examples/synapse.yaml).
@@ -60,8 +61,9 @@ A complete caller is in [`examples/synapse.yaml`](../examples/synapse.yaml).
 - **Artifacts aren't ARM resources.** They're published through the
   workspace's development endpoint (`https://<workspace>.dev.azuresynapse.net`)
   by the Synapse workspace deployer, not by an ARM deployment. So:
-  - a workspace without public network access needs `runs-on` to be a
-    runner in its network, for the apply (and for `what-if` plans);
+  - a workspace without public network access needs `apply-runs-on` (and,
+    for `what-if` plans, `plan-runs-on`) to be a runner in its network, or
+    `runs-on` for every job;
   - there's no what-if: every deployment publishes every artifact again.
     `what-if` instead lists which artifacts are new, and which the
     deployment deletes;
@@ -119,7 +121,8 @@ synapse-deploy.yaml                   plan ──> apply (after approval)
    deployment too.
 3. **A runner that can reach the workspace**, unless it allows public
    network access: a self-hosted runner in its network, or a GitHub-hosted
-   runner in an Azure private network.
+   runner in an Azure private network (a runner group, e.g.
+   `apply-runs-on: '{"group": "synapse-vnet"}'`).
 4. **Apply environments** with required reviewers, e.g.
    `apply-environment: "{deployment}"`.
 5. **Azure OIDC.** No secrets are needed: set the variables

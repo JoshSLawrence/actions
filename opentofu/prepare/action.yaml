@@ -99,6 +99,18 @@ inputs:
     description: '"true" if the plan-azure-client-secret secret was passed.'
     required: false
     default: "false"
+  integration-test-runs-on:
+    description: The integration-test-runs-on input.
+    required: false
+    default: ""
+  plan-runs-on:
+    description: The plan-runs-on input.
+    required: false
+    default: ""
+  apply-runs-on:
+    description: The apply-runs-on input.
+    required: false
+    default: ""
   github-token:
     description: "Token to check the environments exist with (needs actions: read)."
     required: false
@@ -148,6 +160,9 @@ runs:
         PLAN_AZURE_CLIENT_ID: ${{ inputs.plan-azure-client-id }}
         HAS_AZURE_CLIENT_SECRET: ${{ inputs.has-azure-client-secret }}
         HAS_PLAN_AZURE_CLIENT_SECRET: ${{ inputs.has-plan-azure-client-secret }}
+        INTEGRATION_TEST_RUNS_ON: ${{ inputs.integration-test-runs-on }}
+        PLAN_RUNS_ON: ${{ inputs.plan-runs-on }}
+        APPLY_RUNS_ON: ${{ inputs.apply-runs-on }}
         IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         IS_DEPENDABOT: ${{ github.event_name == 'pull_request' && github.actor == 'dependabot[bot]' }}
 
