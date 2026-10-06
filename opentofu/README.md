@@ -35,7 +35,7 @@ One job per deployment. A module deployed once:
 ```yaml
 jobs:
   network:
-    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.2.0
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.3.0
     permissions:
       actions: read
       contents: read
@@ -404,7 +404,7 @@ every call, and require only its check:
       contents: read
     steps:
       - name: Check results
-        uses: JoshSLawrence/actions/shared/result@v0.2.0
+        uses: JoshSLawrence/actions/shared/result@v0.3.0
         with:
           needs: ${{ toJSON(needs) }}
 ```
