@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Common functions for the opentofu/* action scripts: everything in
-# shared/scripts/common.sh (logging, outputs, lists, mise, globs, markdown,
+# Common functions for the opentofu/* scripts: the shared library
+# (shared/scripts/common.sh: logging, outputs, lists, mise, globs, markdown,
 # GitHub comments), plus the OpenTofu and deployments sections below. Source
 # it with:
 #
@@ -38,32 +38,25 @@ configure_git_github_auth() {
   git config --global --add url."${authed}".insteadOf "git@${host}:"
 }
 
-# Print the init arguments shared by plan and apply: -backend-config for each
-# line of BACKEND_CONFIG (key=value, or a file such as a .tfbackend, relative
-# to WORKING_DIR), -var-file for each line of VAR_FILES (OpenTofu supports
-# variables in the backend block), and -lockfile=readonly when the module
-# commits a lock file, so plan and apply use exactly the provider versions and
-# checksums recorded there.
+# Print the init arguments shared by plan and apply: -var-file for each line
+# of VAR_FILES -- a deployment's .tfvars sets its backend's variables (its
+# state key) -- and -lockfile=readonly when the module commits a lock file,
+# so plan and apply use exactly the provider versions and checksums recorded
+# there.
 # One argument per line; read with mapfile.
 tofu_init_args() {
   echo "-input=false"
   # Deployments of one module share its .terraform directory when run in the
   # same workspace (locally, or a reused runner); -reconfigure makes init use
-  # this deployment's backend config instead of refusing because the last
-  # one's differs. It never migrates state.
+  # this deployment's backend settings instead of refusing because the last
+  # one's differ. It never migrates state.
   echo "-reconfigure"
   if [ -f .terraform.lock.hcl ]; then
     echo "-lockfile=readonly"
   fi
-  local line
-  while IFS= read -r line; do
-    echo "-backend-config=${line}"
-  done < <(list_lines "${BACKEND_CONFIG:-}")
-  # OpenTofu supports variables in the backend block, so pass var-files to init.
-  # When VAR_FILES is empty (module without deployments), also check for
-  # terraform.tfvars which OpenTofu would auto-load during plan/apply, but we
-  # need to explicitly pass to init for backend variable resolution.
-  local var_files_list
+  # A module without deployments has no var files; pass terraform.tfvars
+  # explicitly, which plan would auto-load, in case the backend reads it.
+  local line var_files_list
   var_files_list="$(list_items "${VAR_FILES:-}")"
   if [ -z "$var_files_list" ] && [ -f terraform.tfvars ]; then
     echo "-var-file=terraform.tfvars"
@@ -84,122 +77,30 @@ warn_if_no_lock_file() {
   fi
 }
 
-# --- Deployments --------------------------------------------------------------
+# --- Azure credentials ----------------------------------------------------------
 #
-# A deployment is one root module applied with one .tfvars file: the same
-# configuration deployed several times (dev/prod, per region, per customer)
-# with different variables and state. Each deployment is named after its
-# .tfvars file (deployments/prod.tfvars -> "prod"), and a .tfbackend file
-# next to it with the same name (deployments/prod.tfbackend) is added to its
-# backend config -- OpenTofu's own file for -backend-config values, so each
-# deployment can keep its state apart. A root module without deployments is
-# planned once, as it is.
+# The workflow's azure-* inputs and secrets, mapped to the azurerm provider's
+# and backend's ARM_* variables (see azure-env.sh). azure-client-id is the
+# apply identity (and the integration tests'); plan-azure-client-id
+# overrides it for the plan job, as a pair with plan-azure-client-secret. A
+# job with a client secret uses it, one without uses OIDC.
 
-# Print a deployment's name from its .tfvars path
-deployment_name() {
-  local name
-  name="$(basename "$1")"
-  name="${name%.json}"
-  echo "${name%.tfvars}"
-}
-
-# Print one deployment of a root module as a compact JSON object:
-#   name             - "" for a root module without deployments
-#   var_files        - VAR_FILES plus the deployment's .tfvars (newline-
-#                      separated, relative to the root module)
-#   backend_config   - BACKEND_CONFIG, then the deployment's .tfbackend if
-#                      there is one (one per line)
-#   plan_environment, apply_environment
-#                    - PLAN_ENVIRONMENT / APPLY_ENVIRONMENT with {deployment}
-#                      replaced
-#   preflight_paths  - PREFLIGHT_PATHS plus every var and backend file, as
-#                      repository paths: a change to any of them on the
-#                      target branch makes a plan stale
-# Usage: deployment_json "<root module dir>" "<name>" "<.tfvars path or empty>"
-deployment_json() {
-  local dir="$1" name="$2" tfvars="$3"
-  local var_files backend_config plan_environment apply_environment
-  local backend_file="" file preflight
-
-  var_files="$(list_items "${VAR_FILES:-}")"
-  if [ -n "$tfvars" ]; then
-    var_files="$(printf '%s\n%s' "$var_files" "$tfvars" | sed '/^$/d')"
-    backend_file="${tfvars%.json}"
-    backend_file="${backend_file%.tfvars}.tfbackend"
-    [ -f "${dir}/${backend_file}" ] || backend_file=""
-  fi
-
-  backend_config="$(expand_deployment_placeholder backend-config "$(list_lines "${BACKEND_CONFIG:-}")" "$name" "$dir")" || return 1
-  if [ -n "$backend_file" ]; then
-    backend_config="$(printf '%s\n%s' "$backend_config" "$backend_file" | sed '/^$/d')"
-  fi
-  plan_environment="$(expand_deployment_placeholder plan-environment "${PLAN_ENVIRONMENT:-}" "$name" "$dir")" || return 1
-  apply_environment="$(expand_deployment_placeholder apply-environment "${APPLY_ENVIRONMENT:-}" "$name" "$dir")" || return 1
-
-  preflight="$(list_items "${PREFLIGHT_PATHS:-}")"
-  while IFS= read -r file; do
-    [ -n "$file" ] || continue
-    # Only files: key=value backend settings aren't paths
-    [ -f "${dir}/${file}" ] || continue
-    file="$(normalize_path "${dir}/${file}")" || continue
-    preflight="$(printf '%s\n%s' "$preflight" "$file")"
-  done <<< "$(printf '%s\n%s' "$var_files" "$backend_config")"
-  preflight="$(sed '/^$/d' <<< "$preflight" | sort -u)"
-
-  jq -cn --arg name "$name" --arg var_files "$var_files" \
-    --arg backend_config "$backend_config" --arg plan_environment "$plan_environment" \
-    --arg apply_environment "$apply_environment" --arg preflight_paths "$preflight" \
-    '{name: $name, var_files: $var_files, backend_config: $backend_config,
-      plan_environment: $plan_environment, apply_environment: $apply_environment,
-      preflight_paths: $preflight_paths}'
-}
-
-# Print a root module's deployments, one JSON object (see deployment_json)
-# per line. DEPLOYMENTS lists .tfvars files relative to the root module,
-# space- or newline-separated: globs (matched within the module, e.g.
-# "deployments/*.tfvars") and/or plain paths (which may point outside it).
-# Without DEPLOYMENTS, prints the single unnamed deployment. With DEPLOYMENTS
-# matching nothing, prints nothing: the caller decides whether that's an
-# error. Returns 1 on a missing plain path or two files with the same name.
-# Also reads VAR_FILES, BACKEND_CONFIG, PLAN_ENVIRONMENT, APPLY_ENVIRONMENT
-# and PREFLIGHT_PATHS (see deployment_json).
-# Usage: list_deployments "<root module dir>"
-list_deployments() {
-  local dir="$1" pattern regex file name
-  local -a files=()
-
-  if [ -z "$(list_items "${DEPLOYMENTS:-}")" ]; then
-    deployment_json "$dir" "" ""
-    return
-  fi
-
-  while IFS= read -r pattern; do
-    pattern="${pattern#./}"
-    if [[ "$pattern" == *[*?]* ]]; then
-      regex="$(glob_to_regex "$pattern")"
-      while IFS= read -r file; do
-        if [[ "$file" =~ $regex ]]; then
-          files+=("$file")
-        fi
-      done < <(cd "$dir" && find . \( -name .terraform -o -name .git \) -prune -o \
-        -type f \( -name '*.tfvars' -o -name '*.tfvars.json' \) -print | sed 's|^\./||')
-    elif [ -f "${dir}/${pattern}" ]; then
-      files+=("$pattern")
-    else
-      log_error "Deployment var file '${pattern}' not found in ${dir}. deployments paths are relative to the root module."
-      return 1
+# Print what's wrong with the Azure inputs, one problem per line; nothing if
+# they're consistent. Reads AZURE_CLIENT_ID, AZURE_TENANT_ID,
+# PLAN_AZURE_CLIENT_ID, and HAS_AZURE_CLIENT_SECRET /
+# HAS_PLAN_AZURE_CLIENT_SECRET ("true" if that secret was passed).
+azure_input_problems() {
+  if [ -z "${AZURE_CLIENT_ID:-}" ]; then
+    if is_true "${HAS_AZURE_CLIENT_SECRET:-false}"; then
+      echo "The azure-client-secret secret is set, but azure-client-id isn't. Pass the client ID it belongs to, or drop the secret."
     fi
-  done < <(list_items "$DEPLOYMENTS")
-
-  local -A seen=()
-  while IFS= read -r file; do
-    [ -n "$file" ] || continue
-    name="$(deployment_name "$file")"
-    if [ -n "${seen[$name]+set}" ]; then
-      log_error "Two deployments of ${dir} are named '${name}': ${seen[$name]} and ${file}. Deployments are named after their .tfvars file, so rename one."
-      return 1
+    if [ -n "${PLAN_AZURE_CLIENT_ID:-}" ]; then
+      echo "plan-azure-client-id is set, but azure-client-id isn't. azure-client-id is the apply identity; plan-azure-client-id only overrides it for the plan job."
     fi
-    seen["$name"]="$file"
-    deployment_json "$dir" "$name" "$file" || return 1
-  done < <(printf '%s\n' "${files[@]+"${files[@]}"}" | sort -u)
+  elif [ -z "${AZURE_TENANT_ID:-}" ]; then
+    echo "azure-client-id is set, but azure-tenant-id isn't. Pass the tenant the identity belongs to."
+  fi
+  if is_true "${HAS_PLAN_AZURE_CLIENT_SECRET:-false}" && [ -z "${PLAN_AZURE_CLIENT_ID:-}" ]; then
+    echo "The plan-azure-client-secret secret is set, but plan-azure-client-id isn't. Pass the plan identity's client ID, or drop the secret (the plan job then uses azure-client-id and its secret)."
+  fi
 }

@@ -223,7 +223,7 @@ jobs:
       # Only the what-if runs a tool; without it the plan needs just jq
       - name: Set up tools
         if: inputs.what-if
-        uses: $/opentofu/setup
+        uses: $/shared/setup
         with:
           working-directory: ${{ inputs.working-directory }}
           required-tools: azure-cli
@@ -262,7 +262,7 @@ jobs:
 
       - name: Comment plan on PR
         if: ${{ !cancelled() && github.event_name == 'pull_request' && inputs.pr-comment && steps.plan.outputs.key != '' }}
-        uses: $/opentofu/pr-comment
+        uses: $/shared/pr-comment
         with:
           comment-key: ${{ steps.plan.outputs.key }}
           title: ${{ steps.plan.outputs.title }}
@@ -332,7 +332,7 @@ jobs:
           subscription-id: ${{ env.ARM_SUBSCRIPTION_ID }}
 
       - name: Set up tools
-        uses: $/opentofu/setup
+        uses: $/shared/setup
         with:
           working-directory: ${{ inputs.working-directory }}
           required-tools: azure-cli
@@ -354,7 +354,7 @@ jobs:
 
       - name: Comment apply result on PR
         if: ${{ !cancelled() && github.event_name == 'pull_request' && inputs.pr-comment }}
-        uses: $/opentofu/pr-comment
+        uses: $/shared/pr-comment
         with:
           comment-key: ${{ needs.plan.outputs.comment-key }}
           title: ${{ needs.plan.outputs.title }}

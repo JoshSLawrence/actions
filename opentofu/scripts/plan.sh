@@ -16,9 +16,8 @@
 #                          sensitive values unmasked: never upload it. The
 #                          plan action deletes it at the end of the job.
 #   VAR_FILES            - -var-file paths relative to WORKING_DIR, space- or
-#                          newline-separated (optional)
-#   BACKEND_CONFIG       - -backend-config values, one per line: key=value, or
-#                          a file relative to WORKING_DIR (optional)
+#                          newline-separated: the deployment's .tfvars, which
+#                          also sets its backend's variables (optional)
 #   MODULES_GITHUB_TOKEN - lets init fetch module sources from private GitHub
 #                          repositories (optional)
 #   HEAD_SHA, TARGET_BRANCH, TARGET_SHA, PR_NUMBER
@@ -47,7 +46,7 @@ TMP_ROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 PLAN_DIR="${PLAN_DIR:-$TMP_ROOT/tofu-plan}"
 WORK_DIR="${WORK_DIR:-$TMP_ROOT/tofu-plan-work}"
 
-log_config WORKING_DIR PLAN_DIR WORK_DIR VAR_FILES BACKEND_CONFIG HEAD_SHA TARGET_BRANCH PR_NUMBER
+log_config WORKING_DIR PLAN_DIR WORK_DIR VAR_FILES HEAD_SHA TARGET_BRANCH PR_NUMBER
 
 # Absolute paths: everything below runs from inside WORKING_DIR
 rm -rf "$PLAN_DIR" "$WORK_DIR"

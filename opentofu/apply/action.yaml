@@ -4,7 +4,7 @@ description: >-
   one. First refuses a stale plan (the PR moved on, or the module changed on
   the target branch since it was planned), then checks the plan file's digest
   and applies it. Download the plan artifact into plan-dir and run
-  opentofu/setup first. Gate the job with an environment that requires
+  shared/setup first. Gate the job with an environment that requires
   reviewers.
 
 inputs:
@@ -26,8 +26,8 @@ inputs:
       use), which needs actions: read.
     required: false
     default: ""
-  backend-config:
-    description: The same backend-config the plan used.
+  var-files:
+    description: The same var-files the plan used (init needs the backend's variables).
     required: false
     default: ""
   preflight:
@@ -38,7 +38,8 @@ inputs:
     description: >-
       Repository paths the plan depends on, space- or newline-separated: a
       change to any of them on the target branch since the plan makes it
-      stale. Default: the working directory. Add local modules outside it.
+      stale. Default: the working directory. Add anything else it depends
+      on (e.g. shared paths).
     required: false
     default: ""
   github-token:
@@ -79,5 +80,5 @@ runs:
         WORKING_DIR: ${{ inputs.working-directory }}
         PLAN_DIR: ${{ inputs.plan-dir || format('{0}/tofu-plan', runner.temp) }}
         PLAN_SHA256: ${{ inputs.plan-sha256 }}
-        BACKEND_CONFIG: ${{ inputs.backend-config }}
+        VAR_FILES: ${{ inputs.var-files }}
         MODULES_GITHUB_TOKEN: ${{ inputs.modules-token || inputs.github-token }}

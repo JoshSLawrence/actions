@@ -9,6 +9,9 @@
 #   TRIVY_SEVERITY - severities that fail the scan, e.g. CRITICAL,HIGH.
 #                    Default: trivy.yaml's setting if it has one, otherwise
 #                    CRITICAL,HIGH.
+#   VAR_FILES      - var files relative to WORKING_DIR, space- or
+#                    newline-separated: the call's .tfvars, so the scan sees
+#                    its values (optional)
 #
 
 set -euo pipefail
@@ -40,6 +43,14 @@ elif [ -n "$config_file" ] && grep -qE '^[[:space:]]*severity:' "$config_file"; 
 else
   args+=(--severity "CRITICAL,HIGH")
 fi
+
+while IFS= read -r var_file; do
+  if [ ! -f "$var_file" ]; then
+    log_error "Var file '${var_file}' not found in ${WORKING_DIR}. Paths are relative to the root module."
+    exit 1
+  fi
+  args+=(--tf-vars "$var_file")
+done < <(list_items "${VAR_FILES:-}")
 
 if [ -n "$config_file" ]; then
   args+=(--config "$config_file")

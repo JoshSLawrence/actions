@@ -4,8 +4,7 @@
 # after the approval and before anything is applied: an approval can come
 # hours or days after the plan, and nothing else notices the code moved on
 # (OpenTofu only rejects a saved plan when the *state* changed; an ARM
-# deployment never does). Used by the opentofu, datafactory and synapse apply
-# actions. So check that:
+# deployment never does). Used by every area's apply action. So check that:
 #
 #   - (PR runs) the PR is still open and has no newer commits: a newer push
 #     has its own plan, which is the one to review and approve, and
@@ -20,8 +19,8 @@
 #   TARGET_SHA        - commit of TARGET_BRANCH the plan was made against
 #   PREFLIGHT_PATHS   - what the plan depends on, space- or newline-separated:
 #                       directories (the root module or factory/workspace
-#                       folder, local modules outside it; "." means any
-#                       change) and/or globs such as "modules/**" (required)
+#                       folder; "." means any change) and/or globs such as
+#                       "modules/**" (required)
 #   PR_NUMBER, HEAD_SHA - the PR and the head commit that was planned (PR
 #                       runs only)
 #

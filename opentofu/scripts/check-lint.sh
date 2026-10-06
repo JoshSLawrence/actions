@@ -6,6 +6,9 @@
 # Environment variables:
 #   WORKING_DIR      - root module to check (required)
 #   TFLINT_RECURSIVE - also lint every module under WORKING_DIR (default: true)
+#   VAR_FILES        - var files relative to WORKING_DIR, space- or
+#                      newline-separated: the call's .tfvars, so rules see its
+#                      values (optional)
 #   GITHUB_TOKEN     - authenticates plugin downloads, avoiding GitHub API
 #                      rate limits (optional)
 #
@@ -34,6 +37,15 @@ args=(--format compact)
 if is_true "${TFLINT_RECURSIVE:-true}"; then
   args+=(--recursive)
 fi
+# Absolute paths: with --recursive, tflint resolves a relative --var-file in
+# each module it visits, not in the root module
+while IFS= read -r var_file; do
+  if [ ! -f "$var_file" ]; then
+    log_error "Var file '${var_file}' not found in ${WORKING_DIR}. Paths are relative to the root module."
+    exit 1
+  fi
+  args+=("--var-file=${PWD}/${var_file}")
+done < <(list_items "${VAR_FILES:-}")
 
 log_cmd tflint "${args[@]}"
 if mise exec -- tflint "${args[@]}"; then

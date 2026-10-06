@@ -1,0 +1,119 @@
+# One OpenTofu root module deployed three times -- dev, and two production
+# regions -- one job per deployment, each with its own var files,
+# environments and identity. One check covers them all (`identity`).
+#
+#   iac/identity/                   the root module
+#   ├── backend.tf                  backend "azurerm" { key = var.state_key ... }
+#   ├── deployments/
+#   │   ├── common.tfvars           shared by the production deployments
+#   │   ├── dev.tfvars              state_key = "identity-dev.tfstate", ...
+#   │   ├── prod-eastus.tfvars
+#   │   └── prod-westus.tfvars
+#   ├── main.tf
+#   ├── mise.toml                   pins opentofu, tflint, trivy, terraform-docs
+#   └── modules/                    child modules
+#
+# Setup:
+# - Environments `dev` and `prod` with required reviewers, and `prod-plan`
+#   without. Create them first: the run fails, naming one that's missing.
+# - Repository variables: AZURE_TENANT_ID; DEV_SUBSCRIPTION_ID and
+#   PROD_SUBSCRIPTION_ID; DEV_CLIENT_ID and PROD_CLIENT_ID (identities that
+#   can change the resources); DEV_READ_CLIENT_ID and PROD_READ_CLIENT_ID
+#   (read-only, for plans).
+# - Federated credentials: the write identities for `environment:dev` and
+#   `environment:prod`; DEV_READ_CLIENT_ID for `pull_request` and
+#   `ref:refs/heads/main` (dev plans run without an environment);
+#   PROD_READ_CLIENT_ID for `environment:prod-plan`. See opentofu/README.md.
+# - Require the check `identity` in a branch ruleset.
+
+name: OpenTofu identity
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  dev:
+    name: identity-dev
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.2.0
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      working-directory: iac/identity
+      var-files: deployments/dev.tfvars
+      apply-environment: dev
+      azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+      azure-subscription-id: ${{ vars.DEV_SUBSCRIPTION_ID }}
+      azure-client-id: ${{ vars.DEV_CLIENT_ID }}
+      plan-azure-client-id: ${{ vars.DEV_READ_CLIENT_ID }}
+
+  # Applied after merge (not from the PR), once dev has applied
+  prod-eastus:
+    name: identity-prod-eastus
+    needs: dev
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.2.0
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      working-directory: iac/identity
+      var-files: |
+        deployments/common.tfvars
+        deployments/prod-eastus.tfvars
+      plan-environment: prod-plan
+      apply-environment: prod
+      apply-from-pr: false
+      azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+      azure-subscription-id: ${{ vars.PROD_SUBSCRIPTION_ID }}
+      azure-client-id: ${{ vars.PROD_CLIENT_ID }}
+      plan-azure-client-id: ${{ vars.PROD_READ_CLIENT_ID }}
+
+  prod-westus:
+    name: identity-prod-westus
+    needs: dev
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.2.0
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      working-directory: iac/identity
+      var-files: |
+        deployments/common.tfvars
+        deployments/prod-westus.tfvars
+      plan-environment: prod-plan
+      apply-environment: prod
+      apply-from-pr: false
+      azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+      azure-subscription-id: ${{ vars.PROD_SUBSCRIPTION_ID }}
+      azure-client-id: ${{ vars.PROD_CLIENT_ID }}
+      plan-azure-client-id: ${{ vars.PROD_READ_CLIENT_ID }}
+
+  # The one check to require for this file: every deployment above
+  # succeeded, or had nothing to do. Add new deployments to `needs`.
+  result:
+    name: identity
+    needs: [dev, prod-eastus, prod-westus]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check results
+        uses: JoshSLawrence/actions/shared/result@v0.2.0
+        with:
+          needs: ${{ toJSON(needs) }}

@@ -22,29 +22,56 @@ catalog, layout and principles.
 
 ## Architecture
 
+- **Areas depend on the shared library, never on each other.** `shared/`
+  is generic: helpers, and the setup, PR comment, result, apply-preflight
+  and environment-check steps every area runs. It holds nothing
+  area-specific. OpenTofu (`opentofu/`, `opentofu*.yaml`) and the ARM
+  areas (`datafactory/`, `synapse/`, and `arm/`, which those two share)
+  never reference each other. A change to `shared/` affects every area, by
+  design; a change to an area must not.
 - **Scripts hold the logic** (`<area>/scripts/`). Composite actions
   (`<area>/<action>/action.yaml`) and workflows only wire inputs to scripts
   through `env:`. Check for a helper before writing one, in named sections:
   - `shared/scripts/common.sh`: what every area uses (logging, outputs,
     lists, mise, globs, markdown, GitHub comments);
-  - `shared/scripts/arm.sh`: what Data Factory and Synapse share
-    (deployments of ARM parameters files, parameter layering, the export
-    bundle, plans);
-  - `opentofu/scripts/common.sh`: OpenTofu only (it sources the shared one).
-  Scripts every area runs as is (`apply-preflight.sh`,
-  `check-environment.sh`, `arm-*.sh`) live in `shared/scripts/` too.
-- **OpenTofu workflows nest:** `opentofu.yaml` (discover root modules) →
-  `opentofu-config.yaml` (validate once, resolve deployments) →
-  `opentofu-deploy.yaml` (plan → apply one deployment).
-  `opentofu-drift.yaml` stands alone.
-- **Data Factory and Synapse workflows** follow the same shape:
+  - `opentofu/scripts/common.sh`: OpenTofu and its deployments (it sources
+    the shared one);
+  - `arm/scripts/arm.sh`: what Data Factory and Synapse share (deployments
+    of ARM parameters files, parameter layering, the export bundle,
+    plans).
+- **OpenTofu is one reusable workflow, `opentofu.yaml`, called once per
+  deployment:** one root module, its var files, one apply environment.
+  Callers write one job per deployment in their own workflow files; there's
+  no discovery and no file format of our own. The design, with the
+  decisions behind it, is `docs/design/opentofu-per-root-module.md`: don't
+  change the interface without updating it (and without the user's
+  agreement). Jobs: prepare (`validate-inputs.sh`: every input problem at
+  once; tool pins through `shared/setup` with `install: false`;
+  `require-environments.sh`; `changes.sh`) → checks → integration-tests →
+  plan → apply → result. The composite actions are internals.
+- **OpenTofu change detection is inside the run** (`changes.sh`): it watches
+  the module directory, the var files, the calling workflow file
+  (`github.workflow_ref`) and `extra-paths`; the same paths make a plan
+  stale. State keys come from a backend variable set in the var files;
+  there's no `backend-config` or `.tfbackend` support.
+- **OpenTofu credentials are named provider inputs**, Azure only for now:
+  `azure-client-id` (the apply and integration test identity),
+  `plan-azure-client-id` (plan override, switching as a pair with its
+  secret), `azure-tenant-id`, `azure-subscription-id`, `azure-use-azuread`
+  (default true), and the `azure-client-secret` /
+  `plan-azure-client-secret` secrets; a secret means secret auth, none
+  means OIDC. `azure-env.sh` maps them to `ARM_*`; its rules live in
+  `azure_input_problems` (`opentofu/scripts/common.sh`), shared with input
+  validation. Add other providers as their own optional inputs.
+- **Data Factory and Synapse workflows** follow the same nested shape:
   `datafactory.yaml` (build the template once, resolve deployments) →
   `datafactory-deploy.yaml` (plan → apply one deployment); likewise
-  `synapse.yaml` → `synapse-deploy.yaml`. They reuse `opentofu/setup`,
-  `opentofu/pr-comment` and `opentofu/result`, and the opentofu input names
-  (`apply-environment`, `apply-from-pr`, ...).
+  `synapse.yaml` → `synapse-deploy.yaml`. Every area's workflows use
+  `shared/setup`, `shared/pr-comment` and `shared/result`.
 - **Workflow inputs stay in sync:**
-  - An input means the same thing everywhere it appears, across families.
+  - An input means the same thing in every workflow of a family that has
+    it (the Data Factory and Synapse workflows). OpenTofu has a single
+    workflow.
   - Callers pass shared inputs through unchanged.
   - `.github/scripts/check-workflow-inputs.sh` enforces both. When you add
     or change an input, change it in every workflow that has it; the
@@ -57,24 +84,22 @@ catalog, layout and principles.
   supports `$/`.
 - **Composite actions find their scripts** via
   `"${GITHUB_ACTION_PATH}/../scripts/<script>.sh"`, or
-  `"${GITHUB_ACTION_PATH}/../../shared/scripts/<script>.sh"`.
+  `"${GITHUB_ACTION_PATH}/../../shared/scripts/<script>.sh"` (and
+  `../../arm/scripts/` for Data Factory and Synapse).
 - **Tools are per root module** (or factory/workspace folder). Every script
   that runs a tool goes through `cd_working_dir`, which scopes mise to the
   module's own `mise.toml`. That means nothing from parent directories or
   global config. Run tools with `mise exec -- <tool>` (`arm_az` for az).
   mise installs `azure-cli` with `uv`, so a folder pinning one pins both.
-- **Deployments** (a root module × one `.tfvars`, plus a same-named
-  `.tfbackend`) are resolved by `list_deployments` in `common.sh`, used by
-  both `deployments.sh` and `discover.sh`. For Data Factory and Synapse, a
-  deployment is the template × one ARM parameters file, resolved by
-  `arm_list_deployments` in `arm.sh`.
-- **Data Factory and Synapse plans** hold `deploy/` (template, rendered
-  parameters, `target.json`) and `summary.md`. The digest covers `deploy/`,
-  and the apply takes its target from `target.json`, never from inputs.
-  `parameter-secrets` are merged only into temporary files at plan (what-if)
-  and apply time, never into an artifact.
+- **Data Factory and Synapse deployments** are the template × one ARM
+  parameters file, resolved by `arm_list_deployments` in `arm.sh`. Their
+  plans hold `deploy/` (template, rendered parameters, `target.json`) and
+  `summary.md`. The digest covers `deploy/`, and the apply takes its target
+  from `target.json`, never from inputs. `parameter-secrets` are merged only
+  into temporary files at plan (what-if) and apply time, never into an
+  artifact.
 - **Paths:** composite action inputs are relative to the workspace, which is
-  the repository root; var/backend files are relative to the module.
+  the repository root; var files are relative to the module.
 - **Every script runs locally too.** Outputs and summaries degrade to
   logging outside Actions (see `set_output` and `append_step_summary`).
 
@@ -85,9 +110,10 @@ catalog, layout and principles.
   upstream release (`v<upstream>-oidc.N`): port and bump it by hand when
   upstream releases.
   Dependabot updates them in `.github/` and in every `opentofu/*`,
-  `datafactory/*` and `synapse/*` action. Bump by hand: `mise-version`
-  (default in `opentofu/setup/action.yaml`) and the Az PowerShell modules
-  pinned in `datafactory/scripts/pre-post-deployment.ps1`.
+  `shared/*`, `datafactory/*` and `synapse/*` action. Bump by hand:
+  `mise-version` (default in `shared/setup/action.yaml`) and the Az
+  PowerShell modules pinned in
+  `datafactory/scripts/pre-post-deployment.ps1`.
 - **Least privilege.** Workflows set `permissions: {}` and grant per job. A
   permission a reusable workflow's job requests becomes every caller's
   minimum, so adding one is a breaking change: update the README and
@@ -120,13 +146,16 @@ catalog, layout and principles.
   - shellcheck, actionlint (workflows and `examples/`), zizmor,
     markdownlint;
   - the workflow input sync check and the no-inline-scripts check;
+  - the OpenTofu script tests (`tests/opentofu/scripts-test.sh`: change
+    detection, input validation, the Azure mapping, names);
   - the OpenTofu hooks on the fixtures.
 - The apply scripts need a real factory or workspace: CI stops the Data
   Factory and Synapse e2e runs at the plan.
 - Exercise changed scripts against `tests/fixtures/` locally, e.g.
   `WORKING_DIR=tests/fixtures/opentofu/basic opentofu/scripts/check-fmt.sh`,
-  or `SEARCH_ROOT=tests/fixtures/opentofu CHANGED_ONLY=false
-  DEPLOYMENTS='deployments/*.tfvars' opentofu/scripts/discover.sh`, or
+  or `WORKING_DIR=tests/fixtures/opentofu/basic
+  VAR_FILES=deployments/dev.tfvars APPLY_ENVIRONMENT=dev
+  opentofu/scripts/validate-inputs.sh`, or
   `WORKING_DIR=tests/fixtures/datafactory/basic
   datafactory/scripts/build.sh` then `plan.sh` with `TEMPLATE_DIR`,
   `PARAMETER_FILES` and `RESOURCE_GROUP` (the same for `synapse/`). Plans
@@ -141,7 +170,8 @@ catalog, layout and principles.
 ## Versioning
 
 Tag releases `vX.Y.Z` and move the major tag (`v1`). Breaking changes need
-a new major version. Breaking changes include:
+a new major version; before `v1.0.0`, a new minor version. Breaking changes
+include:
 
 - removing or renaming an input or output;
 - changing a default in a way that changes behavior;

@@ -6,7 +6,7 @@ description: >-
   the plan's digest; then runs the exported pre-deployment script (stop
   triggers), an incremental ARM deployment, and the post-deployment script
   (delete removed resources, start triggers). Download the plan artifact into
-  plan-dir, sign in with azure/login, and run opentofu/setup (azure-cli, plus
+  plan-dir, sign in with azure/login, and run shared/setup (azure-cli, plus
   powershell for the script) first. Gate the job with an environment that
   requires reviewers.
 

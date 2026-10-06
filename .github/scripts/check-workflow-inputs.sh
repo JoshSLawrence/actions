@@ -4,16 +4,14 @@
 # input means the same thing -- with the same type, default and description
 # -- whichever workflow a caller uses:
 #
-#   opentofu.yaml         --calls-->  opentofu-config.yaml     (job: config)
-#   opentofu-config.yaml  --calls-->  opentofu-deploy.yaml     (job: deploy)
-#   opentofu-drift.yaml   shares inputs with opentofu.yaml     (no call)
 #   datafactory.yaml      --calls-->  datafactory-deploy.yaml  (job: deploy)
 #   synapse.yaml          --calls-->  synapse-deploy.yaml      (job: deploy)
 #
-# Across the families, the inputs they share (runs-on, apply-environment,
-# azure-client-id, ...) must also match: opentofu-config.yaml and
-# datafactory.yaml, datafactory.yaml and synapse.yaml, and the same for the
-# deploy workflows (no call).
+# Data Factory and Synapse deploy the same kind of ARM template with the same
+# scripts, so the inputs they share (runs-on, apply-environment, ...) must
+# also match: datafactory.yaml and synapse.yaml, and the same for the deploy
+# workflows (no call). OpenTofu has a single workflow, opentofu.yaml, so it
+# has nothing to keep in sync.
 #
 # For a calling pair it checks that:
 #   1. every input of the called workflow is also an input of the caller,
@@ -96,18 +94,6 @@ check_pair() {
   fi
 }
 
-check_pair opentofu.yaml opentofu-config.yaml config \
-  '["working-directory", "stack-name", "preflight-paths"]' \
-  '["search-root", "exclude", "modules", "changed-only", "shared-paths"]' \
-  '["deployments"]'
-
-check_pair opentofu-config.yaml opentofu-deploy.yaml deploy \
-  '["deployment"]' \
-  '["deployments", "max-parallel", "fmt", "validate", "tflint", "trivy", "trivy-severity", "docs", "tests", "test-filter", "test-verbose", "integration-tests", "integration-test-filter", "integration-test-environment", "integration-test-timeout-minutes"]' \
-  '["var-files", "backend-config", "plan-environment", "apply-environment", "preflight-paths"]'
-
-check_pair opentofu-drift.yaml opentofu.yaml "" '[]' '[]' '["plan-environment"]'
-
 check_pair datafactory.yaml datafactory-deploy.yaml deploy \
   '["deployment", "template-artifact"]' \
   '["deployments", "max-parallel", "factory-name"]' \
@@ -118,11 +104,7 @@ check_pair synapse.yaml synapse-deploy.yaml deploy \
   '["deployments", "max-parallel", "workspace-name"]' \
   '["parameter-files", "parameters", "resource-group", "plan-environment", "apply-environment", "preflight-paths"]'
 
-# Across families: what each service describes its own way is COMPUTED
-check_pair opentofu-config.yaml datafactory.yaml "" '[]' '[]' \
-  '["working-directory", "deployments", "max-parallel", "preflight-paths"]'
-check_pair opentofu-deploy.yaml datafactory-deploy.yaml "" '[]' '[]' \
-  '["working-directory", "deployment"]'
+# Across the ARM services: what each describes its own way is COMPUTED
 check_pair datafactory.yaml synapse.yaml "" '[]' '[]' '["working-directory", "deployments", "what-if"]'
 check_pair datafactory-deploy.yaml synapse-deploy.yaml "" '[]' '[]' \
   '["working-directory", "template-artifact", "what-if"]'

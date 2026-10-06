@@ -2,7 +2,7 @@
 #
 # Warns when the apply job runs without a reviewer gate. GitHub creates an
 # environment the first time a workflow names it -- with no protection rules
-# -- so a typo in apply-environment, or a forgotten setup step, silently
+# -- so a typo in an environment name, or a forgotten setup step, silently
 # turns "apply after approval" into "apply immediately". Best effort: never
 # fails the job, since some teams deliberately auto-apply (e.g. dev).
 #
@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 if [ -z "${APPLY_ENVIRONMENT:-}" ]; then
-  log_warn "No apply environment is set, so nothing confirms this apply was approved. Run the apply job in a GitHub environment with required reviewers, and pass its name as the environment input (apply-environment in the reusable workflow)."
+  log_warn "No apply environment is set, so nothing confirms this apply was approved. Run the apply job in a GitHub environment with required reviewers, and pass its name to the reusable workflow (apply-environment)."
   exit 0
 fi
 

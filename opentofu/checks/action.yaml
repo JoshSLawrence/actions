@@ -4,7 +4,7 @@ description: >-
   terraform-docs, and tofu test, each toggled by an input. Every enabled check
   runs even if an earlier one fails, so one run reports every problem; a
   results table goes to the job summary. Needs no cloud credentials unless
-  the tests do. Run opentofu/setup first, with the tools the enabled checks
+  the tests do. Run shared/setup first, with the tools the enabled checks
   need.
 
 inputs:
@@ -56,6 +56,10 @@ inputs:
     description: Pass -verbose to tofu test.
     required: false
     default: "false"
+  var-files:
+    description: "The call's var files, relative to the working directory, for TFLint, Trivy and tofu test."
+    required: false
+    default: ""
   github-token:
     description: Authenticates TFLint plugin downloads (avoids GitHub API rate limits).
     required: false
@@ -66,6 +70,11 @@ inputs:
       Defaults to github-token, which can only read this repository.
     required: false
     default: ""
+
+outputs:
+  results:
+    description: One "<check>=<outcome>" line per check, for the plan summary (see checks-summary.sh).
+    value: ${{ steps.summary.outputs.results }}
 
 runs:
   using: composite
@@ -95,6 +104,7 @@ runs:
       env:
         WORKING_DIR: ${{ inputs.working-directory }}
         TFLINT_RECURSIVE: ${{ inputs.tflint-recursive }}
+        VAR_FILES: ${{ inputs.var-files }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
 
     - name: Trivy
@@ -105,6 +115,7 @@ runs:
       env:
         WORKING_DIR: ${{ inputs.working-directory }}
         TRIVY_SEVERITY: ${{ inputs.trivy-severity }}
+        VAR_FILES: ${{ inputs.var-files }}
 
     - name: terraform-docs
       id: docs
@@ -123,9 +134,11 @@ runs:
         WORKING_DIR: ${{ inputs.working-directory }}
         TEST_FILTER: ${{ inputs.test-filter }}
         TEST_VERBOSE: ${{ inputs.test-verbose }}
+        VAR_FILES: ${{ inputs.var-files }}
         MODULES_GITHUB_TOKEN: ${{ inputs.modules-token || inputs.github-token }}
 
     - name: Summarize checks
+      id: summary
       if: ${{ !cancelled() }}
       shell: bash
       run: '"${GITHUB_ACTION_PATH}/../scripts/checks-summary.sh"'

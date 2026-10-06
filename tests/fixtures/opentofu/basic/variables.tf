@@ -13,3 +13,8 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "state_path" {
+  description = "Local state file for this deployment, set in its .tfvars (e.g. dev.tfstate)."
+  type        = string
+}
