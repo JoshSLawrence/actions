@@ -11,7 +11,7 @@ A library of reusable GitHub Actions workflows and composite actions.
 
 | Name | Kind | Does |
 | --- | --- | --- |
-| [OpenTofu](opentofu/README.md) | Reusable workflows + composite actions | Validate, test, lint, scan, plan and approval-gated apply for one root module, a monorepo, or a config deployed with many `.tfvars` files; PR comments; drift detection with issues |
+| [OpenTofu](opentofu/README.md) | Reusable workflow | Checks, tests, plans and applies one root module per call, with its var files, in its environment, when a PR touches it; Azure OIDC or secrets; PR comments; approval-gated apply |
 | [Data Factory](datafactory/README.md) | Reusable workflows + composite actions | Validate and export a factory's Git folder to an ARM template on every PR (no Publish, no `adf_publish`), what-if plans per environment, approval-gated deploys with trigger handling; PR comments |
 | [Synapse](synapse/README.md) | Reusable workflows + composite actions | The same for a Synapse workspace's artifacts (no `workspace_publish`), deployed with GitHub OIDC; PR comments |
 
@@ -24,26 +24,21 @@ Reference a reusable workflow from a job:
 ```yaml
 jobs:
   opentofu:
-    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.1.0
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.2.0
     permissions:
       actions: read
       contents: read
       id-token: write
       pull-requests: write
     with:
-      search-root: infra
-      apply-environment: production
+      working-directory: iac/network
+      var-files: prod.tfvars
+      apply-environment: prod
 ```
 
-Or reference a composite action from a step:
-
-```yaml
-- uses: JoshSLawrence/actions/opentofu/plan@v0.1.0
-  with:
-    working-directory: infra
-```
-
-Each entry's README has its inputs, the setup it needs, and examples.
+Each entry's README has its inputs, the setup it needs, and examples. The
+Data Factory and Synapse composite actions can also be used on their own;
+OpenTofu's are internals of its workflow.
 Complete caller workflows are in [`examples/`](examples/).
 
 ## Principles
@@ -53,8 +48,9 @@ Complete caller workflows are in [`examples/`](examples/).
    logic can be read, shellchecked and run locally. A pre-commit hook
    enforces this.
 3. **Easy to follow beats early abstraction.**
-4. **Stay DRY** with shared helpers and shared actions, as long as that
-   doesn't make the code harder to follow.
+4. **Stay DRY** with the shared library (`shared/`), as long as that
+   doesn't make the code harder to follow. Areas build on it but never on
+   each other, so a change to one area can't break another.
 
 ## Versioning
 
@@ -83,32 +79,33 @@ actions/
 │       ├── ci.yaml           # lint + end-to-end runs of the workflows
 │       ├── datafactory-deploy.yaml
 │       ├── datafactory.yaml
-│       ├── opentofu-config.yaml
-│       ├── opentofu-deploy.yaml
-│       ├── opentofu-drift.yaml
 │       ├── opentofu.yaml
 │       ├── synapse-deploy.yaml
 │       └── synapse.yaml
+├── arm/
+│   └── scripts/              # what Data Factory and Synapse share (arm.sh)
 ├── datafactory/              # build, deployments, plan, apply, scripts/
+├── docs/
+│   └── design/               # design documents and their decisions
 ├── examples/                 # caller workflows to copy from
 ├── mise.toml                 # tool versions for local hooks and CI lint
 ├── opentofu/
 │   ├── apply/                # composite actions, one per directory
+│   ├── azure/
 │   ├── checks/
-│   ├── deployments/
-│   ├── discover/
-│   ├── drift-report/
 │   ├── plan/
-│   ├── pr-comment/
+│   ├── prepare/
 │   ├── README.md
+│   └── scripts/              # the logic; actions are thin wrappers
+├── shared/                   # the library every area builds on
+│   ├── pr-comment/           # composite actions every area uses
 │   ├── result/
-│   ├── scripts/              # the logic; actions are thin wrappers
+│   ├── scripts/              # common.sh and generic steps
 │   └── setup/
-├── shared/
-│   └── scripts/              # helpers every area uses (common.sh, arm.sh)
 ├── synapse/                  # build, deployments, plan, apply, scripts/
 └── tests/
-    └── fixtures/             # what CI runs the workflows against
+    ├── fixtures/             # what CI runs the workflows against
+    └── opentofu/             # OpenTofu script tests
 ```
 
 ## Development

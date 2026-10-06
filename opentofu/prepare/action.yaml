@@ -1,0 +1,189 @@
+name: OpenTofu prepare
+description: >-
+  First steps of an OpenTofu call: checks every input up front (listing
+  every problem at once), checks the environments it names exist (GitHub
+  would otherwise create a missing one, unprotected), and decides whether
+  this run plans -- on pull_request and push runs, only if a watched path
+  changed -- and resolves the call's unique key. Check out with fetch-depth
+  0 so changes can be diffed. Needs actions read.
+
+inputs:
+  working-directory:
+    description: The root module, relative to the workspace.
+    required: true
+  var-files:
+    description: Var files relative to the module, space- or newline-separated.
+    required: false
+    default: ""
+  name:
+    description: "Label for the call (default: the last var file's name)."
+    required: false
+    default: ""
+  changed-only:
+    description: '"true" to plan only when a watched path changed.'
+    required: false
+    default: "true"
+  extra-paths:
+    description: Directories or globs watched as well as the module, var files and calling workflow.
+    required: false
+    default: ""
+  apply-environment:
+    description: The apply job's environment.
+    required: false
+    default: ""
+  plan-environment:
+    description: The plan job's environment.
+    required: false
+    default: ""
+  integration-test-environment:
+    description: The integration test job's environment (checked when integration-tests is on).
+    required: false
+    default: ""
+  checks:
+    description: '"false" when the checks are off.'
+    required: false
+    default: "true"
+  tests:
+    description: '"false" when tofu test is off.'
+    required: false
+    default: "true"
+  test-filter:
+    description: Test file globs for tofu test.
+    required: false
+    default: ""
+  integration-tests:
+    description: '"true" when integration tests run.'
+    required: false
+    default: "false"
+  integration-test-filter:
+    description: Test file globs for the integration tests.
+    required: false
+    default: ""
+  policy:
+    description: '"true" when the policy check runs.'
+    required: false
+    default: "false"
+  policy-path:
+    description: Local policy directories.
+    required: false
+    default: ""
+  policy-source:
+    description: URL to pull policies from.
+    required: false
+    default: ""
+  cost-estimate:
+    description: '"true" when the cost estimate runs.'
+    required: false
+    default: "false"
+  has-infracost-api-key:
+    description: '"true" if the infracost-api-key secret was passed.'
+    required: false
+    default: "false"
+  azure-client-id:
+    description: The azure-client-id input.
+    required: false
+    default: ""
+  azure-tenant-id:
+    description: The azure-tenant-id input.
+    required: false
+    default: ""
+  plan-azure-client-id:
+    description: The plan-azure-client-id input.
+    required: false
+    default: ""
+  has-azure-client-secret:
+    description: '"true" if the azure-client-secret secret was passed.'
+    required: false
+    default: "false"
+  has-plan-azure-client-secret:
+    description: '"true" if the plan-azure-client-secret secret was passed.'
+    required: false
+    default: "false"
+  github-token:
+    description: "Token to check the environments exist with (needs actions: read)."
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  name:
+    description: The call's label (the name input, or the last var file's name).
+    value: ${{ steps.validate.outputs.name }}
+  key:
+    description: >-
+      The call's unique key (module, name, apply environment, var files), the
+      same as opentofu/plan's: for concurrency groups.
+    value: ${{ steps.names.outputs.key }}
+  changed:
+    description: "'true' if this run plans."
+    value: ${{ steps.changes.outputs.changed }}
+  paths:
+    description: The watched paths, space-separated (for the apply preflight).
+    value: ${{ steps.changes.outputs.paths }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the inputs
+      id: validate
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/validate-inputs.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        VAR_FILES: ${{ inputs.var-files }}
+        NAME: ${{ inputs.name }}
+        APPLY_ENVIRONMENT: ${{ inputs.apply-environment }}
+        EXTRA_PATHS: ${{ inputs.extra-paths }}
+        CHECKS: ${{ inputs.checks }}
+        TESTS: ${{ inputs.tests }}
+        TEST_FILTER: ${{ inputs.test-filter }}
+        INTEGRATION_TESTS: ${{ inputs.integration-tests }}
+        INTEGRATION_TEST_FILTER: ${{ inputs.integration-test-filter }}
+        POLICY: ${{ inputs.policy }}
+        POLICY_PATH: ${{ inputs.policy-path }}
+        POLICY_SOURCE: ${{ inputs.policy-source }}
+        COST_ESTIMATE: ${{ inputs.cost-estimate }}
+        HAS_INFRACOST_API_KEY: ${{ inputs.has-infracost-api-key }}
+        AZURE_CLIENT_ID: ${{ inputs.azure-client-id }}
+        AZURE_TENANT_ID: ${{ inputs.azure-tenant-id }}
+        PLAN_AZURE_CLIENT_ID: ${{ inputs.plan-azure-client-id }}
+        HAS_AZURE_CLIENT_SECRET: ${{ inputs.has-azure-client-secret }}
+        HAS_PLAN_AZURE_CLIENT_SECRET: ${{ inputs.has-plan-azure-client-secret }}
+        IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        IS_DEPENDABOT: ${{ github.event_name == 'pull_request' && github.actor == 'dependabot[bot]' }}
+
+    - name: Resolve names
+      id: names
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/names.sh"'
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        DEPLOYMENT: ${{ steps.validate.outputs.name }}
+        APPLY_ENVIRONMENT: ${{ inputs.apply-environment }}
+        VAR_FILES: ${{ inputs.var-files }}
+        REPOSITORY_NAME: ${{ github.event.repository.name }}
+
+    # Even after a failed input check, so one run reports every problem
+    - name: Check the environments exist
+      if: ${{ !cancelled() }}
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../../shared/scripts/require-environments.sh"'
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        ENVIRONMENTS: >-
+          ${{ inputs.apply-environment }}
+          ${{ inputs.plan-environment }}
+          ${{ inputs.integration-tests == 'true' && inputs.integration-test-environment || '' }}
+
+    - name: Detect changes
+      id: changes
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/changes.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        VAR_FILES: ${{ inputs.var-files }}
+        EXTRA_PATHS: ${{ inputs.extra-paths }}
+        WORKFLOW_REF: ${{ github.workflow_ref }}
+        CHANGED_ONLY: ${{ inputs.changed-only }}
+        EVENT_NAME: ${{ github.event_name }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        BEFORE_SHA: ${{ github.event.before }}

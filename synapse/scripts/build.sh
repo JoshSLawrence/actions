@@ -33,8 +33,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=shared/scripts/common.sh
 source "$SCRIPT_DIR/../../shared/scripts/common.sh"
-# shellcheck source=shared/scripts/arm.sh
-source "$SCRIPT_DIR/../../shared/scripts/arm.sh"
+# shellcheck source=arm/scripts/arm.sh
+source "$SCRIPT_DIR/../../arm/scripts/arm.sh"
 
 ensure_mise
 require_tool jq

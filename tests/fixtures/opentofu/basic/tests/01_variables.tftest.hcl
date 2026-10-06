@@ -2,6 +2,12 @@
 # credentials.
 mock_provider "random" {}
 
+# Required by the backend block. tofu test keeps state in memory, so the
+# value is never used, but it must be set.
+variables {
+  state_path = "test.tfstate"
+}
+
 run "accepts_valid_prefix" {
   command = plan
 

@@ -1,113 +1,123 @@
-# OpenTofu reusable workflow for a repository: point it at a directory, and
-# it validates, plans and applies every root module ("config") under it --
-# one (a single-root repository) or many (a monorepo) -- and every
-# deployment of each (one per .tfvars file matching `deployments`).
+# OpenTofu for ONE root module with one set of var files in one environment:
+# checks, tests, plans and applies it. Call it once per deployment, from
+# your own workflow file -- one job per deployment -- with that deployment's
+# var files, environments and credentials:
 #
-# - discover: finds the root modules under search-root (directories with
-#   *.tf files and their own mise.toml) and, on pull_request/push runs, keeps
-#   the ones the change affects: their own files, local modules they use, or
-#   shared-paths. See opentofu/scripts/discover.sh.
-# - config: opentofu-config.yaml once per selected root module (a matrix):
-#   validated once, then each deployment plans, comments on the PR, waits
-#   for approval and applies on its own. Every input below except the
-#   discovery ones applies to every module.
-# - result: the single check to require in branch protection.
+#   jobs:
+#     prod:
+#       uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.2.0
+#       with:
+#         working-directory: iac/identity
+#         var-files: deployments/prod.tfvars
+#         apply-environment: prod
 #
-# Keep the inputs shared with opentofu-config.yaml identical, and passed
-# through unchanged: .github/scripts/check-workflow-inputs.sh (a pre-commit
-# hook) enforces it.
+# - prepare: checks every input up front, checks the environments exist,
+#   and decides whether this run plans (a watched path changed).
+# - checks: fmt, validate, TFLint, Trivy, terraform-docs and tofu test, with
+#   the call's var files. No cloud credentials, so fork and Dependabot PRs
+#   can run it.
+# - integration-tests (opt-in): tofu test with credentials.
+# - plan: plans to a file, uploads it, comments the summary on the PR.
+# - apply: waits for the apply environment's approval, refuses a stale
+#   plan, checks its digest, then applies exactly that plan.
+# - result: the call's one check, for branch protection.
+#
+# See opentofu/README.md, and docs/design/opentofu-per-root-module.md for
+# why it's shaped this way.
 
 name: OpenTofu
 
 on:
   workflow_call:
     inputs:
-      # --- Discovery ----------------------------------------------------------
-      search-root:
-        description: >-
-          Directory to search for root modules, relative to the repository
-          root. It may itself be the (only) root module.
+      # --- What to deploy -----------------------------------------------------
+      working-directory:
+        description: The root module, relative to the repository root. Its own mise.toml pins its tools.
         type: string
-        default: "."
-      exclude:
-        description: Globs of module paths to skip, space- or newline-separated (e.g. legacy/**).
+        required: true
+      var-files:
+        description: >-
+          .tfvars files, relative to the root module, in order, for init,
+          plan, the checks and the tests. Empty: the module's defaults (and
+          its terraform.tfvars).
         type: string
         default: ""
-      modules:
-        description: >-
-          Run exactly these module paths, ignoring changes -- e.g. from a
-          workflow_dispatch input. Each must be a discovered root module.
+      name:
+        description: "Label for this call (e.g. prod-eastus) in titles and names (default: the last var file's name)."
         type: string
         default: ""
+
+      # --- Change detection ---------------------------------------------------
       changed-only:
         description: >-
-          On pull_request and push runs, only run the modules the change
-          affects. Other events (workflow_dispatch, schedule) run every module.
+          On pull_request and push runs, skip plan and apply unless a watched
+          path changed (the module, the var files, the calling workflow file,
+          extra-paths). Other events always plan.
         type: boolean
         default: true
-      shared-paths:
+      extra-paths:
         description: >-
-          Globs whose change affects every module (e.g.
-          .github/workflows/opentofu.yaml). Also make a plan stale in the
-          apply preflight.
+          Directories or globs watched as well as the module, the var files
+          and the calling workflow file (e.g. iac/modules, or
+          iac/modules/**/*.tf). They also make a plan stale.
         type: string
         default: ""
 
-      # --- What to run on -----------------------------------------------------
-      runs-on:
-        description: Runner label for every job.
+      # --- Environments -------------------------------------------------------
+      apply-environment:
+        description: GitHub environment of the apply job. Give it required reviewers -- that's the approval gate. Must exist.
         type: string
-        default: ubuntu-latest
-      timeout-minutes:
-        description: Timeout for each job.
-        type: number
-        default: 30
-      mise-version:
-        description: "mise version to install (default: the setup action's pin)."
+        required: true
+      plan-environment:
+        description: "GitHub environment of the plan job, e.g. for a read-only identity (default: none). Must exist."
         type: string
         default: ""
-      max-parallel:
-        description: Most jobs of one matrix to run at once (root modules, and each one's deployments).
-        type: number
-        default: 4
+      integration-test-environment:
+        description: "GitHub environment of the integration test job (default: none). Must exist."
+        type: string
+        default: ""
 
-      # --- Deployments --------------------------------------------------------
-      deployments:
-        description: >-
-          .tfvars files, relative to each root module: one deployment each,
-          planned and applied separately (e.g. deployments/*.tfvars; globs
-          match within the module). A .tfbackend file next to one, with the
-          same name, is added to its backend config. A module they match
-          nothing in is deployed on its own.
+      # --- Azure (secrets: azure-client-secret, plan-azure-client-secret) -----
+      azure-client-id:
+        description: Client ID of the apply identity (also the integration tests', and the plan's unless plan-azure-client-id is set).
         type: string
         default: ""
-      var-files:
-        description: Var files every deployment uses, before its own .tfvars, relative to the working directory.
+      azure-tenant-id:
+        description: Tenant ID. Required with any client ID.
         type: string
         default: ""
-      backend-config:
-        description: >-
-          -backend-config values every deployment uses, one per line (key=value,
-          or a file relative to the working directory). {deployment} is
-          replaced with the deployment's name, e.g. key=infra-{deployment}.tfstate.
+      azure-subscription-id:
+        description: Subscription ID.
         type: string
         default: ""
+      plan-azure-client-id:
+        description: Client ID of the plan job's identity, e.g. a read-only one (with plan-azure-client-secret, or OIDC).
+        type: string
+        default: ""
+      azure-use-azuread:
+        description: Microsoft Entra ID (RBAC) auth for storage -- the state storage account and the provider's storage data plane.
+        type: boolean
+        default: true
 
       # --- Checks -------------------------------------------------------------
+      checks:
+        description: Run the checks job at all. false skips every check below.
+        type: boolean
+        default: true
       fmt:
-        description: Check formatting.
+        description: Check formatting (tofu fmt -check -recursive).
         type: boolean
         default: true
       validate:
-        description: Run tofu validate.
+        description: Run tofu init -backend=false and tofu validate.
         type: boolean
         default: true
       tflint:
-        description: Run TFLint.
+        description: Run TFLint, recursively, with the call's var files.
         type: boolean
         default: true
       trivy:
-        description: Run a Trivy misconfiguration scan.
+        description: Run a Trivy misconfiguration scan, with the call's var files.
         type: boolean
         default: true
       trivy-severity:
@@ -115,15 +125,15 @@ on:
         type: string
         default: ""
       docs:
-        description: Check the terraform-docs README is up to date.
+        description: Fail if the terraform-docs README is stale (terraform-docs must be pinned).
         type: boolean
-        default: false
+        default: true
       tests:
-        description: Run tofu test in the validate job (no cloud credentials).
+        description: Run tofu test in the checks job (no cloud credentials), with the call's var files.
         type: boolean
         default: true
       test-filter:
-        description: 'Test files for the validate job, relative to the working directory; globs allowed (default: all).'
+        description: "Test files to run, relative to the root module; globs allowed (default: all)."
         type: string
         default: ""
       test-verbose:
@@ -131,55 +141,47 @@ on:
         type: boolean
         default: false
       integration-tests:
-        description: Run tofu test again with cloud credentials, after validate passes.
+        description: Run tofu test again with credentials and the call's var files, before the plan.
         type: boolean
         default: false
       integration-test-filter:
-        description: 'Test files for the integration job (default: all).'
-        type: string
-        default: ""
-      integration-test-environment:
-        description: GitHub environment for the integration job (approval gate, scoped credentials).
+        description: "Test files for the integration run (default: all)."
         type: string
         default: ""
       integration-test-timeout-minutes:
         description: >-
-          Timeout for the integration job. Generous: a timeout kills tofu test
-          mid-apply, leaking what it created.
+          Timeout of the integration test job. Generous: a timeout kills tofu
+          test mid-apply, leaking what it created.
         type: number
         default: 90
 
       # --- Plan ---------------------------------------------------------------
-      plan-environment:
-        description: GitHub environment for the plan jobs (no reviewers; scopes read-only credentials). {deployment} is replaced.
-        type: string
-        default: ""
-      plan-retention-days:
-        description: Days to keep the plan artifact (an approval after that fails).
-        type: number
-        default: 7
       pr-comment:
         description: Comment the plan (and apply result) on the PR.
         type: boolean
         default: true
+      plan-retention-days:
+        description: Days to keep the plan artifact (an approval after that fails).
+        type: number
+        default: 7
       policy:
-        description: Evaluate the plan with conftest; failing policy blocks the apply.
+        description: Evaluate the plan with conftest; a deny (or, with policy-fail-on-warn, a warn) blocks the apply.
         type: boolean
         default: false
       policy-path:
-        description: Policy directories, relative to the repository root.
+        description: Local policy directories, relative to the repository root, space- or newline-separated. Each must exist; set "" to use only policy-source.
         type: string
         default: policy
       policy-source:
-        description: go-getter URL to pull (more) policies from.
+        description: go-getter URL of more policies, evaluated together with policy-path's.
         type: string
         default: ""
       policy-namespaces:
-        description: "Rego namespaces to evaluate (default: all)."
+        description: "Rego namespaces to evaluate, space- or newline-separated (default: all)."
         type: string
         default: ""
       policy-fail-on-warn:
-        description: Also block on warn rules.
+        description: Also block on any warn rule.
         type: boolean
         default: false
       cost-estimate:
@@ -195,72 +197,70 @@ on:
       apply-from-pr:
         description: >-
           Apply the reviewed plan from the PR, before merge. false = PRs only
-          plan; applies happen on push/dispatch runs on the default branch.
+          plan; the push to the default branch applies.
         type: boolean
         default: true
-      apply-environment:
-        description: >-
-          GitHub environment for the apply jobs. Give it required reviewers --
-          that's the approval gate. {deployment} is replaced, e.g.
-          "{deployment}" for a dev and a prod environment.
+
+      # --- Runners ------------------------------------------------------------
+      runs-on:
+        description: Runner label for every job.
+        type: string
+        default: ubuntu-latest
+      timeout-minutes:
+        description: Timeout for each job.
+        type: number
+        default: 30
+      mise-version:
+        description: "mise version to install (default: the setup action's pin). The module's mise.toml pins its tools."
         type: string
         default: ""
-      # --- Cloud auth ---------------------------------------------------------
-      azure-client-id:
-        description: 'Azure client ID for OIDC (default: the AZURE_CLIENT_ID variable, environment-scoped if set there).'
-        type: string
-        default: ""
-      apply-azure-client-id:
-        description: "Separate (write) Azure identity for the apply job (default: azure-client-id)."
-        type: string
-        default: ""
-      azure-tenant-id:
-        description: "Azure tenant ID (default: the AZURE_TENANT_ID variable)."
-        type: string
-        default: ""
-      azure-subscription-id:
-        description: "Azure subscription ID (default: the AZURE_SUBSCRIPTION_ID variable)."
-        type: string
-        default: ""
-      azure-login:
-        description: Also run azure/login, for configurations that shell out to the az CLI.
-        type: boolean
-        default: false
 
     secrets:
-      env-vars:
-        description: KEY=VALUE lines exported (masked) in the integration, plan and apply jobs -- credentials for other providers, TF_VAR_*, TF_ENCRYPTION.
+      azure-client-secret:
+        description: "Client secret of azure-client-id (default: OIDC)."
         required: false
-      apply-env-vars:
-        description: KEY=VALUE lines for the apply job only, added after (and overriding) env-vars.
+      plan-azure-client-secret:
+        description: "Client secret of plan-azure-client-id (default: OIDC)."
         required: false
       modules-token:
-        description: Token that can read private GitHub repositories used as module/policy sources.
+        description: >-
+          Token that can read private GitHub repositories used as module or
+          policy sources (the run's GITHUB_TOKEN reads only this repository).
         required: false
       infracost-api-key:
         description: Infracost API key, for cost-estimate.
         required: false
 
-
-
     outputs:
-      modules:
-        description: JSON array of the root module paths that ran.
-        value: ${{ jobs.discover.outputs.modules }}
+      changed:
+        description: "'true' if this run planned (a watched path changed, or changed-only is off)."
+        value: ${{ jobs.prepare.outputs.changed }}
+      has-changes:
+        description: "'true' if the plan has changes."
+        value: ${{ jobs.plan.outputs.has-changes }}
+      applied:
+        description: "'true' if the apply job applied the plan."
+        value: ${{ jobs.apply.outputs.applied }}
 
 permissions: {}
 
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
 jobs:
-  discover:
-    name: Discover
+  prepare:
+    name: Prepare
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 10
     permissions:
+      actions: read # check the environments exist
       contents: read
     outputs:
-      matrix: ${{ steps.discover.outputs.matrix }}
-      modules: ${{ steps.discover.outputs.modules }}
-      has-modules: ${{ steps.discover.outputs.has-modules }}
+      name: ${{ steps.prepare.outputs.name }}
+      key: ${{ steps.prepare.outputs.key }}
+      changed: ${{ steps.prepare.outputs.changed }}
+      paths: ${{ steps.prepare.outputs.paths }}
     steps:
       # Full history: changes are diffed against the PR base / push before
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -268,85 +268,360 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Discover root modules
-        id: discover
-        uses: $/opentofu/discover
+      - name: Check inputs, environments and changes
+        id: prepare
+        uses: $/opentofu/prepare
         with:
-          search-root: ${{ inputs.search-root }}
-          exclude: ${{ inputs.exclude }}
-          modules: ${{ inputs.modules }}
+          working-directory: ${{ inputs.working-directory }}
+          var-files: ${{ inputs.var-files }}
+          name: ${{ inputs.name }}
           changed-only: ${{ inputs.changed-only }}
-          shared-paths: ${{ inputs.shared-paths }}
-          deployments: ${{ inputs.deployments }}
+          extra-paths: ${{ inputs.extra-paths }}
+          apply-environment: ${{ inputs.apply-environment }}
+          plan-environment: ${{ inputs.plan-environment }}
+          integration-test-environment: ${{ inputs.integration-test-environment }}
+          checks: ${{ inputs.checks }}
+          tests: ${{ inputs.tests }}
+          test-filter: ${{ inputs.test-filter }}
+          integration-tests: ${{ inputs.integration-tests }}
+          integration-test-filter: ${{ inputs.integration-test-filter }}
+          policy: ${{ inputs.policy }}
+          policy-path: ${{ inputs.policy-path }}
+          policy-source: ${{ inputs.policy-source }}
+          cost-estimate: ${{ inputs.cost-estimate }}
+          has-infracost-api-key: ${{ secrets.infracost-api-key != '' }}
+          azure-client-id: ${{ inputs.azure-client-id }}
+          azure-tenant-id: ${{ inputs.azure-tenant-id }}
+          plan-azure-client-id: ${{ inputs.plan-azure-client-id }}
+          has-azure-client-secret: ${{ secrets.azure-client-secret != '' }}
+          has-plan-azure-client-secret: ${{ secrets.plan-azure-client-secret != '' }}
 
-  config:
-    name: ${{ matrix.module.path }}
-    needs: discover
-    if: needs.discover.outputs.has-modules == 'true'
-    strategy:
-      # One module failing doesn't stop the others
-      fail-fast: false
-      max-parallel: ${{ inputs.max-parallel }}
-      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
-    uses: $/.github/workflows/opentofu-config.yaml
+      # Every tool any enabled option needs is pinned in the module's
+      # mise.toml: checked here, without installing, so a missing pin fails
+      # before any work. Even after a failed step above, to report it too.
+      - name: Check the tools are pinned
+        if: ${{ !cancelled() }}
+        uses: $/shared/setup
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          install: "false"
+          mise-version: ${{ inputs.mise-version }}
+          required-tools: >-
+            opentofu
+            ${{ inputs.checks && inputs.tflint && 'tflint' || '' }}
+            ${{ inputs.checks && inputs.trivy && 'trivy' || '' }}
+            ${{ inputs.checks && inputs.docs && 'terraform-docs' || '' }}
+            ${{ inputs.policy && 'conftest' || '' }}
+            ${{ inputs.cost-estimate && 'infracost' || '' }}
+
+  checks:
+    name: Checks
+    needs: prepare
+    if: inputs.checks
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
-      actions: read
       contents: read
-      id-token: write
-      pull-requests: write
-    with:
-      # Resolved per module by discovery: the module, the local modules it
-      # uses and shared-paths; and deployments, or "" where they match nothing
-      working-directory: ${{ matrix.module.path }}
-      preflight-paths: ${{ matrix.module.preflight_paths }}
-      deployments: ${{ matrix.module.deployments }}
-      runs-on: ${{ inputs.runs-on }}
-      timeout-minutes: ${{ inputs.timeout-minutes }}
-      mise-version: ${{ inputs.mise-version }}
-      max-parallel: ${{ inputs.max-parallel }}
-      var-files: ${{ inputs.var-files }}
-      backend-config: ${{ inputs.backend-config }}
-      fmt: ${{ inputs.fmt }}
-      validate: ${{ inputs.validate }}
-      tflint: ${{ inputs.tflint }}
-      trivy: ${{ inputs.trivy }}
-      trivy-severity: ${{ inputs.trivy-severity }}
-      docs: ${{ inputs.docs }}
-      tests: ${{ inputs.tests }}
-      test-filter: ${{ inputs.test-filter }}
-      test-verbose: ${{ inputs.test-verbose }}
-      integration-tests: ${{ inputs.integration-tests }}
-      integration-test-filter: ${{ inputs.integration-test-filter }}
-      integration-test-environment: ${{ inputs.integration-test-environment }}
-      integration-test-timeout-minutes: ${{ inputs.integration-test-timeout-minutes }}
-      plan-environment: ${{ inputs.plan-environment }}
-      plan-retention-days: ${{ inputs.plan-retention-days }}
-      pr-comment: ${{ inputs.pr-comment }}
-      policy: ${{ inputs.policy }}
-      policy-path: ${{ inputs.policy-path }}
-      policy-source: ${{ inputs.policy-source }}
-      policy-namespaces: ${{ inputs.policy-namespaces }}
-      policy-fail-on-warn: ${{ inputs.policy-fail-on-warn }}
-      cost-estimate: ${{ inputs.cost-estimate }}
-      apply: ${{ inputs.apply }}
-      apply-from-pr: ${{ inputs.apply-from-pr }}
-      apply-environment: ${{ inputs.apply-environment }}
-      azure-client-id: ${{ inputs.azure-client-id }}
-      apply-azure-client-id: ${{ inputs.apply-azure-client-id }}
-      azure-tenant-id: ${{ inputs.azure-tenant-id }}
-      azure-subscription-id: ${{ inputs.azure-subscription-id }}
-      azure-login: ${{ inputs.azure-login }}
-    secrets:
-      env-vars: ${{ secrets.env-vars }}
-      apply-env-vars: ${{ secrets.apply-env-vars }}
-      modules-token: ${{ secrets.modules-token }}
-      infracost-api-key: ${{ secrets.infracost-api-key }}
+    outputs:
+      results: ${{ steps.checks.outputs.results }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-  # The single check to require in branch protection: it covers every
-  # module and deployment, whichever ran.
+      - name: Set up tools
+        uses: $/shared/setup
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          required-tools: >-
+            opentofu
+            ${{ inputs.tflint && 'tflint' || '' }}
+            ${{ inputs.trivy && 'trivy' || '' }}
+            ${{ inputs.docs && 'terraform-docs' || '' }}
+          mise-version: ${{ inputs.mise-version }}
+
+      - name: Checks
+        id: checks
+        uses: $/opentofu/checks
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          var-files: ${{ inputs.var-files }}
+          fmt: ${{ inputs.fmt }}
+          validate: ${{ inputs.validate }}
+          tflint: ${{ inputs.tflint }}
+          trivy: ${{ inputs.trivy }}
+          trivy-severity: ${{ inputs.trivy-severity }}
+          docs: ${{ inputs.docs }}
+          tests: ${{ inputs.tests }}
+          test-filter: ${{ inputs.test-filter }}
+          test-verbose: ${{ inputs.test-verbose }}
+          modules-token: ${{ secrets.modules-token }}
+
+  integration-tests:
+    name: Integration tests
+    needs: [prepare, checks]
+    # !cancelled(): checks may be skipped (checks false), which would
+    # otherwise skip this too. Fork and Dependabot PRs get no OIDC token or
+    # secrets.
+    if: >-
+      !cancelled() &&
+      inputs.integration-tests &&
+      needs.prepare.result == 'success' &&
+      needs.prepare.outputs.changed == 'true' &&
+      (needs.checks.result == 'success' || needs.checks.result == 'skipped') &&
+      (github.event_name != 'pull_request' ||
+        (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'))
+    runs-on: ${{ inputs.runs-on }}
+    environment: ${{ inputs.integration-test-environment }}
+    # Never cancelled by a newer push: that kills tofu test mid-apply,
+    # leaking whatever it created (the same goes for hitting the timeout).
+    timeout-minutes: ${{ inputs.integration-test-timeout-minutes }}
+    concurrency:
+      group: opentofu-integration-${{ github.repository }}-${{ needs.prepare.outputs.key }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write # cloud OIDC
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up tools
+        uses: $/shared/setup
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          required-tools: opentofu
+          mise-version: ${{ inputs.mise-version }}
+
+      - name: Azure credentials
+        uses: $/opentofu/azure
+        with:
+          role: test
+          client-id: ${{ inputs.azure-client-id }}
+          tenant-id: ${{ inputs.azure-tenant-id }}
+          subscription-id: ${{ inputs.azure-subscription-id }}
+          client-secret: ${{ secrets.azure-client-secret }}
+          use-azuread: ${{ inputs.azure-use-azuread }}
+
+      - name: Integration tests
+        uses: $/opentofu/checks
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          var-files: ${{ inputs.var-files }}
+          fmt: "false"
+          validate: "false"
+          tflint: "false"
+          trivy: "false"
+          docs: "false"
+          tests: "true"
+          test-filter: ${{ inputs.integration-test-filter }}
+          test-verbose: ${{ inputs.test-verbose }}
+          modules-token: ${{ secrets.modules-token }}
+
+  plan:
+    name: Plan
+    needs: [prepare, checks, integration-tests]
+    # !cancelled(): checks and integration-tests may be skipped, which would
+    # otherwise skip this too. Fork and Dependabot PRs get no OIDC token or
+    # secrets.
+    if: >-
+      !cancelled() &&
+      needs.prepare.result == 'success' &&
+      needs.prepare.outputs.changed == 'true' &&
+      (needs.checks.result == 'success' || needs.checks.result == 'skipped') &&
+      (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped') &&
+      (github.event_name != 'pull_request' ||
+        (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'))
+    runs-on: ${{ inputs.runs-on }}
+    environment: ${{ inputs.plan-environment }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # A newer push supersedes a plan in progress. Safe to cancel: plans don't
+    # lock the state.
+    concurrency:
+      group: opentofu-plan-${{ github.repository }}-${{ needs.prepare.outputs.key }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      id-token: write # cloud OIDC (state backend, providers)
+      pull-requests: write # plan comment
+    outputs:
+      has-changes: ${{ steps.plan.outputs.has-changes }}
+      plan-sha256: ${{ steps.plan.outputs.plan-sha256 }}
+      artifact-name: ${{ steps.plan.outputs.artifact-name }}
+      comment-key: ${{ steps.plan.outputs.key }}
+      title: ${{ steps.plan.outputs.title }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up tools
+        uses: $/shared/setup
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          required-tools: >-
+            opentofu
+            ${{ inputs.policy && 'conftest' || '' }}
+            ${{ inputs.cost-estimate && 'infracost' || '' }}
+          mise-version: ${{ inputs.mise-version }}
+
+      - name: Azure credentials
+        uses: $/opentofu/azure
+        with:
+          role: plan
+          client-id: ${{ inputs.azure-client-id }}
+          tenant-id: ${{ inputs.azure-tenant-id }}
+          subscription-id: ${{ inputs.azure-subscription-id }}
+          client-secret: ${{ secrets.azure-client-secret }}
+          plan-client-id: ${{ inputs.plan-azure-client-id }}
+          plan-client-secret: ${{ secrets.plan-azure-client-secret }}
+          use-azuread: ${{ inputs.azure-use-azuread }}
+
+      - name: Plan
+        id: plan
+        uses: $/opentofu/plan
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          deployment: ${{ needs.prepare.outputs.name }}
+          environment: ${{ inputs.apply-environment }}
+          var-files: ${{ inputs.var-files }}
+          checks-results: ${{ inputs.checks && needs.checks.outputs.results || 'off' }}
+          policy: ${{ inputs.policy }}
+          policy-path: ${{ inputs.policy-path }}
+          policy-source: ${{ inputs.policy-source }}
+          policy-namespaces: ${{ inputs.policy-namespaces }}
+          policy-fail-on-warn: ${{ inputs.policy-fail-on-warn }}
+          cost-estimate: ${{ inputs.cost-estimate }}
+          infracost-api-key: ${{ secrets.infracost-api-key }}
+          modules-token: ${{ secrets.modules-token }}
+
+      # The plan embeds the configuration and a copy of the state, and
+      # artifacts of a public repository can be downloaded by any signed-in
+      # user. Keep secrets out of state.
+      - name: Upload plan
+        if: inputs.apply && steps.plan.outputs.has-changes == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.plan.outputs.artifact-name }}
+          path: ${{ steps.plan.outputs.plan-dir }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.plan-retention-days }}
+          # .terraform.lock.hcl travels with the plan
+          include-hidden-files: true
+          # A re-run uploads again under the same name; apply checks the
+          # digest from this attempt's plan output either way.
+          overwrite: true
+
+      - name: Comment plan on PR
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && inputs.pr-comment && steps.plan.outputs.key != '' }}
+        uses: $/shared/pr-comment
+        with:
+          comment-key: ${{ steps.plan.outputs.key }}
+          title: ${{ steps.plan.outputs.title }}
+          summary-file: ${{ steps.plan.outputs.summary-file || format('{0}/tofu-plan/summary.md', runner.temp) }}
+          apply-environment: ${{ inputs.apply-environment }}
+          apply-status: >-
+            ${{
+              steps.plan.outputs.has-changes != 'true' && 'none' ||
+              steps.plan.outputs.policy-passed == 'false' && 'blocked' ||
+              !inputs.apply && 'none' ||
+              !inputs.apply-from-pr && 'after-merge' ||
+              'awaiting-approval'
+            }}
+
+  apply:
+    name: Apply
+    needs: [prepare, plan]
+    # PR runs apply only with apply-from-pr; other runs (push, dispatch) only
+    # on the default branch -- use environment branch policies for more.
+    # !cancelled() and the plan's own result: without a status function the
+    # implied success() would also need the (often skipped) earlier jobs.
+    if: >-
+      !cancelled() &&
+      needs.plan.result == 'success' &&
+      inputs.apply &&
+      needs.plan.outputs.has-changes == 'true' &&
+      (
+        (github.event_name == 'pull_request' && inputs.apply-from-pr) ||
+        (github.event_name != 'pull_request' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+      )
+    runs-on: ${{ inputs.runs-on }}
+    # Waits here for a reviewer's approval. Federated credentials bound to
+    # this environment only work once approved.
+    environment: ${{ inputs.apply-environment }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # One apply at a time per call, and never cancel one that's running: that
+    # could leave infrastructure half-changed and the state locked. A newer
+    # run's apply queues behind.
+    concurrency:
+      group: opentofu-apply-${{ github.repository }}-${{ needs.prepare.outputs.key }}
+      cancel-in-progress: false
+    permissions:
+      actions: read # environment protection rules; who approved, for the PR comment
+      contents: read
+      id-token: write # cloud OIDC
+      pull-requests: write # apply result comment
+    outputs:
+      applied: ${{ steps.apply.outcome == 'success' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Before the preflight check, so a refused apply still re-posts the plan
+      # summary alongside the failure.
+      - name: Download plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.plan.outputs.artifact-name }}
+          path: ${{ runner.temp }}/tofu-plan
+
+      - name: Set up tools
+        uses: $/shared/setup
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          required-tools: opentofu
+          mise-version: ${{ inputs.mise-version }}
+
+      - name: Azure credentials
+        uses: $/opentofu/azure
+        with:
+          role: apply
+          client-id: ${{ inputs.azure-client-id }}
+          tenant-id: ${{ inputs.azure-tenant-id }}
+          subscription-id: ${{ inputs.azure-subscription-id }}
+          client-secret: ${{ secrets.azure-client-secret }}
+          use-azuread: ${{ inputs.azure-use-azuread }}
+
+      - name: Apply
+        id: apply
+        uses: $/opentofu/apply
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          plan-dir: ${{ runner.temp }}/tofu-plan
+          plan-sha256: ${{ needs.plan.outputs.plan-sha256 }}
+          environment: ${{ inputs.apply-environment }}
+          var-files: ${{ inputs.var-files }}
+          preflight-paths: ${{ needs.prepare.outputs.paths }}
+          modules-token: ${{ secrets.modules-token }}
+
+      - name: Comment apply result on PR
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && inputs.pr-comment }}
+        uses: $/shared/pr-comment
+        with:
+          comment-key: ${{ needs.plan.outputs.comment-key }}
+          title: ${{ needs.plan.outputs.title }}
+          summary-file: ${{ runner.temp }}/tofu-plan/summary.md
+          apply-environment: ${{ inputs.apply-environment }}
+          apply-status: ${{ steps.apply.outcome == 'success' && 'succeeded' || 'failed' }}
+
+  # The call's one check: every job succeeded, or was skipped for a reason
+  # (nothing changed, checks off, plan only, a fork or Dependabot PR)
   result:
     name: Result
-    needs: [discover, config]
+    needs: [prepare, checks, integration-tests, plan, apply]
     if: always()
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 5
@@ -356,6 +631,12 @@ jobs:
       contents: read
     steps:
       - name: Check results
-        uses: $/opentofu/result
+        uses: $/shared/result
         with:
           needs: ${{ toJSON(needs) }}
+          note: >-
+            ${{
+              github.event_name == 'pull_request' && github.actor == 'dependabot[bot]' &&
+              'This PR comes from Dependabot, which gets no secrets or OIDC token, so it was checked but not planned. The push after merge plans it.' ||
+              ''
+            }}

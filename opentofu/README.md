@@ -1,437 +1,514 @@
 # OpenTofu
 
-Validate, test, lint, scan, plan and apply OpenTofu, with the plan and the
-apply result posted on the PR, plus scheduled drift detection. It works for
-a repository with one root module, a monorepo of many, and a configuration
-deployed many times with different `.tfvars` files.
+One reusable workflow, [`opentofu.yaml`](../.github/workflows/opentofu.yaml),
+that checks, tests, plans and applies **one root module, with one set of var
+files, in one environment**. You call it from your own workflow files, once
+per deployment, with that deployment's var files, environments and
+credentials. Everything a run does is in your workflow YAML.
+
+The design and the decisions behind it are in
+[`docs/design/opentofu-per-root-module.md`](../docs/design/opentofu-per-root-module.md).
 
 ## Contents
 
-- [Which workflow?](#which-workflow)
-- [Concepts](#concepts)
-- [Quick start](#quick-start)
-- [How it works](#how-it-works)
+- [Calling it](#calling-it)
+- [How a call runs](#how-a-call-runs)
+- [Inputs](#inputs)
+- [Change detection](#change-detection)
+- [When it applies](#when-it-applies)
+- [Checks](#checks)
+- [Policy](#policy)
+- [Azure](#azure)
+- [Private modules and policies](#private-modules-and-policies)
+- [Branch protection](#branch-protection)
 - [Setup](#setup)
-- [Reference](#reference)
-- [Composite actions](#composite-actions)
-- [PR comments and drift issues](#pr-comments-and-drift-issues)
+- [PR comments](#pr-comments)
 - [Security notes](#security-notes)
-- [Coming from the Azure DevOps templates](#coming-from-the-azure-devops-templates)
+- [Moving from v0.1.0](#moving-from-v010)
+- [Internals](#internals)
 
-## Which workflow?
+## Calling it
 
-<!-- markdownlint-disable MD013 -->
-
-| Workflow | Use it for | Point it at |
-| --- | --- | --- |
-| [`opentofu.yaml`](../.github/workflows/opentofu.yaml) | A repository: one root module or a monorepo. **Start here.** | `search-root` |
-| [`opentofu-config.yaml`](../.github/workflows/opentofu-config.yaml) | One configuration, deployed once or with many `.tfvars` files | `working-directory` |
-| [`opentofu-drift.yaml`](../.github/workflows/opentofu-drift.yaml) | Scheduled drift detection, for any of the above | `search-root` |
-| [`opentofu-deploy.yaml`](../.github/workflows/opentofu-deploy.yaml) | Building block: plan + apply of one deployment, no checks | `working-directory` |
-
-<!-- markdownlint-enable MD013 -->
-
-They nest: `opentofu.yaml` calls `opentofu-config.yaml` for each root
-module, which calls `opentofu-deploy.yaml` for each deployment. An input
-means the same thing in every workflow that has it.
-
-## Concepts
-
-- **Root module** (a "config"): a directory with `*.tf` files and its own
-  `mise.toml`. `opentofu.yaml` and `opentofu-drift.yaml` find every one
-  under `search-root`, which may itself be the only one.
-- **Deployment**: a root module applied with one `.tfvars` file. It could
-  be dev and prod, one per region, or one per customer, each with its own
-  state.
-  - `deployments` lists the files, as globs or paths relative to the
-    module, e.g. `deployments/*.tfvars`. Each deployment is named after its
-    file (`prod.tfvars` → `prod`).
-  - **Backend config per deployment:** put a `.tfbackend` file with the same
-    name next to the `.tfvars` (`prod.tfbackend`). It's added to that
-    deployment's `-backend-config`. Or use `{deployment}` in
-    `backend-config`, e.g. `key=app-{deployment}.tfstate`.
-  - `{deployment}` also works in `apply-environment` and `plan-environment`.
-    With `apply-environment: "{deployment}"`, dev and prod get their own
-    GitHub environments, reviewers and identities.
-  - A module that `deployments` matches nothing in is deployed once, as it
-    is.
-- **Tools come from mise, per root module.** Every job runs `mise install`
-  in the module and gets **exactly** what the module's own `mise.toml`
-  pins.
-  - Nothing is inherited from the repository root, or from a runner's
-    global mise config, so a root `mise.toml` full of dev tools is never
-    installed in CI.
-  - Every enabled check's tool must be pinned (for example `trivy` for the
-    Trivy scan). A missing pin fails the job, listing everything that's
-    missing, rather than silently skipping the check.
-  - Why in each module rather than one shared file? It's where mise, your
-    editor and your local hooks already look, so CI runs what you run. It
-    also lets each module move independently (Renovate and Dependabot can
-    both bump `mise.toml` pins).
-
-## Quick start
+One job per deployment. A module deployed once:
 
 ```yaml
-name: OpenTofu
-
-on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
-  workflow_dispatch:
-
-permissions: {}
-
 jobs:
-  opentofu:
-    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v1
+  network:
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.2.0
     permissions:
       actions: read
       contents: read
       id-token: write
       pull-requests: write
     with:
-      search-root: infra
-      apply-environment: production
+      working-directory: iac/network
+      var-files: prod.tfvars
+      apply-environment: prod
+      azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+      azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      azure-client-id: ${{ vars.AZURE_CLIENT_ID }}
 ```
 
-The caller must grant the four permissions shown: a reusable workflow's jobs
-can only narrow them, and GitHub rejects the run if one asks for more. The
-drift workflow needs `contents: read`, `id-token: write` and
-`issues: write`.
+- **The four permissions are required.** A reusable workflow's jobs can only
+  narrow the caller's permissions, and GitHub rejects the run if one asks
+  for more.
+- **Several deployments of one module** are several jobs in one workflow
+  file, each with its own var files, environments and identity, ordered
+  with `needs:` if one should wait for another.
+- **Unrelated root modules** get their own workflow files, so they run, pass
+  and fail independently.
 
-Complete callers are in [`examples/`](../examples/):
+Complete callers:
+[`examples/opentofu.yaml`](../examples/opentofu.yaml) (one module, deployed
+once) and
+[`examples/opentofu-deployments.yaml`](../examples/opentofu-deployments.yaml)
+(one module deployed to dev and two production regions, with one check for
+all of them).
+
+## How a call runs
+
+```text
+prepare ──> checks ──> integration-tests ──> plan ──> apply ──> result
+           (no creds)      (opt-in)        (per PR)  (after approval)
+```
+
+- **prepare** checks every input up front, listing every problem at once
+  (see [Setup](#setup) for what it checks), checks every environment the
+  call names exists, and decides whether this run plans (see
+  [Change detection](#change-detection)). GitHub creates a missing
+  environment, unprotected, the first time a job names one; this fails
+  first instead.
+- **checks** runs fmt, validate, TFLint, Trivy, the terraform-docs check and
+  `tofu test`, each switchable, with the call's var files. Every enabled
+  check runs even when an earlier one fails, and a results table goes to
+  the job summary and the PR comment. No cloud credentials, so PRs from
+  forks can run it.
+- **integration-tests** (off by default) runs `tofu test` again with the
+  call's var files and the apply identity, in
+  `integration-test-environment`.
+- **plan** plans to a saved file in `plan-environment` and renders a
+  summary: counts, destroys called out, resources, the full plan as a diff,
+  and optionally an Infracost estimate and a conftest policy check (a
+  failing policy deletes the plan, so it can't be applied). It uploads the
+  plan and comments the summary on the PR. Skipped for PRs from forks and
+  Dependabot, which get no OIDC token or secrets.
+- **apply** runs when the plan has changes (see
+  [When it applies](#when-it-applies)), after the apply environment's
+  reviewers approve. It refuses a stale plan (the PR moved on, or a watched
+  path changed on the target branch since), checks the plan file's
+  SHA-256, applies exactly that plan, and updates the PR comment.
+- **result** is the call's one check (see
+  [Branch protection](#branch-protection)).
+
+## Inputs
+
+All paths are relative to the repository root, except `var-files` and
+`test-filter`, which are relative to the root module, as in OpenTofu.
+Lists take one item per line, or items separated by spaces. Without
+`var-files`, the module uses its defaults (and its `terraform.tfvars`).
 
 <!-- markdownlint-disable MD013 -->
 
-| Example | Shows |
-| --- | --- |
-| [`opentofu-repo.yaml`](../examples/opentofu-repo.yaml) | A repository's root module(s) on Azure, applied from the PR, with the setup it needs |
-| [`opentofu-monorepo.yaml`](../examples/opentofu-monorepo.yaml) | Many root modules, each with dev/prod deployments and environments |
-| [`opentofu-config-deployments.yaml`](../examples/opentofu-config-deployments.yaml) | One configuration deployed per customer, state keys via `{deployment}` |
-| [`opentofu-drift.yaml`](../examples/opentofu-drift.yaml) | Nightly drift detection with issues |
-| [`opentofu-apply-on-merge.yaml`](../examples/opentofu-apply-on-merge.yaml) | PRs only plan; apply after merge |
-| [`opentofu-composite-actions.yaml`](../examples/opentofu-composite-actions.yaml) | Your own plan/apply workflow from the composite actions |
+| Input                              | Default              | Description                                                            |
+| ---------------------------------- | -------------------- | ---------------------------------------------------------------------- |
+| **What to deploy**                 |                      |                                                                        |
+| `working-directory`                | **required**         | The root module; its own `mise.toml` pins its tools                    |
+| `var-files`                        | none                 | `.tfvars` files, in order, for `init`, `plan`, checks and tests        |
+| `name`                             | last var file's name | Label for this call (e.g. `prod-eastus`) in titles and names           |
+| **Change detection**               |                      |                                                                        |
+| `changed-only`                     | `true`               | On PR and push runs, skip plan and apply unless a watched path changed |
+| `extra-paths`                      | none                 | Directories or globs watched besides the module, var files, workflow   |
+| **Environments**                   |                      |                                                                        |
+| `apply-environment`                | **required**         | The apply job's environment: the approval gate                         |
+| `plan-environment`                 | none                 | The plan job's environment; none = no environment                      |
+| `integration-test-environment`     | none                 | The integration test job's environment; none = no environment          |
+| **Azure** (secrets: see below)     |                      |                                                                        |
+| `azure-client-id`                  | none                 | Identity for the apply and integration test jobs, and plan by default  |
+| `azure-tenant-id`                  | none                 | Tenant ID; required with any client ID                                 |
+| `azure-subscription-id`            | none                 | Subscription ID                                                        |
+| `plan-azure-client-id`             | `azure-client-id`    | Identity for the plan job, e.g. a read-only one                        |
+| `azure-use-azuread`                | `true`               | Microsoft Entra ID (RBAC) auth for storage: state and data plane       |
+| **Checks**                         |                      |                                                                        |
+| `checks`                           | `true`               | Run the checks job at all; `false` skips every check below             |
+| `fmt`                              | `true`               | `tofu fmt -check -recursive`                                           |
+| `validate`                         | `true`               | `tofu init -backend=false` and `tofu validate`                         |
+| `tflint`                           | `true`               | TFLint, recursive, with the call's var files                           |
+| `trivy`                            | `true`               | Trivy misconfiguration scan, with the call's var files                 |
+| `trivy-severity`                   | `trivy.yaml`'s       | Severities that fail the scan                                          |
+| `docs`                             | `true`               | Fail if the terraform-docs README is stale                             |
+| `tests`                            | `true`               | `tofu test` without credentials, with the call's var files             |
+| `test-filter`                      | all                  | Test files to run (`-filter`), globs allowed                           |
+| `test-verbose`                     | `false`              | `tofu test -verbose`                                                   |
+| `integration-tests`                | `false`              | `tofu test` again, with credentials, before the plan                   |
+| `integration-test-filter`          | all                  | Test files for the integration run                                     |
+| `integration-test-timeout-minutes` | `90`                 | Its timeout (a timeout leaks what the tests created)                   |
+| **Plan**                           |                      |                                                                        |
+| `pr-comment`                       | `true`               | Comment the plan and apply result on the PR                            |
+| `plan-retention-days`              | `7`                  | Plan artifact retention; an approval after that fails                  |
+| `policy`                           | `false`              | conftest policy check; a `deny` blocks the apply                       |
+| `policy-path`                      | `policy`             | Local policy directories (list)                                        |
+| `policy-source`                    | none                 | go-getter URL of more policies, evaluated with `policy-path`'s         |
+| `policy-namespaces`                | all                  | Rego namespaces to evaluate (list)                                     |
+| `policy-fail-on-warn`              | `false`              | Also block on any `warn`                                               |
+| `cost-estimate`                    | `false`              | Infracost estimate; needs the `infracost-api-key` secret               |
+| **Apply**                          |                      |                                                                        |
+| `apply`                            | `true`               | Include the apply job (`false` = plan only)                            |
+| `apply-from-pr`                    | `true`               | Apply the reviewed plan from the PR, before merge                      |
+| **Runners**                        |                      |                                                                        |
+| `runs-on`                          | `ubuntu-latest`      | Runner label for every job                                             |
+| `timeout-minutes`                  | `30`                 | Timeout for each job                                                   |
+| `mise-version`                     | the setup pin        | The mise version; the module's `mise.toml` pins its tools              |
+
+| Secret                     | Description                                                        |
+| -------------------------- | ------------------------------------------------------------------ |
+| `azure-client-secret`      | Secret of `azure-client-id`; without it, OIDC                      |
+| `plan-azure-client-secret` | Secret of `plan-azure-client-id`; without it, OIDC                 |
+| `modules-token`            | Reads private GitHub repositories used as module or policy sources |
+| `infracost-api-key`        | For `cost-estimate`                                                |
+
+| Output        | Description                                                                   |
+| ------------- | ----------------------------------------------------------------------------- |
+| `changed`     | `true` if this run planned (a watched path changed, or `changed-only` is off) |
+| `has-changes` | `true` if the plan has changes                                                |
+| `applied`     | `true` if the apply job applied the plan                                      |
 
 <!-- markdownlint-enable MD013 -->
 
-## How it works
+## Change detection
 
-```text
-opentofu.yaml    discover ──> config (per root module) ──> result
-                                 │
-opentofu-config  deployments ─┬─> deploy (per deployment) ──> result
-                 validate ────┤      │
-                 integration ─┘      │
-                                     │
-opentofu-deploy                   plan ──> apply (after approval)
+The workflow always runs; the prepare job decides whether it plans. Don't
+filter its triggers with `on.pull_request.paths`: a workflow skipped that
+way leaves its required checks pending forever.
+
+- **What's watched:** always the module directory (every file in it: `.tf`
+  files, child modules, tests, the lock file, `mise.toml`, ...), the var
+  files (even outside the module), and the calling workflow file, so
+  editing the call runs it. `extra-paths` adds to these, e.g. a module
+  directory several root modules share: a directory (`iac/modules`, with
+  everything under it) or a glob (`iac/modules/**/*.tf`). It can't remove
+  them.
+- **The calling workflow** is the run's top-level workflow file. If you call
+  `opentofu.yaml` from a reusable workflow of your own, add that file to
+  `extra-paths`.
+- **When:** on `pull_request` and `push` with `changed-only`, if no watched
+  path changed since the base, plan and apply are skipped and the call's
+  check passes. Checks still run. `workflow_dispatch`, `schedule`,
+  `changed-only: false`, or a diff that can't be computed always plan.
+- **Stale plans:** the same watched paths decide whether a plan is stale at
+  apply time.
+
+## When it applies
+
+<!-- markdownlint-disable MD013 -->
+
+| `apply` | `apply-from-pr` | Pull request run                                   | Push or dispatch, default branch               | Other branches |
+| ------- | --------------- | -------------------------------------------------- | ---------------------------------------------- | -------------- |
+| `true`  | `true`          | Plan, then apply after approval, before merge      | Plan; apply after approval if anything changed | Plan only      |
+| `true`  | `false`         | Plan only; the comment says it applies after merge | Plan, then apply after approval                | Plan only      |
+| `false` | (ignored)       | Plan only                                          | Plan only                                      | Plan only      |
+
+<!-- markdownlint-enable MD013 -->
+
+- With `apply-from-pr: true`, the default branch only ever holds
+  configuration that applied: if the call's check is required, a PR with
+  changes can't merge until it's applied. The push after merge plans again
+  and normally finds nothing to do. PRs from forks and Dependabot are the
+  exception: they aren't planned, so the push after merge plans and applies
+  them.
+- **Rolling back an unmerged PR:** if a PR is applied but not merged, run
+  the workflow on the default branch (`workflow_dispatch`) to re-apply
+  what's there.
+- With `apply-from-pr: false`, merging is when it applies: the push to the
+  default branch plans again and waits for approval. If that apply is
+  rejected or fails, later pushes don't retry it unless they change a
+  watched path too: run the workflow on the default branch
+  (`workflow_dispatch`) to plan and apply what's there.
+- Scheduled runs on the default branch count as pushes: with changes, they
+  wait for approval to apply.
+- Use environment deployment branch policies for more control.
+
+## Checks
+
+- **With the call's var files:** TFLint gets them as `--var-file`, Trivy as
+  `--tf-vars`, `tofu test` as `-var-file`, so a deployment whose variables
+  trip a check is caught in its own call. fmt, validate and terraform-docs
+  don't depend on variables.
+- **`checks: false`** skips the checks job entirely, without turning each
+  check off.
+- **`test-filter`** selects test files, as OpenTofu's `-filter` does
+  (`tests/unit/*.tftest.hcl`), not test or run block names.
+- **`docs`** is on by default: the module needs `terraform-docs` pinned and
+  a README it generates (with a `.terraform-docs.yml`, or the markers in
+  `README.md`), or turns the check off.
+- **Tools** come from the module's own `mise.toml`; every enabled check's
+  tool must be pinned there.
+
+## Policy
+
+`policy: true` runs conftest against the plan.
+
+- **Where policies come from:** `policy-path` (local directories) and
+  `policy-source` (a go-getter URL, e.g.
+  `git::https://github.com/org/policies.git//terraform?ref=v1`) are
+  combined: conftest evaluates the local and the pulled policies together.
+- **Namespaces:** `policy-namespaces` lists the Rego namespaces to evaluate;
+  empty means all of them.
+- **deny and warn:** any `deny` (or `violation`) fails the plan and deletes
+  it, so it can't be applied. A `warn` doesn't fail by default, but every
+  one is listed in the PR comment. `policy-fail-on-warn: true` makes any
+  warn fail too; failing only above a severity isn't supported.
+
+## Azure
+
+The workflow sets the azurerm provider's and backend's environment
+variables from the Azure inputs and secrets, in the integration test, plan
+and apply jobs:
+
+<!-- markdownlint-disable MD013 -->
+
+| Variable                  | Integration test and apply jobs | Plan job                                       |
+| ------------------------- | ------------------------------- | ---------------------------------------------- |
+| `ARM_CLIENT_ID`           | `azure-client-id`               | `plan-azure-client-id`, else `azure-client-id` |
+| `ARM_CLIENT_SECRET`       | `azure-client-secret`           | the plan identity's secret (see below)         |
+| `ARM_TENANT_ID`           | `azure-tenant-id`               | `azure-tenant-id`                              |
+| `ARM_SUBSCRIPTION_ID`     | `azure-subscription-id`         | `azure-subscription-id`                        |
+| `ARM_USE_OIDC`            | `true` without a secret         | `true` without a secret                        |
+| `ARM_USE_AZUREAD`         | `azure-use-azuread`             | `azure-use-azuread`                            |
+| `ARM_STORAGE_USE_AZUREAD` | `azure-use-azuread`             | `azure-use-azuread`                            |
+
+<!-- markdownlint-enable MD013 -->
+
+- **`azure-client-id` is the apply identity**, the one that can write; the
+  integration tests use it too, so it needs whatever they need.
+  `plan-azure-client-id` overrides it for the plan job only, e.g. with a
+  read-only identity. The plan identity switches as a pair: with
+  `plan-azure-client-id`, the plan job uses `plan-azure-client-secret` (or
+  OIDC without it), never the apply identity's secret.
+- **OIDC or a client secret, per job:** a job with a client secret uses it;
+  one without uses OIDC.
+- **Entra ID (RBAC) for storage, by default:** the backend reaches the state
+  storage account with the identity instead of an access key, and so does
+  the provider's storage data plane. Set `azure-use-azuread: false` to turn
+  it off.
+- **Nothing else Azure is set without `azure-client-id`.**
+- **Values come from the repository or organization.** Your calling job has
+  no environment, so `${{ vars.X }}` and `${{ secrets.X }}` there resolve
+  at repository or organization level. Name per-environment values
+  accordingly (`PROD_CLIENT_ID`, `PROD_READ_CLIENT_ID`).
+
+### OIDC setup
+
+Add a federated credential to each identity for each subject its jobs
+present:
+
+<!-- markdownlint-disable MD013 -->
+
+| Job               | Subject                                                                                                                                                 |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| apply             | `<prefix>:environment:<apply-environment>`                                                                                                              |
+| plan              | `<prefix>:environment:<plan-environment>`; without one, `<prefix>:pull_request` (PR plans) and `<prefix>:ref:refs/heads/main` (push and dispatch plans) |
+| integration tests | `<prefix>:environment:<integration-test-environment>`; without one, as for plans                                                                        |
+
+<!-- markdownlint-enable MD013 -->
+
+- `<prefix>` is `repo:<owner>/<repo>`, or on newer repositories
+  `repo:<owner>@<owner-id>/<repo>@<repo-id>`. Get yours with
+  `gh api repos/<owner>/<repo>/actions/oidc/customization/sub`
+  (`sub_claim_prefix`). A mismatch fails `tofu init` with AADSTS700213,
+  which quotes the subject presented.
+- Since each subject is bound to an environment, only the job running there
+  can use the identity: the apply identity only after approval.
+
+Only Azure is supported for now. Other providers will get their own
+optional inputs (`aws-*`, `google-*`, ...) as they're needed.
+
+## Private modules and policies
+
+`tofu init` downloads modules from their `source`, and conftest pulls
+`policy-source`, both with git. Local modules (`./modules/x`) and public
+repositories need nothing. For private GitHub repositories:
+
+- **Why a token:** the run's `GITHUB_TOKEN` can only read the repository
+  the run belongs to, on GitHub Enterprise too, for private and internal
+  repositories alike.
+- **What `modules-token` does:** before `tofu init` and `conftest pull`, the
+  workflow writes a throwaway git config (in the job's temporary directory)
+  that rewrites `https://github.com/`, `ssh://git@github.com/` and
+  `git@github.com:` URLs to authenticate with the token (on your Enterprise
+  host too). `git::https://github.com/org/modules.git//x?ref=v1` and
+  `git@github.com:org/modules.git` sources then work without changing the
+  module code.
+- **Which token:** one that can read those repositories, e.g. a
+  fine-grained personal access token with read-only Contents on them,
+  stored as a secret. Without it, the run's `GITHUB_TOKEN` is used.
+
+## Branch protection
+
+Each call ends with a `result` job, which passes only if every job of the
+call succeeded or was skipped for a reason (nothing changed, checks off,
+plan only, a fork PR). GitHub names its check after your calling job:
+`<calling job name> / Result`, where the calling job's name is its `name:`,
+else its ID.
+
+**Per file (recommended):** add one job to your workflow file that needs
+every call, and require only its check:
+
+```yaml
+  result:
+    name: identity
+    needs: [dev, prod-eastus, prod-westus]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check results
+        uses: JoshSLawrence/actions/shared/result@v0.2.0
+        with:
+          needs: ${{ toJSON(needs) }}
 ```
 
-- **discover** finds the root modules under `search-root`. On `pull_request`
-  and `push` runs it keeps only those the change affects: their own files,
-  a local module they use (`source = "../modules/x"`, followed
-  recursively), or anything matching `shared-paths`. Other events run
-  everything, and so does a diff that can't be computed; planning too much
-  is safe. A root module that's deleted gets a warning, because deleting it
-  doesn't destroy what it managed.
-- **validate** runs once per root module: fmt, validate, TFLint, Trivy, the
-  terraform-docs check and `tofu test`, each switchable. Every enabled check
-  runs even when an earlier one fails, and a results table goes to the job
-  summary. It gets no cloud credentials, so PRs from forks can run it.
-- **integration-tests** (off by default) runs `tofu test` with cloud
-  credentials after validate passes, optionally behind an environment
-  approval. Deployments wait for it.
-- **plan** (per deployment) plans to a saved file and renders a summary:
-  counts, destroys called out, resources, and the full plan as a diff. It
-  can add an Infracost estimate and a conftest policy check (failing policy
-  deletes the plan, so it can't be applied). It uploads the plan and
-  comments the summary on the PR. Skipped for fork PRs, which get no OIDC
-  token.
-- **apply** (per deployment) runs only when the plan has changes, and waits
-  for the `apply-environment`'s reviewers. Then:
-  1. it refuses a stale plan: the PR moved on, or anything the plan depends
-     on (the module, its local modules, its var and backend files,
-     `shared-paths`) changed on the target branch since;
-  2. it checks the plan file's SHA-256;
-  3. it applies exactly that plan;
-  4. it updates the PR comment.
-- **result** rolls everything up into one check to require in branch
-  protection: `<caller job> / Result`.
+The required check is `identity`. Adding a deployment means adding it to
+`needs:` in the same PR; the ruleset doesn't change.
 
-### Apply from the PR (default) or on merge
+**Per call:** require each call's check instead (`identity-dev / Result`,
+`identity-prod-eastus / Result`, ...). Adding a deployment then means
+changing the ruleset too. Calling job names must be unique across your
+workflows: `prod` in two files would be two checks both named
+`prod / Result`, so give each job a `name:`.
 
-With `apply-from-pr: true` (the default), the reviewed plan is applied from
-the PR, before merge.
-
-- **The default branch only ever holds configuration that applied
-  successfully.** If you require the `Result` check, a PR with changes
-  can't merge until it's applied.
-- **Rolling back an unmerged PR:** if a PR is applied but then not merged,
-  run the workflow on the default branch (`workflow_dispatch`) to re-apply
-  what's there.
-
-`apply-from-pr: false` makes PRs plan only. The push to the default branch
-then plans again and applies after approval. Runs that aren't PRs only
-apply on the default branch; use environment deployment branch policies for
-more control.
-
-### Drift detection
-
-`opentofu-drift.yaml` plans every deployment of every root module (all of
-them, whatever changed) with the same plan action, lock-free.
-
-- **Drift found:** it opens an issue for that deployment, labelled `drift`.
-  Later checks update the issue's body in place, so a daily check doesn't
-  notify anyone again.
-- **Drift gone:** it comments on the issue and closes it.
-- **Failing the run:** a check that can't run fails it. With
-  `fail-on-drift`, drift fails it too.
+To require a check: Settings → Rules → Rulesets → your default-branch
+ruleset → "Require status checks to pass" → add the check by name (it's
+listed once it has run on a PR). Also consider "Require branches to be up
+to date before merging" with `apply-from-pr`.
 
 ## Setup
 
-1. **Pin each root module's tools** in its own `mise.toml`, for example
-   `mise use opentofu@1.12.6 tflint@0.64.0 trivy@0.74.0` in the module
-   directory. Commit `.terraform.lock.hcl` too.
-2. **Apply environment:** a GitHub environment with **required reviewers**,
-   passed as `apply-environment` (or `"{deployment}"`, for one per
-   deployment). GitHub creates any environment a workflow names on first
-   use, without protection rules. The apply job warns when its environment
-   has no required reviewers.
-   - Required reviewers on a **private** repository need GitHub Enterprise.
-     Without them, `apply-from-pr: true` applies every PR's plan
-     unattended; `apply-from-pr: false` makes merging the approval.
-3. **Plan environment (optional):** one without reviewers, passed as
-   `plan-environment`, to scope read-only credentials to plans and drift
-   checks.
-4. **Azure OIDC.** No secrets are needed: set the variables
-   `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`, or pass
-   `azure-client-id` and friends.
-   - Variables scoped to an environment win in that environment's jobs, so
-     each environment can hold its own identity.
-   - Add a federated credential for each subject the jobs present:
-     `<prefix>:environment:<name>`; for jobs without an environment,
-     `<prefix>:pull_request` (PR plans) and `<prefix>:ref:refs/heads/main`
-     (push, dispatch and drift runs).
-   - `<prefix>` is `repo:<owner>/<repo>`, or on newer repositories
-     `repo:<owner>@<owner-id>/<repo>@<repo-id>`. Get yours with
-     `gh api repos/<owner>/<repo>/actions/oidc/customization/sub`
-     (`sub_claim_prefix`). A mismatch fails `tofu init` with AADSTS700213,
-     which quotes the subject presented.
-   - The azurerm backend and providers fetch OIDC tokens themselves. Set
-     `azure-login: true` only if your configuration shells out to the az
-     CLI.
-5. **Other providers:** put credentials in a secret with one `KEY=VALUE` per
-   line and pass it as the `env-vars` secret. `apply-env-vars` adds
-   write-only credentials for the apply job.
-6. **Branch protection:** require `<caller job> / Result`. With
-   `apply-from-pr`, also consider "Require branches to be up to date before
-   merging".
+1. **Pin the module's tools** in its own `mise.toml`, e.g.
+   `mise use opentofu@1.12.6 tflint@0.64.0 trivy@0.74.0
+   terraform-docs@0.24.0` in the module directory, plus `conftest` for
+   `policy` and `infracost` for `cost-estimate`. Commit
+   `.terraform.lock.hcl` too.
+   - A plain `mise install` in a module also installs what every
+     `mise.toml` above it pins, and your global config. CI installs only
+     the module's own tools; to do the same locally, run this in the
+     module:
 
-## Reference
+     ```bash
+     MISE_CEILING_PATHS="$(dirname "$PWD")" MISE_GLOBAL_CONFIG_FILE=/nonexistent/config.toml mise install
+     ```
 
-Paths are relative to the repository root, except `deployments`,
-`var-files`, `backend-config` files and `test-filter`, which (as in
-OpenTofu) are relative to the root module. List inputs accept spaces or
-newlines. `{deployment}` is replaced where noted.
+2. **One state per deployment:** each var file sets a variable the backend
+   block reads (OpenTofu evaluates variables there), and the workflow passes
+   the var files to `tofu init` too:
 
-<!-- markdownlint-disable MD013 -->
+   ```hcl
+   variable "state_key" {
+     description = "State file for this deployment, set in its .tfvars."
+     type        = string
+   }
 
-### Discovery (`opentofu.yaml`, `opentofu-drift.yaml`)
+   terraform {
+     backend "azurerm" {
+       resource_group_name  = "rg-tfstate"
+       storage_account_name = "sttfstate"
+       container_name       = "tfstate"
+       key                  = var.state_key
+     }
+   }
+   ```
 
-| Input | Default | Description |
-| --- | --- | --- |
-| `search-root` | `.` | Directory to search for root modules |
-| `exclude` | none | Globs of module paths to skip, e.g. `legacy/**` |
-| `modules` | all | Run exactly these module paths (e.g. from a dispatch input) |
-| `changed-only` | `true` | PR/push runs only run affected modules (`opentofu.yaml` only) |
-| `shared-paths` | none | Globs whose change affects every module, and makes plans stale (`opentofu.yaml` only) |
+   Leave the variable without a default, so a deployment that forgets it
+   fails at `init` instead of using another deployment's state.
+3. **Create the environments** each call names, before its first run:
+   apply environments with **required reviewers**, plan environments
+   without. A run naming one that doesn't exist fails, naming it.
+   Required reviewers on a **private** repository need GitHub Enterprise;
+   without them, `apply-from-pr: false` makes merging the approval.
+4. **Credentials:** the repository variables and secrets your calls pass,
+   and federated credentials (see [Azure](#azure)).
+5. **Branch protection** (see [Branch protection](#branch-protection)).
 
-Globs follow GitHub's `paths:` rules: `*` stays within a directory, `**`
-crosses directories.
+Before any job runs, the prepare job checks:
 
-### Which root module (`opentofu-config.yaml`, `opentofu-deploy.yaml`)
+- `working-directory` exists, has `*.tf` files and its own `mise.toml`, and
+  every var file exists;
+- `apply-environment` is set, and every environment named exists;
+- every tool the enabled options need is pinned;
+- the Azure inputs are consistent (a client ID needs a tenant ID; a secret
+  needs its client ID; `plan-azure-client-id` needs `azure-client-id`);
+- `cost-estimate` has its `infracost-api-key`; `policy` has a
+  `policy-source` or a `policy-path`, and every `policy-path` directory
+  exists (set `policy-path: ""` to use only `policy-source`); test filters
+  match files; `extra-paths` stay in the repository; `name` is usable.
 
-| Input | Default | Description |
-| --- | --- | --- |
-| `working-directory` | `.` | The root module |
-| `stack-name` | working directory | Display name; set distinct ones when calling a workflow twice for the same module |
+## PR comments
 
-### Deployments
-
-| Input | Default | Description |
-| --- | --- | --- |
-| `deployments` | none | `.tfvars` files, one deployment each; globs match within the module |
-| `var-files` | none | Var files every deployment uses, before its own |
-| `backend-config` | none | `-backend-config` values every deployment uses, one per line; `{deployment}` |
-
-### Checks (`opentofu.yaml`, `opentofu-config.yaml`)
-
-| Input | Default | Description |
-| --- | --- | --- |
-| `fmt` | `true` | `tofu fmt -check -recursive` |
-| `validate` | `true` | `tofu init -backend=false` + `tofu validate` |
-| `tflint` | `true` | TFLint, recursive; uses `.tflint.hcl` if present |
-| `trivy` | `true` | Trivy misconfiguration scan; uses `trivy.yaml` if present |
-| `trivy-severity` | `trivy.yaml`'s, else `CRITICAL,HIGH` | Severities that fail the scan |
-| `docs` | `false` | Fail if the terraform-docs README is stale |
-| `tests` | `true` | `tofu test` without cloud credentials (skipped without test files) |
-| `test-filter` | all | Test files (globs allowed) |
-| `test-verbose` | `false` | `tofu test -verbose` |
-| `integration-tests` | `false` | `tofu test` again with cloud credentials |
-| `integration-test-filter` | all | Test files for the integration run |
-| `integration-test-environment` | none | Environment for the integration job |
-| `integration-test-timeout-minutes` | `90` | Its timeout (a timeout leaks what the test created) |
-
-### Plan
-
-| Input | Default | Description |
-| --- | --- | --- |
-| `plan-environment` | none | Environment for plan jobs (and drift checks); `{deployment}` |
-| `plan-retention-days` | `7` | Plan artifact retention; a later approval fails |
-| `pr-comment` | `true` | Comment the plan and apply result on the PR |
-| `policy` | `false` | conftest policy check; failing blocks the apply |
-| `policy-path` | `policy` | Policy directories |
-| `policy-source` | none | go-getter URL for (more) policies |
-| `policy-namespaces` | all | Rego namespaces to evaluate |
-| `policy-fail-on-warn` | `false` | Also block on `warn` rules |
-| `cost-estimate` | `false` | Infracost estimate (needs `infracost-api-key`); when off, the plan summary and PR comment say so |
-
-### Apply
-
-| Input | Default | Description |
-| --- | --- | --- |
-| `apply` | `true` | Include the apply job (`false` = plan only) |
-| `apply-from-pr` | `true` | Apply from the PR before merge; `false` = on the default branch only |
-| `apply-environment` | none | Environment with required reviewers; `{deployment}` |
-| `preflight-paths` | working directory | What plans depend on (`opentofu-config.yaml`, `opentofu-deploy.yaml`; `opentofu.yaml` works it out) |
-
-### Drift (`opentofu-drift.yaml`)
-
-| Input | Default | Description |
-| --- | --- | --- |
-| `create-issues` | `true` | One issue per drifted deployment, updated, closed when resolved |
-| `issue-labels` | `drift` | Labels, comma-separated; the first finds existing issues |
-| `fail-on-drift` | `false` | Fail the run on drift |
-
-### Runners, tools and cloud auth
-
-| Input | Default | Description |
-| --- | --- | --- |
-| `runs-on` | `ubuntu-latest` | Runner label for every job |
-| `timeout-minutes` | `30` | Timeout for each job |
-| `max-parallel` | `4` | Most jobs of one matrix at once (root modules; each one's deployments) |
-| `mise-version` | `2026.9.12` | mise version |
-| `azure-client-id` | `vars.AZURE_CLIENT_ID` | Azure identity for OIDC |
-| `apply-azure-client-id` | `azure-client-id` | Separate (write) identity for apply |
-| `azure-tenant-id` | `vars.AZURE_TENANT_ID` | Azure tenant |
-| `azure-subscription-id` | `vars.AZURE_SUBSCRIPTION_ID` | Azure subscription |
-| `azure-login` | `false` | Also `azure/login`, for the az CLI |
-
-### Secrets
-
-| Secret | Description |
-| --- | --- |
-| `env-vars` | `KEY=VALUE` lines exported (masked): other providers' credentials, `TF_VAR_*`, `TF_ENCRYPTION` |
-| `apply-env-vars` | `KEY=VALUE` lines for apply jobs only, overriding `env-vars` |
-| `modules-token` | Token that can read private GitHub repositories used as module or policy sources |
-| `infracost-api-key` | Infracost API key |
-
-The drift workflow takes `env-vars` and `modules-token`.
-
-### Outputs
-
-| Workflow | Output | Description |
-| --- | --- | --- |
-| `opentofu.yaml` | `modules` | JSON array of the root modules that ran |
-| `opentofu-config.yaml` | `deployments` | JSON array of the deployment names |
-| `opentofu-deploy.yaml` | `has-changes`, `applied` | Whether the plan had changes / was applied |
-
-<!-- markdownlint-enable MD013 -->
-
-## Composite actions
-
-The workflows are made of these; use them directly for a different job
-layout. Each action's inputs are documented in its `action.yaml`, and paths
-are relative to the workspace. Run `setup` first in every job.
-
-<!-- markdownlint-disable MD013 -->
-
-| Action | Does |
-| --- | --- |
-| [`opentofu/discover`](discover/action.yaml) | Root modules under a directory, filtered to a change; module and deployment matrices |
-| [`opentofu/deployments`](deployments/action.yaml) | One root module's deployments as a matrix |
-| [`opentofu/setup`](setup/action.yaml) | Installs mise, then exactly the module's pinned tools; checks the required ones are pinned (the Data Factory and Synapse workflows use it too) |
-| [`opentofu/checks`](checks/action.yaml) | fmt, validate, TFLint, Trivy, docs, tests, each switchable |
-| [`opentofu/plan`](plan/action.yaml) | Plan to a file, summary, optional cost estimate and policy check |
-| [`opentofu/apply`](apply/action.yaml) | Environment check, stale-plan preflight, digest check, apply |
-| [`opentofu/pr-comment`](pr-comment/action.yaml) | Create or update the PR comment for one deployment |
-| [`opentofu/drift-report`](drift-report/action.yaml) | Open, update or close a deployment's drift issue |
-| [`opentofu/result`](result/action.yaml) | Roll a workflow's jobs up into one check |
-
-<!-- markdownlint-enable MD013 -->
-
-The logic is in [`scripts/`](scripts/). Each script documents its
-environment variables at the top, uses the helpers in
-[`scripts/common.sh`](scripts/common.sh) (the generic ones are in
-[`../shared/scripts/common.sh`](../shared/scripts/common.sh), shared with
-the Data Factory and Synapse actions), and runs locally too. For example:
-
-```bash
-WORKING_DIR=infra DEPLOYMENTS='deployments/*.tfvars' opentofu/scripts/deployments.sh
-```
-
-## PR comments and drift issues
-
-- **One comment per deployment per PR**, edited in place by every run:
-  - **Contents:** the plan summary (plus the cost and policy sections) and
-    where the apply stands: awaiting approval, applying after merge,
-    blocked by policy, applied (and by whose approval), or failed.
-  - **History:** earlier versions stay in the comment's edit history, and a
-    footer on the comment points readers to it (the **edited** menu).
+- **One comment per call per PR**, edited in place by every run. Its title
+  says which call applies in which environment, e.g.
+  OpenTofu: `iac/identity` · `prod-eastus` → `prod`.
+  - **Contents:** the plan summary, the cost and policy sections, the
+    checks' results, and where the apply stands: awaiting approval,
+    applying after merge, blocked by policy, applied (and by whose
+    approval), or failed.
+  - **History:** earlier versions stay in the comment's edit history (its
+    **edited** menu).
   - **Out-of-order runs:** a run for an outdated PR head leaves the comment
     alone.
   - **Size:** plan output is truncated to fit GitHub's limit; the full plan
     is in the run log.
-- **One issue per drifted deployment**, found by a hidden marker among open
-  issues with the first of `issue-labels`. Its body is replaced by each
-  check while the drift lasts, and it's closed once the drift is gone.
-- **Author:** only comments and issues by `github-actions[bot]` are edited.
-  If you use a GitHub App token, set the actions' `comment-author` /
-  `issue-author`.
+- **Author:** only comments by `github-actions[bot]` are edited.
 
 ## Security notes
 
-- **Plans hold state, and drift issues hold plan output.** A plan file
-  embeds a copy of the state. Artifacts and issues of a public repository
-  are readable by anyone. Keep secrets out of state (`tofu show` hides
-  values marked sensitive), or use OpenTofu's native state and plan
-  encryption: pass `TF_ENCRYPTION` through `env-vars`.
-- **Least privilege.** validate never gets cloud credentials. Plans, drift
-  checks and applies can use different identities, and apply credentials
-  exist only after approval.
-- **Private repositories.** The default `GITHUB_TOKEN` can only read the
-  calling repository. Pass a token that can read the others as
-  `modules-token`. This library itself needs no token: its Actions access
-  setting grants the calling repositories (see the top-level README).
-- **Fork PRs** are validated, never planned.
+- **Plans hold state.** A plan file embeds a copy of the state, and
+  artifacts of a public repository are readable by anyone. Keep secrets out
+  of state (`tofu show` hides values marked sensitive).
+- **Least privilege.** The checks never get cloud credentials. Plans and
+  applies can use different identities, and an identity bound to the apply
+  environment works only after its approval.
+- **The calling workflow is code.** It's reviewed in the PR like the `.tf`
+  files: it decides which environment, and so which identity and approval
+  gate, a call uses. Environment protection rules and federated credentials
+  bound to environment names keep a PR from deploying where it shouldn't.
+- **Fork and Dependabot PRs** are checked, never planned: they get no
+  secrets or OIDC token.
 
-## Coming from the Azure DevOps templates
+## Moving from v0.1.0
 
 <!-- markdownlint-disable MD013 -->
 
-| Azure DevOps (`pipeline-templates`) | Here |
-| --- | --- |
-| `opentofu-pipeline.yml` (single root) | `opentofu-config.yaml` (or `opentofu.yaml` pointed at the module) |
-| `opentofu-multi-root-pipeline.yml` (discover + matrix) | `opentofu.yaml`; the marker is `mise.toml`, not `backend.tf` |
-| One pipeline call per environment with `varFile` | `deployments: env/*.tfvars` (+ a `.tfbackend` each) in one call |
-| `requireFormatCheck`, `requireLintCheck`, ... | `fmt`, `tflint`, `trivy`, `docs`, `tests`, ... |
-| Environment approval on the deployment job | `apply-environment` with required reviewers; `{deployment}` for one per deployment |
-| `azureServiceConnection` / `applyAzureServiceConnection` | Environment-scoped `AZURE_CLIENT_ID`, or `azure-client-id` / `apply-azure-client-id` |
-| `tfplan_<env>` artifact | One plan artifact per deployment, SHA-256 checked before apply |
-| PR thread with a reply per run | One comment per deployment, edited in place |
-| `enableConftest`, `enableInfracost` | `policy`, `cost-estimate` |
-| ResultGate stage | `result` job |
-| Drift pipeline + ADO work items | `opentofu-drift.yaml` + GitHub issues (closed automatically once resolved) |
+| v0.1.0                                                           | v0.2.0                                                             |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `opentofu.yaml` discovered every root module under `search-root` | `opentofu.yaml` is one call per deployment; write one job for each |
+| `opentofu-config.yaml` with a `deployments` glob                 | One call per var file (`var-files`)                                |
+| `opentofu-deploy.yaml`, the composite actions                    | Internals of `opentofu.yaml`                                       |
+| `backend-config`, `.tfbackend` files, `{deployment}`             | A backend variable set in each var file                            |
+| `apply-environment` per deployment pattern                       | `apply-environment` per call                                       |
+| `azure-client-id` (plan) and `apply-azure-client-id` (apply)     | `azure-client-id` (apply) and `plan-azure-client-id` (plan)        |
+| `azure-login`, the `env-vars` and `apply-env-vars` secrets       | Not supported; Azure through its inputs, other providers to come   |
+| `stack-name`                                                     | `name`                                                             |
+| `opentofu-drift.yaml`                                            | Removed for now; it returns in the per-call shape                  |
 
 <!-- markdownlint-enable MD013 -->
+
+## Internals
+
+`opentofu.yaml` uses the composite actions in this directory (`prepare`,
+`checks`, `azure`, `plan`, `apply`) and the shared library's `shared/setup`,
+`shared/pr-comment` and `shared/result`. They're not meant to be called on
+their own, and their interfaces may change in any release.
+
+The logic is in [`scripts/`](scripts/), on top of the shared library
+([`../shared/scripts/`](../shared/scripts/)). Each script documents its
+environment variables at the top and runs locally too, e.g.:
+
+```bash
+WORKING_DIR=iac/identity VAR_FILES=deployments/prod.tfvars APPLY_ENVIRONMENT=prod opentofu/scripts/validate-inputs.sh
+```
+
+[`tests/opentofu/scripts-test.sh`](../tests/opentofu/scripts-test.sh)
+tests change detection, input validation, the Azure mapping and names; CI
+runs the workflow end to end against
+[`tests/fixtures/opentofu/`](../tests/fixtures/opentofu/).

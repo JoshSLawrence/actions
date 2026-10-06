@@ -1,0 +1,57 @@
+name: OpenTofu Azure credentials
+description: >-
+  Exports the azurerm provider's and backend's ARM_* variables for the rest
+  of the job from the workflow's Azure inputs and secrets, for one job's
+  role: azure-client-id is the apply (and integration test) identity,
+  plan-azure-client-id overrides it for the plan job, a client secret means
+  secret auth and none means OIDC. Microsoft Entra ID storage auth is on
+  unless use-azuread is "false". Sets nothing else without a client ID.
+
+inputs:
+  role:
+    description: plan, apply or test.
+    required: true
+  client-id:
+    description: The azure-client-id input.
+    required: false
+    default: ""
+  tenant-id:
+    description: The azure-tenant-id input.
+    required: false
+    default: ""
+  subscription-id:
+    description: The azure-subscription-id input.
+    required: false
+    default: ""
+  client-secret:
+    description: The azure-client-secret secret.
+    required: false
+    default: ""
+  plan-client-id:
+    description: The plan-azure-client-id input.
+    required: false
+    default: ""
+  plan-client-secret:
+    description: The plan-azure-client-secret secret.
+    required: false
+    default: ""
+  use-azuread:
+    description: '"true" (default) for Microsoft Entra ID auth to storage.'
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Set Azure credentials
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/azure-env.sh"'
+      env:
+        ROLE: ${{ inputs.role }}
+        AZURE_CLIENT_ID: ${{ inputs.client-id }}
+        AZURE_TENANT_ID: ${{ inputs.tenant-id }}
+        AZURE_SUBSCRIPTION_ID: ${{ inputs.subscription-id }}
+        AZURE_CLIENT_SECRET: ${{ inputs.client-secret }}
+        PLAN_AZURE_CLIENT_ID: ${{ inputs.plan-client-id }}
+        PLAN_AZURE_CLIENT_SECRET: ${{ inputs.plan-client-secret }}
+        AZURE_USE_AZUREAD: ${{ inputs.use-azuread }}

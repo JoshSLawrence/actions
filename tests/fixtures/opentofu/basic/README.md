@@ -2,10 +2,11 @@
 # basic (test fixture)
 
 A root module the CI workflows run against. It needs no cloud account:
-`random_pet` and `terraform_data` only touch local state. It has two
-deployments, `deployments/dev.tfvars` and `deployments/prod.tfvars`, each
-with its own state file set by the `.tfbackend` file next to it, and uses
-the shared local module `../modules/label`.
+`random_pet` and `terraform_data` only touch local state. It's deployed
+three times, once per var file in `deployments/` (`dev.tfvars`,
+`prod.tfvars`, `staging-eu.tfvars`), each setting its own state file
+through `state_path`, which the backend block reads. It has a child module,
+`modules/label`.
 
 ## Requirements
 
@@ -25,7 +26,7 @@ the shared local module `../modules/label`.
 
 | Name | Source | Version |
 | ---- | ------ | ------- |
-| <a name="module_label"></a> [label](#module\_label) | ../modules/label | n/a |
+| <a name="module_label"></a> [label](#module\_label) | ./modules/label | n/a |
 
 ## Resources
 
@@ -39,6 +40,7 @@ the shared local module `../modules/label`.
 | Name | Description | Type | Default | Required |
 | ---- | ----------- | ---- | ------- | :------: |
 | <a name="input_name_prefix"></a> [name\_prefix](#input\_name\_prefix) | Prefix for the generated name. Lowercase letters and digits, starting with a letter. | `string` | n/a | yes |
+| <a name="input_state_path"></a> [state\_path](#input\_state\_path) | Local state file for this deployment, set in its .tfvars (e.g. dev.tfstate). | `string` | n/a | yes |
 | <a name="input_tags"></a> [tags](#input\_tags) | Tags recorded alongside the generated name. | `map(string)` | `{}` | no |
 
 ## Outputs

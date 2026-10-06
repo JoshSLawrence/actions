@@ -38,7 +38,7 @@ permissions: {}
 
 jobs:
   datafactory:
-    uses: JoshSLawrence/actions/.github/workflows/datafactory.yaml@v0.1.0
+    uses: JoshSLawrence/actions/.github/workflows/datafactory.yaml@v0.2.0
     permissions:
       actions: read
       contents: read

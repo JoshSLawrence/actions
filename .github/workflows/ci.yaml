@@ -1,17 +1,20 @@
-# CI for this library: lint everything, then run the OpenTofu reusable
-# workflows end to end -- from this commit -- against the test fixtures, the
-# same way a consumer calls them.
+# CI for this library: lint everything (including the OpenTofu script
+# tests), then run the reusable workflows end to end -- from this commit --
+# against the test fixtures, the same way a consumer calls them.
 #
 # The OpenTofu fixtures need no cloud account (random_pet/terraform_data,
-# local state), so the e2e runs plan, comment on the PR, and apply without an
-# approval environment. The Data Factory and Synapse fixtures build (offline)
-# and plan without what-if, which needs no Azure either. One more run deploys
+# local state), so the e2e calls plan, comment on the PR, and apply in the
+# opentofu-fixture and staging environments, which have no reviewers. They
+# must exist: the workflow refuses to run in an environment that doesn't
+# (GitHub would create it, unprotected), so create them once in Settings ->
+# Environments. The Data Factory and Synapse fixtures build (offline) and
+# plan without what-if, which needs no Azure either. One more run deploys
 # the Data Factory fixture to a real, otherwise empty factory
 # (adf-githubtest), through the adf-githubtest environment: its variables
 # hold the identity, whose only federated credential is for that
-# environment. Require "Lint", "E2E repo / Result", "E2E config / Result",
-# "E2E drift / Result", "E2E datafactory / Result", "E2E synapse / Result"
-# and "E2E datafactory (Azure) / Result" in branch protection.
+# environment. Require "Lint", "E2E OpenTofu", "E2E datafactory / Result",
+# "E2E synapse / Result" and "E2E datafactory (Azure) / Result" in branch
+# protection.
 
 name: CI
 
@@ -55,13 +58,16 @@ jobs:
           # Authenticated tflint plugin downloads avoid GitHub API rate limits
           GITHUB_TOKEN: ${{ github.token }}
 
-  # The repository entry point: discovers both fixture root modules and
-  # deploys each -- basic twice (deployments/dev and prod .tfvars, each with
-  # its own .tfbackend), minimal on its own -- with every default check, the
-  # shared policy, and apply. changed-only is off so every PR exercises all
-  # of them, whatever it changed.
-  e2e-repo:
-    name: E2E repo
+  # OpenTofu, end to end: one call per fixture deployment, the way a
+  # consumer calls it, with a per-file check (e2e-opentofu) like the one
+  # opentofu/README.md recommends. Most calls turn changed-only off, so every
+  # PR exercises them whatever it changed (tests/opentofu/ covers change
+  # detection); e2e-tofu-staging keeps it on.
+
+  # Every default check with the call's var file, the shared policy from
+  # policy-path, and apply.
+  e2e-tofu-dev:
+    name: E2E tofu basic-dev
     uses: $/.github/workflows/opentofu.yaml
     permissions:
       actions: read
@@ -69,18 +75,19 @@ jobs:
       id-token: write
       pull-requests: write
     with:
-      search-root: tests/fixtures/opentofu
+      working-directory: tests/fixtures/opentofu/basic
+      var-files: deployments/dev.tfvars
+      apply-environment: opentofu-fixture
       changed-only: false
-      deployments: deployments/*.tfvars
       policy: true
       policy-path: tests/fixtures/opentofu/policy
 
-  # One config directly, with toggles flipped: one deployment, the docs
-  # check on, other checks off, policies pulled from a URL, plan only, and
-  # its own PR comment
-  e2e-config:
-    name: E2E config
-    uses: $/.github/workflows/opentofu-config.yaml
+  # Plan only, with the same policy pulled from a URL (conftest pull)
+  # instead. The PR head, not github.sha: a PR's merge commit can't be
+  # cloned by ref.
+  e2e-tofu-prod:
+    name: E2E tofu basic-prod
+    uses: $/.github/workflows/opentofu.yaml
     permissions:
       actions: read
       contents: read
@@ -88,34 +95,64 @@ jobs:
       pull-requests: write
     with:
       working-directory: tests/fixtures/opentofu/basic
-      stack-name: basic (config, plan only)
-      deployments: deployments/dev.tfvars
-      docs: true
-      tflint: false
-      trivy: false
-      tests: false
+      var-files: deployments/prod.tfvars
+      apply-environment: opentofu-fixture
+      changed-only: false
       apply: false
-      # The same fixture policy as e2e-repo, but pulled with policy-source
-      # (conftest pull) instead of read from policy-path. The PR head, not
-      # github.sha: a PR's merge commit can't be cloned by ref.
       policy: true
       policy-path: ""
       policy-source: git::https://github.com/${{ github.repository }}.git//tests/fixtures/opentofu/policy?ref=${{ github.event.pull_request.head.sha || github.sha }}
 
-  # Drift detection over the same deployments. Local state starts empty on
-  # every runner, so every check finds "drift": issues are off to keep the
-  # repository quiet.
-  e2e-drift:
-    name: E2E drift
-    uses: $/.github/workflows/opentofu-drift.yaml
+  # Change detection on: plans and applies only when the fixture, this call
+  # or the OpenTofu workflow and its scripts changed. Checks off.
+  e2e-tofu-staging:
+    name: E2E tofu basic-staging-eu
+    uses: $/.github/workflows/opentofu.yaml
     permissions:
+      actions: read
       contents: read
       id-token: write
-      issues: write
+      pull-requests: write
     with:
-      search-root: tests/fixtures/opentofu
-      deployments: deployments/*.tfvars
-      create-issues: false
+      working-directory: tests/fixtures/opentofu/basic
+      var-files: deployments/staging-eu.tfvars
+      apply-environment: staging
+      checks: false
+      extra-paths: |
+        .github/workflows/opentofu.yaml
+        opentofu/**
+        shared/**
+
+  # A module without var files, providers or a lock file. It doesn't pin
+  # terraform-docs, so docs is off.
+  e2e-tofu-minimal:
+    name: E2E tofu minimal
+    uses: $/.github/workflows/opentofu.yaml
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      working-directory: tests/fixtures/opentofu/minimal
+      apply-environment: opentofu-fixture
+      changed-only: false
+      docs: false
+
+  # The one check for every OpenTofu call above
+  e2e-opentofu:
+    name: E2E OpenTofu
+    needs: [e2e-tofu-dev, e2e-tofu-prod, e2e-tofu-staging, e2e-tofu-minimal]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check results
+        uses: $/shared/result
+        with:
+          needs: ${{ toJSON(needs) }}
 
   # A factory with two deployments (deployments/dev.json and prod.json):
   # build -- which must leave out the fixture's stray pipeline/.keep -- then

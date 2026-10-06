@@ -1,0 +1,67 @@
+name: Setup
+description: >-
+  Installs mise, then runs mise install in one directory (an OpenTofu root
+  module, a factory or workspace folder): exactly the tools its own mise
+  config pins (its mise.toml), nothing from parent directories such as the
+  repository root, or from global config. Fails, listing them all, if a
+  tool the job needs isn't pinned (or, with install false, only checks
+  that).
+
+inputs:
+  working-directory:
+    description: The directory whose tools to install, relative to the workspace.
+    required: false
+    default: "."
+  required-tools:
+    description: >-
+      mise tools the job needs, space- or newline-separated (e.g. opentofu,
+      tflint, trivy, node, azure-cli). They must be pinned in the
+      directory's mise config; this only checks, it never adds tools.
+    required: true
+  mise-version:
+    description: >-
+      mise version to install (default: 2026.9.12). Pinned rather than latest
+      so a mise release can't change behaviour under you; bump it
+      deliberately.
+    required: false
+    default: ""
+  github-token:
+    description: Token for GitHub API calls while installing tools (avoids rate limits).
+    required: false
+    default: ${{ github.token }}
+  install:
+    description: >-
+      "false" only checks that required-tools are pinned, without installing
+      anything (e.g. to validate inputs up front).
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # Only installs mise itself: tools are installed next, scoped to the
+    # directory. mise-action also trusts every mise config under the
+    # workspace (MISE_TRUSTED_CONFIG_PATHS). Its env/PATH export is off
+    # because it would read configs above the directory; the scripts run
+    # tools with `mise exec`, which applies the directory's [env].
+    - name: Install mise
+      uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+      with:
+        # The default lives here rather than on the input, so callers passing
+        # an empty string through (like the reusable workflows) get it too.
+        # Dependabot doesn't update it; bump it by hand now and then.
+        version: ${{ inputs.mise-version || '2026.9.12' }}
+        working_directory: ${{ inputs.working-directory }}
+        install: false
+        env: false
+        export_path: false
+        github_token: ${{ inputs.github-token }}
+
+    - name: Install the directory's tools
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/mise-install.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        REQUIRED_TOOLS: ${{ inputs.required-tools }}
+        INSTALL: ${{ inputs.install }}
+        MISE_GITHUB_TOKEN: ${{ inputs.github-token }}

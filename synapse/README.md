@@ -122,14 +122,36 @@ synapse-deploy.yaml                   plan ──> apply (after approval)
    runner in an Azure private network.
 4. **Apply environments** with required reviewers, e.g.
    `apply-environment: "{deployment}"`.
-5. **Azure OIDC**, as for [OpenTofu](../opentofu/README.md#setup), plus
-   Synapse roles, which are separate from Azure's:
+5. **Azure OIDC.** No secrets are needed: set the variables
+   `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`
+   (environment-scoped ones win in that environment's jobs).
+   - Add a federated credential for each subject the jobs present:
+     `<prefix>:environment:<name>`; for jobs without an environment,
+     `<prefix>:pull_request` (PR plans) and `<prefix>:ref:refs/heads/main`
+     (push and dispatch runs).
+   - `<prefix>` is `repo:<owner>/<repo>`, or on newer repositories
+     `repo:<owner>@<owner-id>/<repo>@<repo-id>`. Get yours with
+     `gh api repos/<owner>/<repo>/actions/oidc/customization/sub`
+     (`sub_claim_prefix`). A mismatch fails sign-in with AADSTS700213,
+     which quotes the subject presented.
+   - Synapse roles are separate from Azure's:
    - the apply identity needs **Synapse Artifact Publisher** in the
      workspace (**Synapse Administrator** with
      `deploy-managed-private-endpoints`), and Azure **Reader** on the
      workspace; deploying integration runtimes also needs
      `Microsoft.Synapse/workspaces/integrationruntimes/write`;
    - with `what-if`, the plan identity needs **Synapse Artifact User**.
+   - **Dependabot** runs get no OIDC token (and no Actions secrets), so a
+     Dependabot PR fails its what-if and its apply. Turn both off for it on
+     the calling job, so it builds and plans offline and its Result check
+     still reports (skipping the job would leave that required check
+     pending):
+
+     ```yaml
+     what-if: ${{ github.actor != 'dependabot[bot]' }}
+     apply: ${{ github.actor != 'dependabot[bot]' }}
+     ```
+
 6. **Branch protection:** require `<caller job> / Result`.
 
 ## Reference
@@ -167,10 +189,10 @@ Factory counterparts.
 
 <!-- markdownlint-enable MD013 -->
 
-Run [`opentofu/setup`](../opentofu/setup/action.yaml) first in every job
-that runs a tool; [`opentofu/pr-comment`](../opentofu/pr-comment/action.yaml)
-and [`opentofu/result`](../opentofu/result/action.yaml) work here too. The
-scripts run locally, e.g.:
+Run [`shared/setup`](../shared/setup/action.yaml) first in every job that
+runs a tool; [`shared/pr-comment`](../shared/pr-comment/action.yaml) and
+[`shared/result`](../shared/result/action.yaml) work here too. The scripts
+run locally, e.g.:
 
 ```bash
 WORKING_DIR=synapse synapse/scripts/build.sh

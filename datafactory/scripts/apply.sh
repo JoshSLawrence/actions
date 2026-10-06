@@ -28,8 +28,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=shared/scripts/common.sh
 source "$SCRIPT_DIR/../../shared/scripts/common.sh"
-# shellcheck source=shared/scripts/arm.sh
-source "$SCRIPT_DIR/../../shared/scripts/arm.sh"
+# shellcheck source=arm/scripts/arm.sh
+source "$SCRIPT_DIR/../../arm/scripts/arm.sh"
 
 ensure_mise
 require_tool jq
@@ -69,9 +69,7 @@ arm_parameters_with_secrets "$TEMPLATE" "$PARAMETERS_FILE" "$parameters_with_sec
 pre_post() {
   local phase="$1" token account tenant subscription
   token="$(arm_az account get-access-token --resource https://management.azure.com/ --query accessToken --output tsv)"
-  if is_github_actions; then
-    echo "::add-mask::${token}"
-  fi
+  mask_value "$token"
   account="${ARM_CLIENT_ID:-$(arm_az account show --query user.name --output tsv)}"
   tenant="${ARM_TENANT_ID:-$(arm_az account show --query tenantId --output tsv)}"
   subscription="${ARM_SUBSCRIPTION_ID:-$(arm_az account show --query id --output tsv)}"

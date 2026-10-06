@@ -1,0 +1,48 @@
+# One OpenTofu root module, deployed once: checked, tested and planned on
+# every PR that touches it, and applied after approval in the `prod`
+# environment. Azure, with OIDC (no secrets):
+#
+#   iac/network/          the root module
+#   ├── backend.tf        backend "azurerm" { key = var.state_key ... }
+#   ├── main.tf
+#   ├── mise.toml         pins opentofu, tflint, trivy, terraform-docs
+#   └── prod.tfvars       state_key = "network-prod.tfstate", ...
+#
+# Setup:
+# - Environment `prod` with required reviewers. Create it first: the run
+#   fails, naming it, if an environment doesn't exist.
+# - Repository variables AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID and
+#   AZURE_CLIENT_ID (an identity that can change the resources), with a
+#   federated credential for the subjects `environment:prod` (apply),
+#   `pull_request` (PR plans) and `ref:refs/heads/main` (the plans of pushes
+#   and dispatches on main) -- see opentofu/README.md.
+# - Require the check `network / Result` in a branch ruleset.
+
+name: OpenTofu network
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  network:
+    uses: JoshSLawrence/actions/.github/workflows/opentofu.yaml@v0.2.0
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      working-directory: iac/network
+      var-files: prod.tfvars
+      apply-environment: prod
+      azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+      azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      azure-client-id: ${{ vars.AZURE_CLIENT_ID }}

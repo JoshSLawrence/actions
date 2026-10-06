@@ -9,6 +9,7 @@ updates:
       - /
       - /datafactory/*
       - /opentofu/*
+      - /shared/*
       - /synapse/*
     schedule:
       interval: weekly

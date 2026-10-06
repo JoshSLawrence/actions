@@ -9,6 +9,10 @@
 #                          space- or newline-separated; globs allowed, e.g.
 #                          "tests/0*.tftest.hcl" (default: every test file)
 #   TEST_VERBOSE         - "true" to pass -verbose (default: false)
+#   VAR_FILES            - -var-file paths relative to WORKING_DIR, space- or
+#                          newline-separated: the call's var files, for the
+#                          checks job's tests and the integration tests
+#                          (optional)
 #   MODULES_GITHUB_TOKEN - lets init fetch module sources from private GitHub
 #                          repositories (optional)
 #
@@ -33,6 +37,14 @@ args=()
 if is_true "${TEST_VERBOSE:-false}"; then
   args+=(-verbose)
 fi
+
+while IFS= read -r var_file; do
+  if [ ! -f "$var_file" ]; then
+    log_error "Var file '${var_file}' not found in ${WORKING_DIR}. Paths are relative to the working directory."
+    exit 1
+  fi
+  args+=("-var-file=${var_file}")
+done < <(list_items "${VAR_FILES:-}")
 
 if [ -n "${TEST_FILTER:-}" ]; then
   matched=()
