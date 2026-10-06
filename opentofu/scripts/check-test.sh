@@ -10,8 +10,9 @@
 #                          "tests/0*.tftest.hcl" (default: every test file)
 #   TEST_VERBOSE         - "true" to pass -verbose (default: false)
 #   VAR_FILES            - -var-file paths relative to WORKING_DIR, space- or
-#                          newline-separated: a deployment's .tfvars, for
-#                          integration tests run per deployment (optional)
+#                          newline-separated: the call's var files, for the
+#                          checks job's tests and the integration tests
+#                          (optional)
 #   MODULES_GITHUB_TOKEN - lets init fetch module sources from private GitHub
 #                          repositories (optional)
 #

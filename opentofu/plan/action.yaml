@@ -19,8 +19,8 @@ inputs:
   var-files:
     description: >-
       -var-file paths relative to the working directory, space- or
-      newline-separated: the deployment's deployments/<name>.tfvars, which
-      can also set its backend's variables. Pass the same to opentofu/apply.
+      newline-separated: the call's var files, which also set its backend's
+      variables (its state key). Pass the same to opentofu/apply.
     required: false
     default: ""
   plan-dir:
@@ -61,7 +61,7 @@ inputs:
     description: >-
       "true" adds an Infracost monthly cost estimate to the summary
       (informational); "false" says in the summary that it's off; empty
-      leaves cost out of the summary entirely (e.g. drift checks).
+      leaves cost out of the summary entirely.
     required: false
     default: ""
   infracost-api-key:
@@ -87,7 +87,7 @@ inputs:
 
 outputs:
   key:
-    description: Unique key for this module/deployment/environment -- the comment-key for shared/pr-comment.
+    description: Unique key for this call (module, name, environment, var files) -- the comment-key for shared/pr-comment.
     value: ${{ steps.names.outputs.key }}
   artifact-name:
     description: Plan artifact name derived from key.
@@ -125,6 +125,7 @@ runs:
         WORKING_DIRECTORY: ${{ inputs.working-directory }}
         DEPLOYMENT: ${{ inputs.deployment }}
         APPLY_ENVIRONMENT: ${{ inputs.environment }}
+        VAR_FILES: ${{ inputs.var-files }}
         REPOSITORY_NAME: ${{ github.event.repository.name }}
 
     - name: Plan

@@ -141,6 +141,17 @@ synapse-deploy.yaml                   plan ──> apply (after approval)
      workspace; deploying integration runtimes also needs
      `Microsoft.Synapse/workspaces/integrationruntimes/write`;
    - with `what-if`, the plan identity needs **Synapse Artifact User**.
+   - **Dependabot** runs get no OIDC token (and no Actions secrets), so a
+     Dependabot PR fails its what-if and its apply. Turn both off for it on
+     the calling job, so it builds and plans offline and its Result check
+     still reports (skipping the job would leave that required check
+     pending):
+
+     ```yaml
+     what-if: ${{ github.actor != 'dependabot[bot]' }}
+     apply: ${{ github.actor != 'dependabot[bot]' }}
+     ```
+
 6. **Branch protection:** require `<caller job> / Result`.
 
 ## Reference

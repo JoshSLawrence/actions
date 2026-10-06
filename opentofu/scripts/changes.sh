@@ -7,15 +7,17 @@
 #
 # Watched, always: the root module directory (every file in it), the var
 # files (even outside the module), and the calling workflow file, so editing
-# the call runs it. EXTRA_PATHS adds globs to these; it can't remove them.
-# The same paths make a plan stale at apply time (apply-preflight.sh).
+# the call runs it. EXTRA_PATHS adds directories or globs to these; it can't
+# remove them. The same paths make a plan stale at apply time
+# (apply-preflight.sh), which reads each entry the same way
+# (path_entry_regex).
 #
 # Environment variables:
 #   WORKING_DIR  - the root module (required)
 #   VAR_FILES    - var files relative to the module, space- or
 #                  newline-separated (optional)
-#   EXTRA_PATHS  - more globs to watch, space- or newline-separated
-#                  (optional)
+#   EXTRA_PATHS  - more paths to watch, space- or newline-separated:
+#                  directories (everything under them) or globs (optional)
 #   WORKFLOW_REF - github.workflow_ref: the calling workflow, as
 #                  owner/repo/.github/workflows/<file>@<ref> (optional)
 #   CHANGED_ONLY - "true" (default) to plan only when a watched path changed
@@ -57,6 +59,8 @@ while IFS= read -r var_file; do
 done < <(list_items "${VAR_FILES:-}")
 
 # owner/repo/.github/workflows/x.yaml@refs/heads/main -> .github/workflows/x.yaml
+# It's the run's top-level workflow: a call made from a caller's own reusable
+# workflow watches the top-level file, not that one (extra-paths can add it).
 workflow="${WORKFLOW_REF:-}"
 workflow="${workflow%%@*}"
 if [ -n "$workflow" ]; then
@@ -67,18 +71,25 @@ if [ -n "$workflow" ]; then
   fi
   files+=("$workflow")
 fi
-globs="$(list_items "${EXTRA_PATHS:-}")"
 
-watched=("${dirs[@]}" "${files[@]+"${files[@]}"}")
-while IFS= read -r glob; do
-  [ -n "$glob" ] && watched+=("$glob")
-done <<< "$globs"
+extra=()
+extra_regexes=()
+while IFS= read -r entry; do
+  if ! regex="$(path_entry_regex "$entry")"; then
+    log_error "extra-paths entry '${entry}' climbs out of the repository. Use paths relative to the repository root."
+    exit 1
+  fi
+  extra+=("$entry")
+  extra_regexes+=("$regex")
+done < <(list_items "${EXTRA_PATHS:-}")
+
+watched=("${dirs[@]}" "${files[@]+"${files[@]}"}" "${extra[@]+"${extra[@]}"}")
 set_output paths "${watched[*]}"
 log_info "Watched: ${watched[*]}"
 
 # Succeed if a changed file is one of the watched paths
 is_watched() {
-  local file="$1" dir path
+  local file="$1" dir path regex
   for dir in "${dirs[@]}"; do
     if [ "$dir" = "." ] || [[ "$file" == "$dir"/* ]]; then
       return 0
@@ -87,7 +98,10 @@ is_watched() {
   for path in "${files[@]+"${files[@]}"}"; do
     [ "$file" = "$path" ] && return 0
   done
-  matches_any_glob "$file" "$globs"
+  for regex in "${extra_regexes[@]+"${extra_regexes[@]}"}"; do
+    [[ "$file" =~ $regex ]] && return 0
+  done
+  return 1
 }
 
 # --- Decide ----------------------------------------------------------------------

@@ -7,15 +7,17 @@
 # false, require-environments.sh).
 #
 # Environment variables (the workflow's inputs):
-#   WORKING_DIR, VAR_FILES, NAME, APPLY_ENVIRONMENT
+#   WORKING_DIR, VAR_FILES, NAME, APPLY_ENVIRONMENT, EXTRA_PATHS
 #   CHECKS, TESTS, TEST_FILTER, INTEGRATION_TESTS, INTEGRATION_TEST_FILTER
 #   POLICY, POLICY_PATH, POLICY_SOURCE, COST_ESTIMATE
 #   AZURE_CLIENT_ID, AZURE_TENANT_ID, PLAN_AZURE_CLIENT_ID
 #   HAS_INFRACOST_API_KEY, HAS_AZURE_CLIENT_SECRET,
 #   HAS_PLAN_AZURE_CLIENT_SECRET
-#                - "true" if that secret was passed
-#   IS_FORK_PR   - "true" on a pull request from a fork, which gets no
-#                  secrets and isn't planned: secret rules are skipped
+#                 - "true" if that secret was passed
+#   IS_FORK_PR    - "true" on a pull request from a fork, which gets no
+#                   secrets and isn't planned: secret rules are skipped
+#   IS_DEPENDABOT - "true" on a pull request run by Dependabot, which gets
+#                   no Actions secrets or OIDC token either: the same
 #
 # Outputs:
 #   name - NAME, or the last var file's name without .tfvars (empty without
@@ -28,9 +30,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=opentofu/scripts/common.sh
 source "$SCRIPT_DIR/common.sh"
 
-log_config WORKING_DIR VAR_FILES NAME APPLY_ENVIRONMENT CHECKS TESTS TEST_FILTER INTEGRATION_TESTS \
-  INTEGRATION_TEST_FILTER POLICY POLICY_PATH POLICY_SOURCE COST_ESTIMATE AZURE_CLIENT_ID \
-  AZURE_TENANT_ID PLAN_AZURE_CLIENT_ID IS_FORK_PR
+log_config WORKING_DIR VAR_FILES NAME APPLY_ENVIRONMENT EXTRA_PATHS CHECKS TESTS TEST_FILTER \
+  INTEGRATION_TESTS INTEGRATION_TEST_FILTER POLICY POLICY_PATH POLICY_SOURCE COST_ESTIMATE \
+  AZURE_CLIENT_ID AZURE_TENANT_ID PLAN_AZURE_CLIENT_ID IS_FORK_PR IS_DEPENDABOT
 
 problems=()
 problem() {
@@ -75,6 +77,12 @@ while IFS= read -r var_file; do
   fi
 done < <(list_items "${VAR_FILES:-}")
 
+while IFS= read -r entry; do
+  if ! path_entry_regex "$entry" > /dev/null; then
+    problem "extra-paths: '${entry}' climbs out of the repository. Use paths relative to the repository root."
+  fi
+done < <(list_items "${EXTRA_PATHS:-}")
+
 # --- Name and environments -------------------------------------------------------
 
 name="${NAME:-}"
@@ -108,30 +116,36 @@ fi
 
 # --- Plan: policy and cost -------------------------------------------------------
 
-if is_true "${POLICY:-false}" && [ -z "${POLICY_SOURCE:-}" ]; then
+# Every policy-path directory is used, policy-source or not: the default
+# (policy) has to exist too, unless the caller empties policy-path
+if is_true "${POLICY:-false}"; then
   policy_paths="$(list_items "${POLICY_PATH:-}")"
-  if [ -z "$policy_paths" ]; then
+  if [ -z "$policy_paths" ] && [ -z "${POLICY_SOURCE:-}" ]; then
     problem "policy is on, but neither policy-path nor policy-source is set. Point policy-path at your policies, or policy-source at a URL."
   fi
   while IFS= read -r path; do
     [ -z "$path" ] && continue
     if [ ! -d "$path" ]; then
-      problem "policy-path: '${path}' doesn't exist. It's relative to the repository root; or set policy-source to pull policies instead."
+      problem "policy-path: '${path}' doesn't exist. It's relative to the repository root. To use only policy-source, set policy-path to \"\"."
     fi
   done <<< "$policy_paths"
 fi
 
-secrets_skipped=false
+# Runs that get no secrets or OIDC token: checked, never planned
+secrets_skipped=""
 if is_true "${IS_FORK_PR:-false}"; then
-  secrets_skipped=true
-elif is_true "${COST_ESTIMATE:-false}" && ! is_true "${HAS_INFRACOST_API_KEY:-false}"; then
+  secrets_skipped="Pull request from a fork"
+elif is_true "${IS_DEPENDABOT:-false}"; then
+  secrets_skipped="Dependabot pull request"
+fi
+if [ -z "$secrets_skipped" ] && is_true "${COST_ESTIMATE:-false}" && ! is_true "${HAS_INFRACOST_API_KEY:-false}"; then
   problem "cost-estimate is on, but the infracost-api-key secret isn't passed. Pass it under secrets:, or turn cost-estimate off."
 fi
 
 # --- Azure -----------------------------------------------------------------------
 
-if [ "$secrets_skipped" = true ]; then
-  # A fork's run gets no secrets, so only the inputs can be checked
+if [ -n "$secrets_skipped" ]; then
+  # A fork's (or Dependabot's) run gets no secrets, so only the inputs can be checked
   azure="$(HAS_AZURE_CLIENT_SECRET=false HAS_PLAN_AZURE_CLIENT_SECRET=false azure_input_problems)"
 else
   azure="$(azure_input_problems)"
@@ -142,8 +156,8 @@ done <<< "$azure"
 
 # --- Result ----------------------------------------------------------------------
 
-if [ "$secrets_skipped" = true ]; then
-  log_notice "Pull request from a fork: secrets aren't passed and nothing is planned, so the rules about secrets aren't checked."
+if [ -n "$secrets_skipped" ]; then
+  log_notice "${secrets_skipped}: no secrets or OIDC token, so nothing is planned and the rules about secrets aren't checked. The push after merge plans it."
 fi
 if [ ${#problems[@]} -gt 0 ]; then
   for p in "${problems[@]}"; do

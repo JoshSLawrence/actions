@@ -14,7 +14,8 @@
 # - prepare: checks every input up front, checks the environments exist,
 #   and decides whether this run plans (a watched path changed).
 # - checks: fmt, validate, TFLint, Trivy, terraform-docs and tofu test, with
-#   the call's var files. No cloud credentials, so fork PRs can run it.
+#   the call's var files. No cloud credentials, so fork and Dependabot PRs
+#   can run it.
 # - integration-tests (opt-in): tofu test with credentials.
 # - plan: plans to a file, uploads it, comments the summary on the PR.
 # - apply: waits for the apply environment's approval, refuses a stale
@@ -56,8 +57,9 @@ on:
         default: true
       extra-paths:
         description: >-
-          Globs watched as well as the module, the var files and the calling
-          workflow file (e.g. iac/modules/**). They also make a plan stale.
+          Directories or globs watched as well as the module, the var files
+          and the calling workflow file (e.g. iac/modules, or
+          iac/modules/**/*.tf). They also make a plan stale.
         type: string
         default: ""
 
@@ -167,7 +169,7 @@ on:
         type: boolean
         default: false
       policy-path:
-        description: Local policy directories, relative to the repository root, space- or newline-separated.
+        description: Local policy directories, relative to the repository root, space- or newline-separated. Each must exist; set "" to use only policy-source.
         type: string
         default: policy
       policy-source:
@@ -256,6 +258,7 @@ jobs:
       contents: read
     outputs:
       name: ${{ steps.prepare.outputs.name }}
+      key: ${{ steps.prepare.outputs.key }}
       changed: ${{ steps.prepare.outputs.changed }}
       paths: ${{ steps.prepare.outputs.paths }}
     steps:
@@ -358,21 +361,23 @@ jobs:
     name: Integration tests
     needs: [prepare, checks]
     # !cancelled(): checks may be skipped (checks false), which would
-    # otherwise skip this too. Fork PRs get no OIDC token or secrets.
+    # otherwise skip this too. Fork and Dependabot PRs get no OIDC token or
+    # secrets.
     if: >-
       !cancelled() &&
       inputs.integration-tests &&
       needs.prepare.result == 'success' &&
       needs.prepare.outputs.changed == 'true' &&
       (needs.checks.result == 'success' || needs.checks.result == 'skipped') &&
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      (github.event_name != 'pull_request' ||
+        (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'))
     runs-on: ${{ inputs.runs-on }}
     environment: ${{ inputs.integration-test-environment }}
     # Never cancelled by a newer push: that kills tofu test mid-apply,
     # leaking whatever it created (the same goes for hitting the timeout).
     timeout-minutes: ${{ inputs.integration-test-timeout-minutes }}
     concurrency:
-      group: opentofu-integration-${{ github.repository }}-${{ inputs.working-directory }}-${{ needs.prepare.outputs.name }}-${{ github.event.pull_request.number || github.ref }}
+      group: opentofu-integration-${{ github.repository }}-${{ needs.prepare.outputs.key }}-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -418,21 +423,23 @@ jobs:
     name: Plan
     needs: [prepare, checks, integration-tests]
     # !cancelled(): checks and integration-tests may be skipped, which would
-    # otherwise skip this too. Fork PRs get no OIDC token or secrets.
+    # otherwise skip this too. Fork and Dependabot PRs get no OIDC token or
+    # secrets.
     if: >-
       !cancelled() &&
       needs.prepare.result == 'success' &&
       needs.prepare.outputs.changed == 'true' &&
       (needs.checks.result == 'success' || needs.checks.result == 'skipped') &&
       (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped') &&
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      (github.event_name != 'pull_request' ||
+        (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'))
     runs-on: ${{ inputs.runs-on }}
     environment: ${{ inputs.plan-environment }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     # A newer push supersedes a plan in progress. Safe to cancel: plans don't
     # lock the state.
     concurrency:
-      group: opentofu-plan-${{ github.repository }}-${{ inputs.working-directory }}-${{ needs.prepare.outputs.name }}-${{ inputs.apply-environment }}-${{ github.event.pull_request.number || github.ref }}
+      group: opentofu-plan-${{ github.repository }}-${{ needs.prepare.outputs.key }}-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -549,7 +556,7 @@ jobs:
     # could leave infrastructure half-changed and the state locked. A newer
     # run's apply queues behind.
     concurrency:
-      group: opentofu-apply-${{ github.repository }}-${{ inputs.working-directory }}-${{ needs.prepare.outputs.name }}-${{ inputs.apply-environment }}
+      group: opentofu-apply-${{ github.repository }}-${{ needs.prepare.outputs.key }}
       cancel-in-progress: false
     permissions:
       actions: read # environment protection rules; who approved, for the PR comment
@@ -611,7 +618,7 @@ jobs:
           apply-status: ${{ steps.apply.outcome == 'success' && 'succeeded' || 'failed' }}
 
   # The call's one check: every job succeeded, or was skipped for a reason
-  # (nothing changed, checks off, plan only, a fork PR)
+  # (nothing changed, checks off, plan only, a fork or Dependabot PR)
   result:
     name: Result
     needs: [prepare, checks, integration-tests, plan, apply]
@@ -627,3 +634,9 @@ jobs:
         uses: $/shared/result
         with:
           needs: ${{ toJSON(needs) }}
+          note: >-
+            ${{
+              github.event_name == 'pull_request' && github.actor == 'dependabot[bot]' &&
+              'This PR comes from Dependabot, which gets no secrets or OIDC token, so it was checked but not planned. The push after merge plans it.' ||
+              ''
+            }}

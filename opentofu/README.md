@@ -90,8 +90,8 @@ prepare ──> checks ──> integration-tests ──> plan ──> apply ─�
   summary: counts, destroys called out, resources, the full plan as a diff,
   and optionally an Infracost estimate and a conftest policy check (a
   failing policy deletes the plan, so it can't be applied). It uploads the
-  plan and comments the summary on the PR. Skipped for fork PRs, which get
-  no OIDC token or secrets.
+  plan and comments the summary on the PR. Skipped for PRs from forks and
+  Dependabot, which get no OIDC token or secrets.
 - **apply** runs when the plan has changes (see
   [When it applies](#when-it-applies)), after the apply environment's
   reviewers approve. It refuses a stale plan (the PR moved on, or a watched
@@ -117,7 +117,7 @@ Lists take one item per line, or items separated by spaces. Without
 | `name`                             | last var file's name | Label for this call (e.g. `prod-eastus`) in titles and names           |
 | **Change detection**               |                      |                                                                        |
 | `changed-only`                     | `true`               | On PR and push runs, skip plan and apply unless a watched path changed |
-| `extra-paths`                      | none                 | Globs watched as well as the module, var files and calling workflow    |
+| `extra-paths`                      | none                 | Directories or globs watched besides the module, var files, workflow   |
 | **Environments**                   |                      |                                                                        |
 | `apply-environment`                | **required**         | The apply job's environment: the approval gate                         |
 | `plan-environment`                 | none                 | The plan job's environment; none = no environment                      |
@@ -184,8 +184,12 @@ way leaves its required checks pending forever.
   files, child modules, tests, the lock file, `mise.toml`, ...), the var
   files (even outside the module), and the calling workflow file, so
   editing the call runs it. `extra-paths` adds to these, e.g. a module
-  directory several root modules share (`iac/modules/**`); it can't remove
+  directory several root modules share: a directory (`iac/modules`, with
+  everything under it) or a glob (`iac/modules/**/*.tf`). It can't remove
   them.
+- **The calling workflow** is the run's top-level workflow file. If you call
+  `opentofu.yaml` from a reusable workflow of your own, add that file to
+  `extra-paths`.
 - **When:** on `pull_request` and `push` with `changed-only`, if no watched
   path changed since the base, plan and apply are skipped and the call's
   check passes. Checks still run. `workflow_dispatch`, `schedule`,
@@ -208,12 +212,19 @@ way leaves its required checks pending forever.
 - With `apply-from-pr: true`, the default branch only ever holds
   configuration that applied: if the call's check is required, a PR with
   changes can't merge until it's applied. The push after merge plans again
-  and normally finds nothing to do.
+  and normally finds nothing to do. PRs from forks and Dependabot are the
+  exception: they aren't planned, so the push after merge plans and applies
+  them.
 - **Rolling back an unmerged PR:** if a PR is applied but not merged, run
   the workflow on the default branch (`workflow_dispatch`) to re-apply
   what's there.
 - With `apply-from-pr: false`, merging is when it applies: the push to the
-  default branch plans again and waits for approval.
+  default branch plans again and waits for approval. If that apply is
+  rejected or fails, later pushes don't retry it unless they change a
+  watched path too: run the workflow on the default branch
+  (`workflow_dispatch`) to plan and apply what's there.
+- Scheduled runs on the default branch count as pushes: with changes, they
+  wait for approval to apply.
 - Use environment deployment branch policies for more control.
 
 ## Checks
@@ -428,8 +439,9 @@ Before any job runs, the prepare job checks:
 - the Azure inputs are consistent (a client ID needs a tenant ID; a secret
   needs its client ID; `plan-azure-client-id` needs `azure-client-id`);
 - `cost-estimate` has its `infracost-api-key`; `policy` has a
-  `policy-source` or a `policy-path` that exists; test filters match files;
-  `name` is usable.
+  `policy-source` or a `policy-path`, and every `policy-path` directory
+  exists (set `policy-path: ""` to use only `policy-source`); test filters
+  match files; `extra-paths` stay in the repository; `name` is usable.
 
 ## PR comments
 
@@ -460,7 +472,8 @@ Before any job runs, the prepare job checks:
   files: it decides which environment, and so which identity and approval
   gate, a call uses. Environment protection rules and federated credentials
   bound to environment names keep a PR from deploying where it shouldn't.
-- **Fork PRs** are checked, never planned.
+- **Fork and Dependabot PRs** are checked, never planned: they get no
+  secrets or OIDC token.
 
 ## Moving from v0.1.0
 

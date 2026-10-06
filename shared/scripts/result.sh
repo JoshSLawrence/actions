@@ -8,6 +8,8 @@
 #   NEEDS      - the result job's `toJSON(needs)` (required)
 #   IS_FORK_PR - "true" on a pull request from a fork, which is validated
 #                but never planned (no cloud credentials); a warning says so
+#   NOTE       - another warning for the log, e.g. why a job was skipped on
+#                purpose (optional)
 #
 
 set -euo pipefail
@@ -23,6 +25,9 @@ jq -r 'to_entries[] | "  \(.key): \(.value.result)"' <<< "$NEEDS"
 
 if is_true "${IS_FORK_PR:-false}"; then
   log_warn "This PR comes from a fork, which gets no cloud credentials, so it was validated but not planned. A maintainer can plan it by pushing the branch to this repository."
+fi
+if [ -n "${NOTE:-}" ]; then
+  log_warn "$NOTE"
 fi
 
 mapfile -t failed < <(jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key' <<< "$NEEDS")

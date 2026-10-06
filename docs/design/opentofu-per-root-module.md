@@ -222,7 +222,7 @@ prepare ──> checks ──> integration-tests ──> plan ──> apply ─�
   apply identity, in `integration-test-environment`. Off by default.
 - **plan:** plans to a saved file in `plan-environment`, renders the
   summary (with optional policy and cost), uploads the plan, comments on
-  the PR. Skipped for fork PRs.
+  the PR. Skipped for PRs from forks and Dependabot.
 - **apply:** in `apply-environment`, after its reviewers approve; refuses a
   stale plan, checks the plan's digest, applies exactly that plan, updates
   the PR comment (see [When it applies](#when-it-applies)).
@@ -247,7 +247,7 @@ Without `var-files`, the module uses its defaults (and its
 | `name`                             | last var file's name | Label for this call (e.g. `prod-eastus`) in titles and names           |
 | **Change detection**               |                      |                                                                        |
 | `changed-only`                     | `true`               | On PR and push runs, skip plan and apply unless a watched path changed |
-| `extra-paths`                      | none                 | Globs watched as well as the module, var files and calling workflow    |
+| `extra-paths`                      | none                 | Directories or globs watched besides the module, var files, workflow   |
 | **Environments**                   |                      |                                                                        |
 | `apply-environment`                | **required**         | The apply job's environment: the approval gate                         |
 | `plan-environment`                 | none                 | The plan job's environment; none = no environment                      |
@@ -351,12 +351,15 @@ what to do about each:
   `azure-client-id`; `plan-azure-client-id` needs `azure-client-id`;
   `plan-azure-client-secret` needs `plan-azure-client-id`.
 - `cost-estimate` needs the `infracost-api-key` secret.
-- `policy` needs `policy-source`, or a `policy-path` that exists.
+- `policy` needs `policy-source` or `policy-path`, and every `policy-path`
+  directory exists (`policy-path: ""` to use only `policy-source`).
+- `extra-paths` stay inside the repository.
 - `test-filter` and `integration-test-filter` match at least one file.
 - `name` is usable in names (letters, digits, `.`, `_`, `-`).
 
-On a pull request from a fork, secrets are never passed and nothing is
-planned, so secret-dependent rules are skipped there with a note.
+On a pull request from a fork, or one Dependabot runs, secrets (and the
+OIDC token) are never passed and nothing is planned, so secret-dependent
+rules are skipped there with a note.
 
 ### Change detection
 
@@ -369,10 +372,13 @@ prepare job decides whether the run plans:
   files (even outside the module), and the calling workflow file (from
   `github.workflow_ref`, so editing the call runs it). `extra-paths` adds
   to these; it can't remove them, so a call can never stop watching its
-  own module.
+  own module. The calling workflow is the run's top-level one: a call made
+  from a caller's own reusable workflow needs that file in `extra-paths`.
 - **What `extra-paths` is for:** anything else the module depends on, such
-  as a shared module directory outside it (`iac/modules/**`) or a policy
-  directory.
+  as a shared module directory outside it or a policy directory. Each entry
+  is a directory (`iac/modules`, with everything under it) or a glob
+  (`iac/modules/**/*.tf`), read the same way by change detection and the
+  apply's stale-plan check.
 - **When:** on `pull_request` and `push` with `changed-only`, the prepare
   job diffs the run's base against its head. If no watched path changed,
   plan and apply are skipped and `result` passes; checks still run. Other
@@ -396,9 +402,14 @@ prepare job decides whether the run plans:
 - With `apply-from-pr: true`, the default branch only ever holds
   configuration that applied: if the `result` check is required, a PR with
   changes can't merge until it's applied. The push after merge plans again
-  and normally finds nothing to do.
+  and normally finds nothing to do. PRs from forks and Dependabot, which
+  aren't planned, are the exception: the push after merge applies them.
 - With `apply-from-pr: false`, merging is when it applies: the push to the
-  default branch plans again and waits for approval.
+  default branch plans again and waits for approval. A rejected or failed
+  apply there isn't retried by later pushes that don't touch a watched
+  path; a `workflow_dispatch` run on the default branch plans and applies
+  it.
+- Scheduled runs on the default branch count as pushes.
 - Applies only ever happen on a PR (with `apply-from-pr`) or on the default
   branch; use environment deployment branch policies for more.
 
@@ -557,9 +568,11 @@ how to add them to a ruleset.
 
 Each call needs names unique within a run and stable across runs: the PR
 comment key, the plan artifact and the concurrency groups. They derive
-from `working-directory`, `name` (default: the last var file's base name)
-and `apply-environment`, and the artifact name carries a digest of the
-exact key, so two calls never share an artifact. PR comment titles read
+from `working-directory`, `name` (default: the last var file's base name),
+`apply-environment` and a digest of the var files (so `eastus/prod.tfvars`
+and `westus/prod.tfvars`, both named `prod`, stay apart), and the artifact
+name carries a digest of the exact key, so two calls never share an
+artifact. PR comment titles read
 `OpenTofu: iac/identity · prod-eastus → prod`.
 
 ### What carries over

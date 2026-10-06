@@ -7,6 +7,12 @@ inputs:
   needs:
     description: The job's toJSON(needs).
     required: true
+  note:
+    description: >-
+      A warning to add to the check's log, e.g. why a job was skipped on
+      purpose (empty: none).
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -16,4 +22,5 @@ runs:
       run: '"${GITHUB_ACTION_PATH}/../scripts/result.sh"'
       env:
         NEEDS: ${{ inputs.needs }}
+        NOTE: ${{ inputs.note }}
         IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}

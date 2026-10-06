@@ -68,15 +68,11 @@ fi
 # Each entry is a directory (everything under it counts) or a glob
 regexes=()
 while IFS= read -r entry; do
-  if [[ "$entry" == *[*?]* ]]; then
-    regexes+=("$(glob_to_regex "${entry#./}")")
-  else
-    dir="$(normalize_path "$entry")" || {
-      log_error "preflight-paths entry '${entry}' climbs out of the repository. Use repository-relative paths."
-      exit 1
-    }
-    regexes+=("$(dir_regex "$dir")")
-  fi
+  regex="$(path_entry_regex "$entry")" || {
+    log_error "preflight-paths entry '${entry}' climbs out of the repository. Use repository-relative paths."
+    exit 1
+  }
+  regexes+=("$regex")
 done < <(list_items "$PREFLIGHT_PATHS")
 
 log_info "Checking ${PREFLIGHT_PATHS//$'\n'/, } hasn't changed on ${TARGET_BRANCH} since ${TARGET_SHA:0:7}..."

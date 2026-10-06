@@ -380,17 +380,19 @@ dir_regex() {
   printf '%s(/.*)?$' "${regex%\$}"
 }
 
-# True if a path matches any glob in a space-/newline-separated list
-# Usage: matches_any_glob "<path>" "<globs>"
-matches_any_glob() {
-  local path="$1" pattern regex
-  while IFS= read -r pattern; do
-    regex="$(glob_to_regex "$pattern")"
-    if [[ "$path" =~ $regex ]]; then
-      return 0
-    fi
-  done < <(list_items "${2:-}")
-  return 1
+# Print an anchored regex for one entry of a list of watched paths, so change
+# detection and the apply preflight read entries the same way: an entry with
+# * or ? is a glob (see glob_to_regex), anything else a directory (or file)
+# and everything under it. A leading ./ is ignored. Fails if the entry climbs
+# out of the repository. Usage: path_entry_regex "<entry>"
+path_entry_regex() {
+  local entry="${1#./}" path
+  if [[ "$entry" == *[*?]* ]]; then
+    glob_to_regex "$entry"
+  else
+    path="$(normalize_path "$entry")" || return 1
+    dir_regex "$path"
+  fi
 }
 
 # Print the absolute path of a file (which may not exist yet) in an existing

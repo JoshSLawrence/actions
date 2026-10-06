@@ -4,8 +4,8 @@ description: >-
   every problem at once), checks the environments it names exist (GitHub
   would otherwise create a missing one, unprotected), and decides whether
   this run plans -- on pull_request and push runs, only if a watched path
-  changed. Check out with fetch-depth 0 so changes can be diffed. Needs
-  actions read.
+  changed -- and resolves the call's unique key. Check out with fetch-depth
+  0 so changes can be diffed. Needs actions read.
 
 inputs:
   working-directory:
@@ -24,7 +24,7 @@ inputs:
     required: false
     default: "true"
   extra-paths:
-    description: Globs watched as well as the module, var files and calling workflow.
+    description: Directories or globs watched as well as the module, var files and calling workflow.
     required: false
     default: ""
   apply-environment:
@@ -108,6 +108,11 @@ outputs:
   name:
     description: The call's label (the name input, or the last var file's name).
     value: ${{ steps.validate.outputs.name }}
+  key:
+    description: >-
+      The call's unique key (module, name, apply environment, var files), the
+      same as opentofu/plan's: for concurrency groups.
+    value: ${{ steps.names.outputs.key }}
   changed:
     description: "'true' if this run plans."
     value: ${{ steps.changes.outputs.changed }}
@@ -127,6 +132,7 @@ runs:
         VAR_FILES: ${{ inputs.var-files }}
         NAME: ${{ inputs.name }}
         APPLY_ENVIRONMENT: ${{ inputs.apply-environment }}
+        EXTRA_PATHS: ${{ inputs.extra-paths }}
         CHECKS: ${{ inputs.checks }}
         TESTS: ${{ inputs.tests }}
         TEST_FILTER: ${{ inputs.test-filter }}
@@ -143,6 +149,18 @@ runs:
         HAS_AZURE_CLIENT_SECRET: ${{ inputs.has-azure-client-secret }}
         HAS_PLAN_AZURE_CLIENT_SECRET: ${{ inputs.has-plan-azure-client-secret }}
         IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        IS_DEPENDABOT: ${{ github.event_name == 'pull_request' && github.actor == 'dependabot[bot]' }}
+
+    - name: Resolve names
+      id: names
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/names.sh"'
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        DEPLOYMENT: ${{ steps.validate.outputs.name }}
+        APPLY_ENVIRONMENT: ${{ inputs.apply-environment }}
+        VAR_FILES: ${{ inputs.var-files }}
+        REPOSITORY_NAME: ${{ github.event.repository.name }}
 
     # Even after a failed input check, so one run reports every problem
     - name: Check the environments exist

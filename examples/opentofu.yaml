@@ -13,8 +13,9 @@
 #   fails, naming it, if an environment doesn't exist.
 # - Repository variables AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID and
 #   AZURE_CLIENT_ID (an identity that can change the resources), with a
-#   federated credential for the subjects `environment:prod` (apply) and
-#   `pull_request` (PR plans) -- see opentofu/README.md.
+#   federated credential for the subjects `environment:prod` (apply),
+#   `pull_request` (PR plans) and `ref:refs/heads/main` (the plans of pushes
+#   and dispatches on main) -- see opentofu/README.md.
 # - Require the check `network / Result` in a branch ruleset.
 
 name: OpenTofu network

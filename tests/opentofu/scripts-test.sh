@@ -137,6 +137,12 @@ make_repo
 change iac/modules/shared/main.tf
 expect "a module outside the root module doesn't plan" false "$(changes)"
 expect "...unless extra-paths watches it" true "$(changes EXTRA_PATHS='iac/modules/**')"
+expect "...as a directory, without a glob" true "$(changes EXTRA_PATHS=iac/modules)"
+expect "...or a directory with a trailing slash" true "$(changes EXTRA_PATHS=iac/modules/)"
+expect "...or a glob starting with ./" true "$(changes EXTRA_PATHS='./iac/modules/**')"
+expect "...but not a sibling directory sharing its prefix" false "$(changes EXTRA_PATHS=iac/mod)"
+expect_refused "extra-paths can't climb out of the repository" "climbs out of the repository" \
+  changes.sh WORKING_DIR=iac/app EXTRA_PATHS=../elsewhere EVENT_NAME=pull_request BASE_SHA="$BASE"
 
 make_repo
 change iac/other/main.tf
@@ -176,11 +182,17 @@ expect_refused "cost-estimate without its key" "infracost-api-key secret isn't p
   validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod COST_ESTIMATE=true
 expect "...but not on a fork PR, which gets no secrets" "" \
   "$(valid VAR_FILES= COST_ESTIMATE=true IS_FORK_PR=true)"
+expect "...or on a Dependabot PR" "" \
+  "$(valid VAR_FILES= COST_ESTIMATE=true IS_DEPENDABOT=true)"
 expect_refused "policy without a policy" "neither policy-path nor policy-source" \
   validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod POLICY=true
 expect_refused "a missing policy path" "policy-path: 'policy' doesn't exist" \
   validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod POLICY=true POLICY_PATH=policy
-expect "...a policy source is enough" "" "$(valid VAR_FILES= POLICY=true POLICY_PATH=policy POLICY_SOURCE=git::x)"
+expect "...a policy source is enough" "" "$(valid VAR_FILES= POLICY=true POLICY_PATH= POLICY_SOURCE=git::x)"
+expect_refused "...but a missing policy path still fails with one" "set policy-path to \"\"" \
+  validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod POLICY=true POLICY_PATH=policy POLICY_SOURCE=git::x
+expect_refused "extra-paths climbing out of the repository" "extra-paths: '../x' climbs out" \
+  validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod EXTRA_PATHS=../x
 expect_refused "a test filter matching nothing" "test-filter: 'tests/*.tftest.hcl' matches no file" \
   validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod TEST_FILTER='tests/*.tftest.hcl'
 expect_refused "a client ID without a tenant" "azure-tenant-id isn't" \
@@ -267,6 +279,23 @@ else
   log_error "plan artifact names never collide: got '${first}', '${second}', '${third}'"
   failures=$((failures + 1))
 fi
+
+# The default name is the var file's base name, so these two are both
+# "prod": their var files keep them apart
+key() {
+  output_of key names.sh WORKING_DIRECTORY=iac/app DEPLOYMENT=prod APPLY_ENVIRONMENT=prod "$@"
+}
+east="$(key VAR_FILES=deployments/eastus/prod.tfvars)"
+west="$(key VAR_FILES=deployments/westus/prod.tfvars)"
+cases=$((cases + 1))
+if [ -n "$east" ] && [ "$east" != "$west" ]; then
+  log_success "calls whose var files share a name get their own key"
+else
+  log_error "calls whose var files share a name get their own key: got '${east}' and '${west}'"
+  failures=$((failures + 1))
+fi
+expect "...which doesn't depend on how the list is spaced" "$east" \
+  "$(key VAR_FILES=$'  deployments/eastus/prod.tfvars\n')"
 
 expect "the title shows the call and its environment, always" \
   "OpenTofu: \`iac/app\` · \`prod\` → \`prod\`" \

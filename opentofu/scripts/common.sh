@@ -18,7 +18,9 @@ source "$OPENTOFU_COMMON_DIR/../../shared/scripts/common.sh"
 # (git::https://github.com/..., git@github.com:...). Uses MODULES_GITHUB_TOKEN
 # when set, otherwise GITHUB_TOKEN; a no-op without either (local runs use
 # your own git credentials). The rewrite goes in a throwaway config file via
-# GIT_CONFIG_GLOBAL, so the token never lands in a persistent config.
+# GIT_CONFIG_GLOBAL, so the token never lands in a persistent config: in
+# RUNNER_TEMP, which the runner empties after every job, so the token doesn't
+# outlive the job on a self-hosted runner either.
 configure_git_github_auth() {
   local token="${MODULES_GITHUB_TOKEN:-${GITHUB_TOKEN:-}}"
   if [ -z "$token" ]; then
@@ -27,7 +29,7 @@ configure_git_github_auth() {
 
   log_info "Configuring Git credentials for GitHub-hosted module sources..."
   local git_config
-  git_config="$(mktemp)"
+  git_config="$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/git-config.XXXXXX")"
   export GIT_CONFIG_GLOBAL="$git_config"
 
   local server="${GITHUB_SERVER_URL:-https://github.com}"

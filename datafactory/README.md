@@ -176,6 +176,17 @@ approval.
      resources.
    - With `what-if`, the plan identity needs to run what-if on the resource
      group (Data Factory Contributor includes it), or set `what-if: false`.
+   - **Dependabot** runs get no OIDC token (and no Actions secrets), so a
+     Dependabot PR fails its what-if and its apply. Turn both off for it on
+     the calling job, so it builds and plans offline and its Result check
+     still reports (skipping the job would leave that required check
+     pending):
+
+     ```yaml
+     what-if: ${{ github.actor != 'dependabot[bot]' }}
+     apply: ${{ github.actor != 'dependabot[bot]' }}
+     ```
+
 5. **Secure parameters:** prefer Key Vault linked services, so a deployment
    only needs the vault's URL. Parameter files may also use Key Vault
    `reference`s. Anything else goes in the `parameter-secrets` secret, one
