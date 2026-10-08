@@ -1,0 +1,84 @@
+# Drift detection for the OpenTofu root module of examples/opentofu-deployments.yaml
+# deployed three times: a scheduled plan of each deployment on the default
+# branch, one job per deployment, as read-only as the identities allow.
+# Drift in a deployment opens one GitHub issue for it, updated in place while
+# the drift lasts; once a check finds none, the issue gets a comment and the
+# `drift-resolved` label, and you close it. Nothing is ever applied.
+#
+# Setup:
+# - Repository variables as in examples/opentofu-deployments.yaml:
+#   AZURE_TENANT_ID, DEV_SUBSCRIPTION_ID and PROD_SUBSCRIPTION_ID, and the
+#   read-only DEV_READ_CLIENT_ID and PROD_READ_CLIENT_ID (Reader on the
+#   resources and Storage Blob Data Reader on the state container: plans run
+#   without locking the state).
+# - Federated credentials for the read-only identities for the subject
+#   `ref:refs/heads/main` (what a scheduled run presents without an
+#   environment) -- see opentofu/README.md. With `environment:` set, the
+#   subject is `environment:<name>` instead; give that environment no
+#   required reviewers, or every scheduled run waits for one.
+# - Issues enabled in the repository. The first label of `issue-labels` is
+#   created if missing.
+# - Scheduled workflows run only on the default branch, and GitHub pauses
+#   them after 60 days without repository activity.
+
+name: OpenTofu identity drift
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  dev:
+    name: identity-dev-drift
+    uses: JoshSLawrence/actions/.github/workflows/opentofu-drift.yaml@v0.4.0
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      issues: write
+    with:
+      working-directory: iac/identity
+      var-files: deployments/dev.tfvars
+      azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+      azure-subscription-id: ${{ vars.DEV_SUBSCRIPTION_ID }}
+      plan-azure-client-id: ${{ vars.DEV_READ_CLIENT_ID }}
+
+  prod-eastus:
+    name: identity-prod-eastus-drift
+    uses: JoshSLawrence/actions/.github/workflows/opentofu-drift.yaml@v0.4.0
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      issues: write
+    with:
+      working-directory: iac/identity
+      var-files: |
+        deployments/common.tfvars
+        deployments/prod-eastus.tfvars
+      azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+      azure-subscription-id: ${{ vars.PROD_SUBSCRIPTION_ID }}
+      plan-azure-client-id: ${{ vars.PROD_READ_CLIENT_ID }}
+      issue-assignees: platform-oncall
+      # Also fail the run (and notify whoever watches failures) on drift
+      fail-on-drift: true
+
+  prod-westus:
+    name: identity-prod-westus-drift
+    uses: JoshSLawrence/actions/.github/workflows/opentofu-drift.yaml@v0.4.0
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      issues: write
+    with:
+      working-directory: iac/identity
+      var-files: |
+        deployments/common.tfvars
+        deployments/prod-westus.tfvars
+      azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+      azure-subscription-id: ${{ vars.PROD_SUBSCRIPTION_ID }}
+      plan-azure-client-id: ${{ vars.PROD_READ_CLIENT_ID }}

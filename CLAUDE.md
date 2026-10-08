@@ -39,8 +39,10 @@ catalog, layout and principles.
   - `arm/scripts/arm.sh`: what Data Factory and Synapse share (deployments
     of ARM parameters files, parameter layering, the export bundle,
     plans).
-- **OpenTofu is one reusable workflow, `opentofu.yaml`, called once per
-  deployment:** one root module, its var files, one apply environment.
+- **OpenTofu is two reusable workflows, called once per deployment:**
+  `opentofu.yaml` (one root module, its var files, one apply environment)
+  and `opentofu-drift.yaml` (the same deployment planned on a schedule and
+  reported as a GitHub issue; never applies, never uploads the plan).
   Callers write one job per deployment in their own workflow files; there's
   no discovery and no file format of our own. The design, with the
   decisions behind it, is `docs/design/opentofu-per-root-module.md`: don't
@@ -48,7 +50,9 @@ catalog, layout and principles.
   agreement). Jobs: prepare (`validate-inputs.sh`: every input problem at
   once; tool pins through `shared/setup` with `install: false`;
   `require-environments.sh`; `changes.sh`) → checks → integration-tests →
-  plan → apply → result. The composite actions are internals.
+  plan → apply → result. The drift workflow is prepare (the same action,
+  with `drift`: no apply environment, no change detection) → drift (plan,
+  then `drift-report.sh`). The composite actions are internals.
 - **OpenTofu change detection is inside the run** (`changes.sh`): it watches
   the module directory, the var files, the calling workflow file
   (`github.workflow_ref`) and `extra-paths`; the same paths make a plan
@@ -71,8 +75,9 @@ catalog, layout and principles.
   `shared/setup`, `shared/pr-comment` and `shared/result`.
 - **Workflow inputs stay in sync:**
   - An input means the same thing in every workflow of a family that has
-    it (the Data Factory and Synapse workflows). OpenTofu has a single
-    workflow.
+    it (the Data Factory and Synapse workflows, and the two OpenTofu
+    ones: `opentofu-drift.yaml` repeats `opentofu.yaml`'s inputs for the
+    same deployment).
   - Callers pass shared inputs through unchanged.
   - `.github/scripts/check-workflow-inputs.sh` enforces both. When you add
     or change an input, change it in every workflow that has it; the

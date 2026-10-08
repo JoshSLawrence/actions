@@ -5,7 +5,9 @@ description: >-
   would otherwise create a missing one, unprotected), and decides whether
   this run plans -- on pull_request and push runs, only if a watched path
   changed -- and resolves the call's unique key. Check out with fetch-depth
-  0 so changes can be diffed. Needs actions read.
+  0 so changes can be diffed. Needs actions read. With drift, it prepares a
+  drift call instead: no apply environment, and no change detection, since a
+  drift check always plans.
 
 inputs:
   working-directory:
@@ -19,6 +21,21 @@ inputs:
     description: "Label for the call (default: the last var file's name)."
     required: false
     default: ""
+  drift:
+    description: >-
+      "true" when checking a drift call (opentofu-drift.yaml): apply-environment
+      isn't required, plan-environment is the drift job's environment, and
+      changes aren't detected (a drift check always plans).
+    required: false
+    default: "false"
+  issues:
+    description: '"true" when the drift call opens issues (drift only).'
+    required: false
+    default: "true"
+  issue-labels:
+    description: Labels of the drift call's issues (drift only).
+    required: false
+    default: opentofu-drift
   changed-only:
     description: '"true" to plan only when a watched path changed.'
     required: false
@@ -152,6 +169,9 @@ runs:
       shell: bash
       run: '"${GITHUB_ACTION_PATH}/../scripts/validate-inputs.sh"'
       env:
+        DRIFT: ${{ inputs.drift }}
+        ISSUES: ${{ inputs.issues }}
+        ISSUE_LABELS: ${{ inputs.issue-labels }}
         WORKING_DIR: ${{ inputs.working-directory }}
         VAR_FILES: ${{ inputs.var-files }}
         NAME: ${{ inputs.name }}
@@ -206,8 +226,10 @@ runs:
           ${{ inputs.plan-environment }}
           ${{ inputs.integration-tests == 'true' && inputs.integration-test-environment || '' }}
 
+    # A drift check always plans
     - name: Detect changes
       id: changes
+      if: inputs.drift != 'true'
       shell: bash
       run: '"${GITHUB_ACTION_PATH}/../scripts/changes.sh"'
       env:

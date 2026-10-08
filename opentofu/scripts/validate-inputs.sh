@@ -7,6 +7,10 @@
 # false, require-environments.sh).
 #
 # Environment variables (the workflow's inputs):
+#   DRIFT         - "true" for the drift workflow, which has no apply job:
+#                   APPLY_ENVIRONMENT isn't required, and PLAN_ENVIRONMENT is
+#                   the drift job's environment (optional). Also read in
+#                   this mode: ISSUES and ISSUE_LABELS.
 #   WORKING_DIR, VAR_FILES, NAME, APPLY_ENVIRONMENT, EXTRA_PATHS
 #   CHECKS, TESTS, TEST_FILTER, INTEGRATION_TESTS, INTEGRATION_TEST_FILTER
 #   POLICY, POLICY_PATH, POLICY_SOURCE, COST_ESTIMATE
@@ -32,7 +36,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=opentofu/scripts/common.sh
 source "$SCRIPT_DIR/common.sh"
 
-log_config WORKING_DIR VAR_FILES NAME APPLY_ENVIRONMENT EXTRA_PATHS CHECKS TESTS TEST_FILTER \
+log_config DRIFT ISSUES ISSUE_LABELS WORKING_DIR VAR_FILES NAME APPLY_ENVIRONMENT EXTRA_PATHS CHECKS TESTS TEST_FILTER \
   INTEGRATION_TESTS INTEGRATION_TEST_FILTER POLICY POLICY_PATH POLICY_SOURCE COST_ESTIMATE \
   AZURE_CLIENT_ID AZURE_TENANT_ID PLAN_AZURE_CLIENT_ID PLAN_ENVIRONMENT \
   INTEGRATION_TEST_AZURE_CLIENT_ID INTEGRATION_TEST_ENVIRONMENT CHECKS_RUNS_ON INTEGRATION_TEST_RUNS_ON \
@@ -103,7 +107,12 @@ if [ -n "$name" ] && ! [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
   fi
 fi
 
-if [ -z "${APPLY_ENVIRONMENT:-}" ]; then
+drift=false
+if is_true "${DRIFT:-false}"; then
+  drift=true
+fi
+
+if [ "$drift" = false ] && [ -z "${APPLY_ENVIRONMENT:-}" ]; then
   problem "apply-environment is empty. Set it to the GitHub environment the apply job runs in (with required reviewers)."
 fi
 
@@ -135,6 +144,13 @@ if is_true "${POLICY:-false}"; then
   done <<< "$policy_paths"
 fi
 
+# --- Drift: issues ---------------------------------------------------------------
+
+# The first label finds the deployment's issue again, so there has to be one
+if [ "$drift" = true ] && is_true "${ISSUES:-true}" && [ -z "$(tr -d ', \t\n' <<< "${ISSUE_LABELS-opentofu-drift}")" ]; then
+  problem "issue-labels is empty, but issues is on. Set at least one label (the first finds the deployment's issue again), or turn issues off."
+fi
+
 # Runs that get no secrets or OIDC token: checked, never planned
 secrets_skipped=""
 if is_true "${IS_FORK_PR:-false}"; then
@@ -163,7 +179,12 @@ done <<< "$azure"
 # identity, the plan job signs in as the apply identity. plan-environment
 # doesn't change that: the apply identity then has to trust that environment,
 # which usually has no required reviewers.
-if [ -z "$secrets_skipped" ] && [ -n "${AZURE_CLIENT_ID:-}" ] && [ -z "${PLAN_AZURE_CLIENT_ID:-}" ]; then
+if [ "$drift" = true ]; then
+  # A scheduled check only reads, and runs unattended: it needs no write access
+  if [ -n "${AZURE_CLIENT_ID:-}" ] && [ -z "${PLAN_AZURE_CLIENT_ID:-}" ]; then
+    log_warn "Drift checks sign in with azure-client-id because plan-azure-client-id isn't set. They only read and run unattended, so set plan-azure-client-id to a read-only identity (Reader on the resources, Storage Blob Data Reader on the state container) and keep the identity that can write out of scheduled runs."
+  fi
+elif [ -z "$secrets_skipped" ] && [ -n "${AZURE_CLIENT_ID:-}" ] && [ -z "${PLAN_AZURE_CLIENT_ID:-}" ]; then
   if is_true "${HAS_AZURE_CLIENT_SECRET:-false}"; then
     log_warn "Plans use the apply identity (azure-client-id) because plan-azure-client-id isn't set, so pull request plans receive its client secret: anyone who can open a PR could get a credential that can write. Set plan-azure-client-id (with plan-azure-client-secret) to a read-only identity."
   else

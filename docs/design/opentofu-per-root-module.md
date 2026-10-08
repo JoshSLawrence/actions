@@ -1,7 +1,8 @@
 # Design: one OpenTofu workflow call per root module
 
 - **Status:** approved (revision 3), 2026-10-06; drift dropped from
-  `v0.2.0` in implementation review
+  `v0.2.0` in implementation review and back in `v0.4.0` (see
+  [Drift detection](#drift-detection))
 - **Date:** 2026-10-06
 - **Replaces:** the discovery-based design on PR #8 (unmerged), and the
   `v0.1.0` OpenTofu interface on `main`
@@ -105,8 +106,9 @@ PR #8, or GitHub's documentation.
 - Providers other than Azure (AWS, Google Cloud, the GitHub provider, ...),
   and generic environment variables or secrets. They're added as named
   inputs when they're needed (see [Adding a provider](#adding-a-provider)).
-- Drift detection: removed in this release, back later (see
-  [Decisions](#decisions)).
+- Drift detection inside `opentofu.yaml`: it was removed in this release
+  and came back in `v0.4.0` as its own workflow (see
+  [Drift detection](#drift-detection)).
 - Orchestration across calls beyond what Actions offers (`needs:`, `if:`).
 
 ## Design
@@ -231,6 +233,68 @@ prepare ──> checks ──> integration-tests ──> plan ──> apply ─�
 
 Every job that runs `tofu init` (checks, integration-tests, plan, apply)
 restores the provider cache first (see [Provider cache](#provider-cache)).
+
+### Drift detection
+
+`opentofu-drift.yaml` (added in `v0.4.0`, additive) plans one deployment on a
+schedule and reports whether the live infrastructure still matches the
+configuration. It is a second workflow, called once per deployment like
+`opentofu.yaml`, and takes the same inputs for what it shares with it
+(`working-directory`, `var-files`, `name`, the Azure inputs, `runs-on`,
+`provider-cache`, `mise-version`; `.github/scripts/check-workflow-inputs.sh`
+keeps them identical), so a deployment's drift call repeats its main call's
+values.
+
+```text
+prepare ──> drift
+          (plan, report)
+```
+
+- **prepare:** the same `opentofu/prepare` action, in drift mode
+  (`DRIFT=true` in `validate-inputs.sh`): every input problem at once, no
+  apply environment to require, no change detection (a drift check always
+  plans), and the drift job's `environment`, if any, checked to exist before
+  a job names it. A separate job for the same reason as in `opentofu.yaml`:
+  naming a missing environment in the job itself would create it,
+  unprotected, before any step could notice.
+- **drift:** `shared/setup`, the provider cache, `opentofu/azure` as the plan
+  role, then `opentofu/plan` (no policy, cost estimate or checks section;
+  `-lock=false` like every plan), then `opentofu/drift-report`. The plan is
+  never uploaded: it embeds a copy of the state, and nothing needs it.
+- **Identity:** the read-only `plan-azure-client-id` is enough on its own;
+  `azure-client-id` is only the fallback for a caller with one identity, and
+  validation warns when the check signs in with it. `environment` binds the
+  OIDC subject like `plan-environment` does; unlike an apply environment it
+  can't have required reviewers, since nobody is there to approve a
+  scheduled run.
+- **The report** reads the plan action's `exit-code` output (0 no drift, 2
+  drift, anything else, or none because the plan never ran, an error) and
+  its `summary-file` (the plan itself is deleted by the plan action's last
+  step). It runs after a failed plan too, so a broken check is reported as
+  one:
+  - *Error:* the job fails, and the issues are left as they were.
+  - *Drift:* one issue per deployment, found by a hidden marker (derived
+    from the plan action's key) among the open issues with the first of
+    `issue-labels`, authored by the bot. Created with the summary as its
+    body (cut to GitHub's limit by `fit_github_body`), or its body updated
+    in place, which notifies nobody. An issue carrying the `drift-resolved`
+    label gets it removed and one comment that the drift is back.
+  - *No drift:* an open drift issue gets one comment and the
+    `drift-resolved` label, once. It is not closed: a person decides when
+    it's dealt with, and an auto-closing issue would reopen as a new one
+    (and a new notification) every time the drift flickers.
+  - `fail-on-drift` fails the job when there is drift, after reporting it.
+  - `issues: false` only reports in the job summary and the outputs `drift`
+    (`true`, `false` or `error`) and `issue` (the number, or empty).
+- **Concurrency:** one drift job per deployment at a time (not cancelled), so
+  two runs can't both open the issue.
+- **Permissions:** `actions: read` (the environment check), `contents: read`,
+  `id-token: write` and `issues: write`. A new workflow, so requiring
+  `issues: write` of its callers is not a breaking change.
+- **Not in the first version:** one issue shared by several deployments, a
+  summary dashboard, notifications other than GitHub's own (use
+  `fail-on-drift` and Actions' failure notifications, or the outputs), and
+  closing issues automatically.
 
 ### Provider cache
 
@@ -665,7 +729,8 @@ with the plan override and Entra ID storage auth.
   validation and `export-declared.sh`.
 - The generic `KEY=VALUE` export (`export-env.sh`).
 - Drift detection: `opentofu-drift.yaml`, `opentofu/drift-report` and its
-  example, until it returns in the per-call shape.
+  example, until it returned in the per-call shape in `v0.4.0` (see
+  [Drift detection](#drift-detection)).
 - `opentofu-config.yaml` and `opentofu-deploy.yaml`: their jobs move into
   `opentofu.yaml`.
 - The five `v0.1.0` OpenTofu examples, replaced by two: one module with
@@ -693,15 +758,28 @@ The OpenTofu README is rewritten around this design:
   files, no lock file), with a per-file `result` job. The fixtures don't
   use Azure, so the Azure mapping is covered by script tests; a real OIDC
   run against Azure comes later (see [Decisions](#decisions)).
+- **Drift in CI:** `opentofu-drift.yaml` runs against `basic` with
+  `issues: false`; its local state is empty on a fresh runner, so the plan
+  always has changes and a follow-up job asserts `drift == 'true'`
+  (`.github/scripts/assert-equal.sh`). Opening, updating and resolving
+  issues needs a real repository, so those paths are covered by script
+  tests with a stubbed `gh`.
 - **Script tests:** change detection (watched paths, events, diff
   failures) in throwaway Git repositories, like today's discovery tests;
   input validation (each rule, all problems reported at once); and the
-  Azure mapping (OIDC or secret per job, the plan override as a pair,
-  Entra ID storage auth).
+  Azure mapping (OIDC or secret per job, the plan and integration test
+  overrides as pairs, Entra ID storage auth); the provider cache setup; and
+  the drift report (the exit code mapping, `fail-on-drift`, and the issue
+  create, update, resolve and re-flag paths).
 - **Lint:** the existing hooks; the input sync check shrinks to the ARM
   families, since OpenTofu has one workflow.
 
 ### Versioning
+
+`v0.4.0` adds, without breaking `v0.3.x` callers: `opentofu-drift.yaml`,
+`integration-test-azure-client-id` and its secret, and `provider-cache`
+(on by default; it changes where providers come from, not what runs). The
+examples pin `@v0.4.0` where they use them.
 
 `v0.2.0`, breaking relative to `v0.1.0`: `opentofu.yaml` changes from the
 discovery entry point to the per-module workflow, the inner workflows and
@@ -740,10 +818,13 @@ Settled in review, with what we gave up, so they can be revisited:
 - **Warnings fail all or nothing.** `policy-fail-on-warn` fails on any
   warn; failing only above a severity needs a severity convention in the
   policies and is deferred.
-- **Drift detection is removed in `v0.2.0`** and comes back in a later
-  release in the same shape (one call per deployment, the same inputs).
-  Keeping it working meanwhile would have meant keeping discovery just for
-  it.
+- **Drift detection was removed in `v0.2.0`** (keeping it working would
+  have meant keeping discovery just for it) **and came back in `v0.4.0`**
+  in the same shape: one call per deployment, the same inputs, as a
+  separate workflow so `opentofu.yaml` keeps its meaning and its required
+  permissions. Its report is GitHub issues, as the old script's was; issues
+  are marked resolved rather than closed (see
+  [Drift detection](#drift-detection)).
 - **A real Azure run in CI later.** The Data Factory e2e already uses a
   real identity through OIDC; an OpenTofu fixture planning against Azure
   can reuse it.

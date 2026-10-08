@@ -1,0 +1,73 @@
+name: OpenTofu drift report
+description: >-
+  Reports a drift check -- the result of opentofu/plan on the default branch,
+  where any change means drift -- for one deployment: opens a GitHub issue
+  for the drift, or updates the open one in place; when the drift is gone,
+  comments once and adds the drift-resolved label (a person closes it). A
+  failed plan fails the action and leaves the issues alone; fail-on-drift
+  also fails it when there is drift. Run it after opentofu/plan, with
+  if !cancelled() so a failed plan is reported too. Needs issues write.
+
+inputs:
+  exit-code:
+    description: The plan action's exit-code output (0 = no drift, 2 = drift, else the check failed).
+    required: false
+    default: ""
+  summary-file:
+    description: The plan action's summary-file output, which becomes the issue body.
+    required: false
+    default: ""
+  key:
+    description: The plan action's key output, which identifies the deployment's issue.
+    required: false
+    default: ""
+  title:
+    description: The plan action's title output, for the issue title.
+    required: false
+    default: ""
+  issues:
+    description: '"true" opens, updates and resolves an issue per deployment; "false" only reports in the job.'
+    required: false
+    default: "true"
+  issue-labels:
+    description: Labels of new issues, comma-separated; the first also finds the deployment's issue.
+    required: false
+    default: opentofu-drift
+  issue-assignees:
+    description: GitHub logins new issues are assigned to, comma-separated.
+    required: false
+    default: ""
+  fail-on-drift:
+    description: '"true" fails the action when there is drift.'
+    required: false
+    default: "false"
+  github-token:
+    description: Token that opens and updates the issues (needs issues write).
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  drift:
+    description: "'true' if the plan found drift, 'false' if not, 'error' if the check itself failed."
+    value: ${{ steps.report.outputs.drift }}
+  issue:
+    description: Number of the deployment's open drift issue, if there is one.
+    value: ${{ steps.report.outputs.issue }}
+
+runs:
+  using: composite
+  steps:
+    - name: Report drift
+      id: report
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/drift-report.sh"'
+      env:
+        PLAN_EXIT_CODE: ${{ inputs.exit-code }}
+        SUMMARY_FILE: ${{ inputs.summary-file }}
+        KEY: ${{ inputs.key }}
+        TITLE: ${{ inputs.title }}
+        CREATE_ISSUES: ${{ inputs.issues }}
+        ISSUE_LABELS: ${{ inputs.issue-labels }}
+        ISSUE_ASSIGNEES: ${{ inputs.issue-assignees }}
+        FAIL_ON_DRIFT: ${{ inputs.fail-on-drift }}
+        GH_TOKEN: ${{ inputs.github-token }}

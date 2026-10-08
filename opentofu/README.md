@@ -1,10 +1,15 @@
 # OpenTofu
 
-One reusable workflow, [`opentofu.yaml`](../.github/workflows/opentofu.yaml),
-that checks, tests, plans and applies **one root module, with one set of var
-files, in one environment**. You call it from your own workflow files, once
-per deployment, with that deployment's var files, environments and
-credentials. Everything a run does is in your workflow YAML.
+Two reusable workflows, each called once per deployment (**one root module,
+with one set of var files**) from your own workflow files, with that
+deployment's var files, environments and credentials. Everything a run does
+is in your workflow YAML.
+
+- [`opentofu.yaml`](../.github/workflows/opentofu.yaml) checks, tests, plans
+  and applies a deployment in one environment.
+- [`opentofu-drift.yaml`](../.github/workflows/opentofu-drift.yaml) plans it
+  on a schedule and reports drift as a GitHub issue. See
+  [Drift detection](#drift-detection).
 
 The design and the decisions behind it are in
 [`docs/design/opentofu-per-root-module.md`](../docs/design/opentofu-per-root-module.md).
@@ -22,6 +27,7 @@ The design and the decisions behind it are in
 - [Private modules and policies](#private-modules-and-policies)
 - [Runners](#runners)
 - [Provider cache](#provider-cache)
+- [Drift detection](#drift-detection)
 - [Branch protection](#branch-protection)
 - [Setup](#setup)
 - [PR comments](#pr-comments)
@@ -327,6 +333,7 @@ present:
 | apply             | `<prefix>:environment:<apply-environment>`                                                                                                              |
 | plan              | `<prefix>:environment:<plan-environment>`; without one, `<prefix>:pull_request` (PR plans) and `<prefix>:ref:refs/heads/main` (push and dispatch plans) |
 | integration tests | `<prefix>:environment:<integration-test-environment>`; without one, as for plans                                                                        |
+| drift             | `<prefix>:environment:<environment>`; without one, `<prefix>:ref:refs/heads/main` (scheduled runs)                                                      |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -451,6 +458,123 @@ per job per run. `provider-cache: false` turns it off.
 - **Scope:** Actions caches are scoped to the branch. A pull request
   restores the default branch's cache and saves its own, which only that PR
   sees, so a PR can't change what other runs restore.
+
+## Drift detection
+
+[`opentofu-drift.yaml`](../.github/workflows/opentofu-drift.yaml) plans one
+deployment, without locking the state and without ever applying, and reports
+whether the live infrastructure still matches the configuration. Call it once
+per deployment, from a workflow that runs on a schedule on the default
+branch, with the same `working-directory` and `var-files` as the deployment's
+`opentofu.yaml` call:
+
+```yaml
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  prod:
+    uses: JoshSLawrence/actions/.github/workflows/opentofu-drift.yaml@v0.4.0
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      issues: write
+    with:
+      working-directory: iac/network
+      var-files: prod.tfvars
+      azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
+      azure-subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      plan-azure-client-id: ${{ vars.AZURE_READ_CLIENT_ID }}
+```
+
+A complete caller, with one job per deployment of a module:
+[`examples/opentofu-drift.yaml`](../examples/opentofu-drift.yaml).
+
+- **The four permissions are required**, for the same reason as above:
+  `actions: read` (the environment check), `contents: read`,
+  `id-token: write` (OIDC) and `issues: write` (the report).
+- **What a run does:** a `prepare` job checks every input and, when
+  `environment` is set, that the environment exists (before any job names it,
+  because GitHub would create a missing one, unprotected). The `drift` job
+  then sets up tools, the provider cache and the Azure credentials as the
+  plan job of `opentofu.yaml` does, plans, and reports. There are no checks,
+  tests, policy, cost estimate or apply. The plan file is never uploaded: it
+  holds a copy of the state.
+- **Identity:** use a read-only one. `plan-azure-client-id` is enough on its
+  own (`azure-client-id` is only the fallback for callers who have just one),
+  with `plan-azure-client-secret` or OIDC. The workflow warns when it signs
+  in with `azure-client-id` only. A scheduled run on the default branch
+  presents the subject `<prefix>:ref:refs/heads/main`; with `environment` it
+  presents `<prefix>:environment:<environment>` instead. Give that
+  environment no required reviewers, since nobody is there to approve a
+  scheduled run.
+- **The report**, per deployment, from the plan's exit code (0 no drift, 2
+  drift, anything else an error):
+  - **Drift** warns in the log and the job summary. With `issues: true` (the
+    default) it opens an issue holding the plan summary, or updates the open
+    one's body in place (an edit notifies nobody). If that issue had been
+    marked `drift-resolved`, it removes the label and comments once that the
+    drift is back. `fail-on-drift: true` then fails the job.
+  - **No drift** does nothing, except: if the deployment has an open drift
+    issue, it adds one comment and the `drift-resolved` label. The issue
+    stays open for a person to close.
+  - **Error** (the plan failed, or never ran) fails the job and leaves the
+    issues alone, so a broken check can't look like "no drift".
+- **One issue per deployment**, found again by a hidden marker (derived from
+  the module, `name` and var files) in its body, among the open issues
+  labelled with the first of `issue-labels` and posted by
+  `github-actions[bot]`. Don't remove that label from an issue: the next
+  check would open another. Closing an issue is how a person says they've
+  dealt with it; a later drift opens a new one. Labels that don't exist are
+  created.
+- **Concurrency:** a run waits for an earlier one of the same deployment
+  instead of racing it for the issue.
+- **Run it on the default branch** (`schedule` does; so does
+  `workflow_dispatch` there). The issue says which ref was planned.
+- **Issues show the plan.** Anyone who can read the repository can read its
+  issues, as with PR comments: keep secrets out of state, and don't use issues
+  on a public repository for a module whose plan you wouldn't show. Set
+  `issues: false` to report only in the job summary and the outputs.
+
+<!-- markdownlint-disable MD013 -->
+
+| Input                   | Default              | Description                                                             |
+| ----------------------- | -------------------- | ----------------------------------------------------------------------- |
+| `working-directory`     | **required**         | The root module; its own `mise.toml` pins its tools                     |
+| `var-files`             | none                 | `.tfvars` files, in order, for `init` and `plan`                        |
+| `name`                  | last var file's name | Label for this call in titles and names                                 |
+| `environment`           | none                 | The drift job's environment (binds the OIDC subject); must exist        |
+| `azure-client-id`       | none                 | Fallback identity when `plan-azure-client-id` isn't set                 |
+| `azure-tenant-id`       | none                 | Tenant ID; required with any client ID                                  |
+| `azure-subscription-id` | none                 | Subscription ID                                                         |
+| `plan-azure-client-id`  | `azure-client-id`    | The identity that plans, e.g. a read-only one                           |
+| `azure-use-azuread`     | `true`               | Microsoft Entra ID (RBAC) auth for storage: state and data plane        |
+| `issues`                | `true`               | Open, update and resolve an issue per deployment                        |
+| `issue-labels`          | `opentofu-drift`     | Labels of new issues (comma-separated); the first finds the issue again |
+| `issue-assignees`       | none                 | Logins new issues are assigned to (comma-separated)                     |
+| `fail-on-drift`         | `false`              | Fail the job when there's drift                                         |
+| `runs-on`               | `ubuntu-latest`      | Runner: a label, or JSON, as for `opentofu.yaml`; must reach the state  |
+| `timeout-minutes`       | `30`                 | Timeout of the drift job                                                |
+| `provider-cache`        | `true`               | Cache providers across runs                                             |
+| `mise-version`          | the setup pin        | The mise version; the module's `mise.toml` pins its tools               |
+
+| Secret                     | Description                                                        |
+| -------------------------- | ------------------------------------------------------------------ |
+| `azure-client-secret`      | Secret of `azure-client-id`; without it, OIDC                      |
+| `plan-azure-client-secret` | Secret of `plan-azure-client-id`; without it, OIDC                 |
+| `modules-token`            | Reads private GitHub repositories used as module or policy sources |
+
+| Output  | Description                                                                 |
+| ------- | --------------------------------------------------------------------------- |
+| `drift` | `true` if the plan found drift, `false` if not, `error` if the check failed |
+| `issue` | Number of the deployment's open drift issue, if there is one                |
+
+<!-- markdownlint-enable MD013 -->
 
 ## Branch protection
 
@@ -586,6 +710,9 @@ Before any job runs, the prepare job checks:
   bound to environment names keep a PR from deploying where it shouldn't.
 - **Fork and Dependabot PRs** are checked, never planned: they get no
   secrets or OIDC token.
+- **Drift checks** plan unattended on a schedule, so give them a read-only
+  identity, and mind who can read the issues they open: they hold the plan
+  summary, like a PR comment does. The plan itself is never uploaded.
 
 ## Moving from v0.1.0
 
@@ -601,14 +728,16 @@ Before any job runs, the prepare job checks:
 | `azure-client-id` (plan) and `apply-azure-client-id` (apply)     | `azure-client-id` (apply) and `plan-azure-client-id` (plan)        |
 | `azure-login`, the `env-vars` and `apply-env-vars` secrets       | Not supported; Azure through its inputs, other providers to come   |
 | `stack-name`                                                     | `name`                                                             |
-| `opentofu-drift.yaml`                                            | Removed for now; it returns in the per-call shape                  |
+| `opentofu-drift.yaml`                                            | Removed in v0.2.0; back in v0.4.0, one call per deployment         |
 
 <!-- markdownlint-enable MD013 -->
 
 ## Internals
 
 `opentofu.yaml` uses the composite actions in this directory (`prepare`,
-`checks`, `azure`, `provider-cache`, `plan`, `apply`) and the shared library's `shared/setup`,
+`checks`, `azure`, `provider-cache`, `plan`, `apply`), and
+`opentofu-drift.yaml` uses `prepare`, `azure`, `provider-cache`, `plan` and
+`drift-report`; both use the shared library's `shared/setup`,
 `shared/pr-comment` and `shared/result`. They're not meant to be called on
 their own, and their interfaces may change in any release.
 
@@ -621,6 +750,7 @@ WORKING_DIR=iac/identity VAR_FILES=deployments/prod.tfvars APPLY_ENVIRONMENT=pro
 ```
 
 [`tests/opentofu/scripts-test.sh`](../tests/opentofu/scripts-test.sh)
-tests change detection, input validation, the Azure mapping and names; CI
-runs the workflow end to end against
+tests change detection, input validation, the Azure mapping, the provider
+cache and names, and the drift report with a stubbed `gh`; CI runs the
+workflows end to end against
 [`tests/fixtures/opentofu/`](../tests/fixtures/opentofu/).
