@@ -13,7 +13,9 @@
 #
 # The changes come from the compare API, which lists at most 300 files; with
 # that many it lists them with git instead, which needs the job's checkout
-# (its origin remote; shallow is fine).
+# (its origin remote; shallow is fine). The fetch is filtered (no blobs), which
+# turns the checkout into a partial clone with origin as its promisor remote;
+# that's harmless this late in a job.
 #
 # Environment variables:
 #   GH_TOKEN          - token for the GitHub API (contents: read and
@@ -86,9 +88,18 @@ done < <(list_items "$PREFLIGHT_PATHS")
 # with persist-credentials: false.
 # Usage: git_changed_files   (prints one path per line; fails if git can't)
 git_changed_files() {
-  local auth
+  local auth depth=()
   auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
-  git -c "http.extraheader=AUTHORIZATION: basic ${auth}" fetch --quiet --no-tags --filter=blob:none \
+  # The encoded value is as good as the token itself
+  mask_value "$auth"
+  if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+    depth=(--depth=1)
+  fi
+  # The header goes through the environment, scoped to this one command, so
+  # it isn't on a command line
+  GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+    GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth}" \
+    git fetch --quiet --no-tags --filter=blob:none "${depth[@]+"${depth[@]}"}" \
     origin "$TARGET_SHA" "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}" || return 1
   git diff --name-only --no-renames "$TARGET_SHA" "origin/${TARGET_BRANCH}"
 }
@@ -112,7 +123,11 @@ if [ "$file_count" -ge 300 ]; then
   git_error="$(cat "$git_stderr")"
   rm -f "$git_stderr"
   if [ "$git_exit" -ne 0 ]; then
-    [ -n "$git_error" ] && log_warn "git said: ${git_error//"$GH_TOKEN"/***}"
+    if [ -n "$git_error" ]; then
+      git_error="${git_error//"$GH_TOKEN"/***}"
+      git_error="${git_error//"$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"/***}"
+      log_warn "git said: ${git_error}"
+    fi
     log_error "${TARGET_BRANCH} has changed too much since this plan (${ahead_by} commits, ${file_count}+ files) to check what it deploys is unaffected, and git couldn't list the changes (the job needs a checkout with an origin remote and a token that can read it). ${RERUN_HINT}"
     exit 1
   fi
