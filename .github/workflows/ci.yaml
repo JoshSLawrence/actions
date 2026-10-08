@@ -107,7 +107,8 @@ jobs:
       policy-source: git::https://github.com/${{ github.repository }}.git//tests/fixtures/opentofu/policy?ref=${{ github.event.pull_request.head.sha || github.sha }}
 
   # Change detection on: plans and applies only when the fixture, this call
-  # or the OpenTofu workflow and its scripts changed. Checks off.
+  # or the OpenTofu workflow and its scripts changed. Checks off, and no
+  # provider cache (the others use it).
   e2e-tofu-staging:
     name: E2E tofu basic-staging-eu
     uses: $/.github/workflows/opentofu.yaml
@@ -121,6 +122,7 @@ jobs:
       var-files: deployments/staging-eu.tfvars
       apply-environment: staging
       checks: false
+      provider-cache: false
       extra-paths: |
         .github/workflows/opentofu.yaml
         opentofu/**

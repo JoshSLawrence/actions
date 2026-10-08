@@ -219,7 +219,8 @@ prepare ──> checks ──> integration-tests ──> plan ──> apply ─�
   call's var files where the tool takes them (see [Checks](#checks)). No
   credentials, so fork PRs can run it.
 - **integration-tests:** `tofu test` with the call's var files and the
-  apply identity, in `integration-test-environment`. Off by default.
+  apply identity (or `integration-test-azure-client-id`), in
+  `integration-test-environment`. Off by default.
 - **plan:** plans to a saved file in `plan-environment`, renders the
   summary (with optional policy and cost), uploads the plan, comments on
   the PR. Skipped for PRs from forks and Dependabot.
@@ -227,6 +228,38 @@ prepare ──> checks ──> integration-tests ──> plan ──> apply ─�
   stale plan, checks the plan's digest, applies exactly that plan, updates
   the PR comment (see [When it applies](#when-it-applies)).
 - **result:** one check per call, for branch protection.
+
+Every job that runs `tofu init` (checks, integration-tests, plan, apply)
+restores the provider cache first (see [Provider cache](#provider-cache)).
+
+### Provider cache
+
+Every job that runs `tofu init` (checks, integration tests, plan, apply)
+restores and saves OpenTofu's provider plugin cache, so providers are
+downloaded once and not once per job per run:
+
+- **One place.** The `opentofu/provider-cache` composite action sets
+  `TF_PLUGIN_CACHE_DIR` (a directory under `runner.temp`, made absolute
+  because tools run from inside the module) and runs `actions/cache` on it,
+  keyed on the runner's OS and architecture and the hash of the module's
+  `.terraform.lock.hcl`, with the OS-and-architecture prefix as the
+  restore key. Each of those jobs calls it once after `shared/setup`.
+  `provider-cache: false` makes it do nothing.
+- **Compatible with `-lockfile=readonly` and several inits per job.**
+  OpenTofu installs into the cache only providers it has verified, and
+  uses a cached one only if its checksum is in the lock file; otherwise it
+  downloads and verifies the provider again. So the lock file keeps the
+  last word, and the checks job's `init -backend=false`, the tests' init
+  and the plan's init can share one directory (the cache is locked per
+  provider while being written).
+- **`TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE` is not set.** It would
+  make a lock file with no `h1:` checksum for the runner's platform use the
+  cache anyway, by not verifying the cached package. That trades the
+  supply-chain check the lock file gives for speed; the documented fix is to
+  commit the platform's checksums (`tofu providers lock
+  -platform=linux_amd64`).
+- **Cache scope.** Pull requests can read the default branch's entries but
+  write their own, visible to that PR only.
 
 ### Inputs
 
@@ -293,6 +326,8 @@ Without `var-files`, the module uses its defaults (and its
 | `apply-runs-on`                    | `runs-on`            | Runner of the apply job                                                |
 | `timeout-minutes`                  | `30`                 | Timeout for each job                                                   |
 | `mise-version`                     | the setup pin        | The mise version; the module's `mise.toml` pins its tools              |
+| **Providers**                      |                      |                                                                        |
+| `provider-cache`                   | `true`               | Cache providers across runs and jobs, keyed on the lock file           |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -712,6 +747,12 @@ Settled in review, with what we gave up, so they can be revisited:
 - **A real Azure run in CI later.** The Data Factory e2e already uses a
   real identity through OIDC; an OpenTofu fixture planning against Azure
   can reuse it.
+- **A provider cache by default.** It saves a download per job (a module's
+  providers can be hundreds of megabytes) at the price of cache storage
+  and one more action (`actions/cache`, SHA-pinned). On by default because
+  it never changes what runs, only where providers come from, and the lock
+  file still verifies them; `provider-cache: false` for runners with a cache
+  of their own or a ban on `actions/cache`.
 - **Runners per job.** `checks-runs-on`, `integration-test-runs-on`,
   `plan-runs-on` and `apply-runs-on` override `runs-on` for the jobs that
   do the work: those that reach the cloud (e.g. a runner group in a private

@@ -90,6 +90,11 @@ catalog, layout and principles.
   or `[` (an array of labels or a runner group), parsed by the job's
   `runs-on` expression: copy that expression to a new job. OpenTofu checks
   the overrides up front (`runs_on_problem` in `shared/scripts/common.sh`).
+- **Providers are cached** by `opentofu/provider-cache` (restore and save
+  through `actions/cache`, keyed on the lock file), called by every job that
+  runs `tofu init`; `provider-cache: false` disables it. It never sets
+  `TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE`: the lock file keeps
+  verifying cached providers.
 - **Composite actions find their scripts** via
   `"${GITHUB_ACTION_PATH}/../scripts/<script>.sh"`, or
   `"${GITHUB_ACTION_PATH}/../../shared/scripts/<script>.sh"` (and

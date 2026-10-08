@@ -22,6 +22,9 @@
 #   plan, checks its digest, then applies exactly that plan.
 # - result: the call's one check, for branch protection.
 #
+# Providers: every job that runs tofu init restores a provider cache keyed on
+# the module's .terraform.lock.hcl (provider-cache: false to turn it off).
+#
 # Runners: checks, integration-tests, plan and apply can each run somewhere
 # else than runs-on (e.g. a runner group that can reach private endpoints,
 # or an image with the tools already installed). Every runs-on input is a
@@ -239,6 +242,10 @@ on:
         description: Timeout for each job.
         type: number
         default: 30
+      provider-cache:
+        description: Cache OpenTofu's providers across runs and jobs (Actions cache, keyed on the lock file). false downloads them in every job.
+        type: boolean
+        default: true
       mise-version:
         description: "mise version to install (default: the setup action's pin). The module's mise.toml pins its tools."
         type: string
@@ -383,6 +390,12 @@ jobs:
             ${{ inputs.docs && 'terraform-docs' || '' }}
           mise-version: ${{ inputs.mise-version }}
 
+      - name: Cache providers
+        uses: $/opentofu/provider-cache
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          enabled: ${{ inputs.provider-cache }}
+
       - name: Checks
         id: checks
         uses: $/opentofu/checks
@@ -441,6 +454,12 @@ jobs:
           working-directory: ${{ inputs.working-directory }}
           required-tools: opentofu
           mise-version: ${{ inputs.mise-version }}
+
+      - name: Cache providers
+        uses: $/opentofu/provider-cache
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          enabled: ${{ inputs.provider-cache }}
 
       - name: Azure credentials
         uses: $/opentofu/azure
@@ -520,6 +539,12 @@ jobs:
             ${{ inputs.policy && 'conftest' || '' }}
             ${{ inputs.cost-estimate && 'infracost' || '' }}
           mise-version: ${{ inputs.mise-version }}
+
+      - name: Cache providers
+        uses: $/opentofu/provider-cache
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          enabled: ${{ inputs.provider-cache }}
 
       - name: Azure credentials
         uses: $/opentofu/azure
@@ -644,6 +669,12 @@ jobs:
           working-directory: ${{ inputs.working-directory }}
           required-tools: opentofu
           mise-version: ${{ inputs.mise-version }}
+
+      - name: Cache providers
+        uses: $/opentofu/provider-cache
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          enabled: ${{ inputs.provider-cache }}
 
       - name: Azure credentials
         uses: $/opentofu/azure

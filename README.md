@@ -95,6 +95,7 @@ actions/
 │   ├── checks/
 │   ├── plan/
 │   ├── prepare/
+│   ├── provider-cache/
 │   ├── README.md
 │   └── scripts/              # the logic; actions are thin wrappers
 ├── shared/                   # the library every area builds on

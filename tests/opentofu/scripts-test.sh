@@ -363,6 +363,57 @@ else
   log_success "inconsistent Azure inputs fail the job"
 fi
 
+# --- Provider cache --------------------------------------------------------------
+
+# Print what provider-cache.sh exports (TF_PLUGIN_CACHE_DIR) and outputs (dir)
+provider_cache() {
+  local env_file="$WORK/github_env"
+  : > "$env_file"
+  : > "$WORK/output"
+  env GITHUB_ACTIONS=true GITHUB_ENV="$env_file" GITHUB_OUTPUT="$WORK/output" "$@" \
+    "$SCRIPTS/provider-cache.sh" > "$WORK/log" 2>&1 || return 1
+  awk '/<<EOF_/ { split($0, a, "<<"); name = a[1]; getline; print name "=" $0 }' "$env_file"
+}
+
+cache_dir="$WORK/cache/providers"
+expect "the provider cache is created and exported to the job" \
+  "TF_PLUGIN_CACHE_DIR=$cache_dir" "$(provider_cache CACHE_DIR="$cache_dir")"
+cases=$((cases + 1))
+if [ -d "$cache_dir" ] && [ "$(sed -n 's/^dir=//p' "$WORK/output")" == "$cache_dir" ]; then
+  log_success "...as a directory, and its path is the step's output"
+else
+  log_error "...as a directory, and its path is the step's output: not created, or the wrong output"
+  failures=$((failures + 1))
+fi
+expect "a relative cache directory is made absolute, since tofu runs from the module" \
+  "TF_PLUGIN_CACHE_DIR=$WORK/relative-cache" \
+  "$(cd "$WORK" && provider_cache CACHE_DIR=relative-cache)"
+expect "an existing cache is kept as it is" "TF_PLUGIN_CACHE_DIR=$cache_dir" \
+  "$(echo cached > "$cache_dir/provider"; provider_cache CACHE_DIR="$cache_dir")"
+cases=$((cases + 1))
+if [ "$(cat "$cache_dir/provider")" == "cached" ]; then
+  log_success "...and its contents too"
+else
+  log_error "...and its contents too: they changed"
+  failures=$((failures + 1))
+fi
+cases=$((cases + 1))
+if provider_cache > /dev/null; then
+  log_error "no cache directory is refused: it succeeded"
+  failures=$((failures + 1))
+else
+  log_success "no cache directory is refused"
+fi
+cases=$((cases + 1))
+make_repo
+provider_cache CACHE_DIR="$cache_dir" WORKING_DIR=iac/app > /dev/null
+if grep -qF "No .terraform.lock.hcl in iac/app" "$WORK/log"; then
+  log_success "a module without a lock file is mentioned"
+else
+  log_error "a module without a lock file is mentioned: no note in the log"
+  failures=$((failures + 1))
+fi
+
 # --- Plan names ------------------------------------------------------------------
 
 # A call named after a module path, and "-" vs "/", used to sanitize to the

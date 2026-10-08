@@ -21,6 +21,7 @@ The design and the decisions behind it are in
 - [Azure](#azure)
 - [Private modules and policies](#private-modules-and-policies)
 - [Runners](#runners)
+- [Provider cache](#provider-cache)
 - [Branch protection](#branch-protection)
 - [Setup](#setup)
 - [PR comments](#pr-comments)
@@ -164,6 +165,8 @@ Lists take one item per line, or items separated by spaces. Without
 | `apply-runs-on`                    | `runs-on`            | Runner of the apply job                                                |
 | `timeout-minutes`                  | `30`                 | Timeout for each job                                                   |
 | `mise-version`                     | the setup pin        | The mise version; the module's `mise.toml` pins its tools              |
+| **Providers**                      |                      |                                                                        |
+| `provider-cache`                   | `true`               | Cache providers across runs and jobs, keyed on the lock file           |
 
 | Secret                                 | Description                                                        |
 | -------------------------------------- | ------------------------------------------------------------------ |
@@ -417,6 +420,38 @@ Install the exact versions your modules pin there (`mise install` in each
 module when building the image); a different version is downloaded as
 usual, and tools set only in the image's global mise config are ignored.
 
+## Provider cache
+
+Every job that runs `tofu init` (checks, integration tests, plan, apply)
+caches the providers it installs, so they're downloaded once instead of once
+per job per run. `provider-cache: false` turns it off.
+
+- **How:** the job sets `TF_PLUGIN_CACHE_DIR` to a directory in the runner's
+  temporary directory and restores it with `actions/cache` before the first
+  `tofu` command. The cache is saved when the job succeeds.
+- **Key:** the runner's OS and architecture plus the hash of the module's
+  `.terraform.lock.hcl`. A lock file change misses the exact key, starts from
+  the newest entry for the same OS and architecture, and saves a new entry,
+  so the cache only grows by what changed (GitHub evicts entries unused for
+  seven days). Without a lock file the key is OS and architecture only, so
+  it never follows provider upgrades; commit the lock file.
+- **The lock file still decides.** OpenTofu uses a cached provider only if
+  its checksum is one of the lock file's, so `-lockfile=readonly` keeps
+  working and a tampered cache entry is never trusted. When the lock file has
+  no `h1:` checksum for the runner's platform (it records only `zh:` ones, or
+  `h1:` ones from your laptop), OpenTofu downloads and verifies the provider
+  as usual and the cache is of no use. Add the missing checksums once:
+
+  ```bash
+  tofu providers lock -platform=linux_amd64
+  ```
+
+  `TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE` would use the cache
+  regardless, by giving up that check; the workflow never sets it.
+- **Scope:** Actions caches are scoped to the branch. A pull request
+  restores the default branch's cache and saves its own, which only that PR
+  sees, so a PR can't change what other runs restore.
+
 ## Branch protection
 
 Each call ends with a `result` job, which passes only if every job of the
@@ -573,7 +608,7 @@ Before any job runs, the prepare job checks:
 ## Internals
 
 `opentofu.yaml` uses the composite actions in this directory (`prepare`,
-`checks`, `azure`, `plan`, `apply`) and the shared library's `shared/setup`,
+`checks`, `azure`, `provider-cache`, `plan`, `apply`) and the shared library's `shared/setup`,
 `shared/pr-comment` and `shared/result`. They're not meant to be called on
 their own, and their interfaces may change in any release.
 
