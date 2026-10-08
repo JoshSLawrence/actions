@@ -41,9 +41,11 @@ runs:
   steps:
     # Only installs mise itself: tools are installed next, scoped to the
     # directory. mise-action also trusts every mise config under the
-    # workspace (MISE_TRUSTED_CONFIG_PATHS). Its env/PATH export is off
-    # because it would read configs above the directory; the scripts run
-    # tools with `mise exec`, which applies the directory's [env].
+    # workspace (MISE_TRUSTED_CONFIG_PATHS) for its own steps; the scripts
+    # override that with just the directory itself (scope_mise_to_module),
+    # so only its own mise config is trusted when tools run. Its env/PATH
+    # export is off because it would read configs above the directory; the
+    # scripts run tools with `mise exec`, which applies the directory's [env].
     - name: Install mise
       uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
       with:
