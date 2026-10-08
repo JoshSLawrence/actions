@@ -406,11 +406,12 @@ expect_refused "300 files: git finds the relevant change the API list cut off" \
   "Files this plan depends on changed on main since it was made (iac/app/main.tf)" \
   ../../shared/scripts/apply-preflight.sh PATH="$WORK/bin:$PATH" GH_STUB_RESPONSE="$WORK/compare.json" \
   GH_TOKEN=secret-token GITHUB_REPOSITORY=org/repo TARGET_BRANCH=main TARGET_SHA="$BASE" PREFLIGHT_PATHS=iac/app
-# Neither the token nor its base64 form may reach the log
+# Neither the token nor its base64 form may reach the log, apart from the
+# mask command that tells the runner to hide it (only emitted in Actions)
 encoded_token="$(printf 'x-access-token:%s' secret-token | base64 | tr -d '\n')"
 assert_token_unlogged() {
   cases=$((cases + 1))
-  if grep -qF -e "secret-token" -e "$encoded_token" "$WORK/log"; then
+  if grep -v '^::add-mask::' "$WORK/log" | grep -qF -e "secret-token" -e "$encoded_token"; then
     log_error "$1: the token (or its encoded form) was logged"
     failures=$((failures + 1))
   else
@@ -418,6 +419,22 @@ assert_token_unlogged() {
   fi
 }
 assert_token_unlogged "...and the token never reaches the log"
+
+# In Actions, the encoded credential is masked as a command of its own, never
+# captured as if it were a changed file
+cases=$((cases + 1))
+if preflight GITHUB_ACTIONS=true PREFLIGHT_PATHS=. ; then
+  log_error "300 files, in Actions: the relevant change went unnoticed"
+  failures=$((failures + 1))
+elif [ "$(grep -cxF "::add-mask::${encoded_token}" "$WORK/log")" -eq 1 ] \
+  && ! grep -qF "since it was made (::add-mask" "$WORK/log" \
+  && [ "$(grep -cF "$encoded_token" "$WORK/log")" -eq 1 ]; then
+  log_success "300 files, in Actions: the encoded token is masked, and appears nowhere else"
+else
+  log_error "300 files, in Actions: the encoded token is not masked exactly once:"
+  sed 's/^/    /' "$WORK/log" >&2
+  failures=$((failures + 1))
+fi
 
 cases=$((cases + 1))
 if preflight PREFLIGHT_PATHS=iac/other; then
@@ -461,6 +478,8 @@ if preflight; then
 elif grep -qF "git couldn't list the changes" "$WORK/log"; then
   log_success "300 files without a usable checkout: refused, saying why"
   assert_token_unlogged "...and the token stays out of the log on that path too"
+  preflight GITHUB_ACTIONS=true || true
+  assert_token_unlogged "...also in Actions"
 else
   log_error "300 files without a usable checkout: refused, but not saying why:"
   sed 's/^/    /' "$WORK/log" >&2
@@ -478,6 +497,8 @@ if preflight; then
 elif grep -qF "git said:" "$WORK/log"; then
   log_success "300 files, unreachable origin: refused, with git's error"
   assert_token_unlogged "...and the token stays out of that log too"
+  preflight GITHUB_ACTIONS=true || true
+  assert_token_unlogged "...also in Actions"
 else
   log_error "300 files, unreachable origin: no git error logged:"
   sed 's/^/    /' "$WORK/log" >&2

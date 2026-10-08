@@ -86,19 +86,18 @@ done < <(list_items "$PREFLIGHT_PATHS")
 # history beyond the two commits, so shallow checkouts work. The token goes
 # in a one-off header (never in the URL or the log) because checkout runs
 # with persist-credentials: false.
+# Needs git_auth (the encoded token), set and masked by the caller: this runs
+# in a command substitution, where a mask command would be captured as output.
 # Usage: git_changed_files   (prints one path per line; fails if git can't)
 git_changed_files() {
-  local auth depth=()
-  auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
-  # The encoded value is as good as the token itself
-  mask_value "$auth"
+  local depth=()
   if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
     depth=(--depth=1)
   fi
   # The header goes through the environment, scoped to this one command, so
   # it isn't on a command line
   GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
-    GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth}" \
+    GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${git_auth}" \
     git fetch --quiet --no-tags --filter=blob:none "${depth[@]+"${depth[@]}"}" \
     origin "$TARGET_SHA" "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}" || return 1
   git diff --name-only --no-renames "$TARGET_SHA" "origin/${TARGET_BRANCH}"
@@ -115,6 +114,9 @@ file_list="$(jq -r '.files[]?.filename' <<< "$comparison")"
 # fails is it too much to be sure either way.
 if [ "$file_count" -ge 300 ]; then
   log_info "The compare API lists at most 300 files (${file_count} here); listing the changes with git instead..."
+  # The encoded value is as good as the token itself
+  git_auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+  mask_value "$git_auth"
   set +e
   git_stderr="$(mktemp)"
   file_list="$(git_changed_files 2> "$git_stderr")"
@@ -125,7 +127,7 @@ if [ "$file_count" -ge 300 ]; then
   if [ "$git_exit" -ne 0 ]; then
     if [ -n "$git_error" ]; then
       git_error="${git_error//"$GH_TOKEN"/***}"
-      git_error="${git_error//"$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"/***}"
+      git_error="${git_error//"$git_auth"/***}"
       log_warn "git said: ${git_error}"
     fi
     log_error "${TARGET_BRANCH} has changed too much since this plan (${ahead_by} commits, ${file_count}+ files) to check what it deploys is unaffected, and git couldn't list the changes (the job needs a checkout with an origin remote and a token that can read it). ${RERUN_HINT}"
