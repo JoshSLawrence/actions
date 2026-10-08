@@ -85,6 +85,8 @@ if [ -n "$client_secret" ]; then
   export_job_env ARM_CLIENT_SECRET "$client_secret"
   method="client secret"
 else
+  # ARM_OIDC_REQUEST_URL is deliberately not set; providers fall back to
+  # ACTIONS_ID_TOKEN_REQUEST_URL
   export_job_env ARM_USE_OIDC true
   method="OIDC"
 fi

@@ -3,9 +3,11 @@
 # Tests the OpenTofu workflow's own scripts, which run before anything is
 # planned: change detection (changes.sh), input validation
 # (validate-inputs.sh, runners included), the Azure credentials mapping
-# (azure-env.sh), and the plan names (names.sh). Change detection runs in
-# throwaway Git repositories, the way a pull_request run does. Run by
-# pre-commit and CI.
+# (azure-env.sh), and the plan names (names.sh), plus two shared helpers the
+# OpenTofu workflow depends on: the apply preflight's git fallback
+# (apply-preflight.sh, with a stubbed gh) and scope_mise_to_module. Change
+# detection and the preflight run in throwaway Git repositories, the way a
+# pull_request run does. Run by pre-commit and CI.
 # Needs git, jq.
 #
 
@@ -217,6 +219,34 @@ expect_refused "a runner group whose labels aren't strings" "checks-runs-on: '{\
 expect_refused "a label with a space" "integration-test-runs-on: 'self hosted' isn't a label" \
   validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod INTEGRATION_TEST_RUNS_ON='self hosted'
 
+# The apply identity doubling as the plan identity is allowed, with a warning
+# Usage: expect_warned "<case name>" <yes|no> [VAR=value ...]
+expect_warned() {
+  local name="$1" want="$2" got=no
+  shift 2
+  cases=$((cases + 1))
+  if ! valid AZURE_CLIENT_ID=c AZURE_TENANT_ID=t "$@" > /dev/null; then
+    log_error "${name}: the inputs were refused"
+    sed 's/^/    /' "$WORK/log" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  grep -qF "apply identity (azure-client-id) because plan-azure-client-id isn't set" "$WORK/log" && got=yes
+  if [ "$got" == "$want" ]; then
+    log_success "$name"
+  else
+    log_error "${name}: expected warning=${want}, got ${got}"
+    sed 's/^/    /' "$WORK/log" >&2
+    failures=$((failures + 1))
+  fi
+}
+expect_warned "no plan identity or environment: passes, but warns" yes
+expect_warned "...not with a plan identity" no PLAN_AZURE_CLIENT_ID=p
+expect_warned "...and still with a plan environment, which isn't protection by itself" yes PLAN_ENVIRONMENT=prod-plan
+expect_warned "...with a client secret, the risk is the secret" yes HAS_AZURE_CLIENT_SECRET=true
+expect_warned "...not on a Dependabot PR, which isn't planned" no IS_DEPENDABOT=true
+expect_warned "...not on a fork PR, which isn't planned" no IS_FORK_PR=true
+
 cases=$((cases + 1))
 if output_of name validate-inputs.sh WORKING_DIR=iac/app VAR_FILES=missing.tfvars \
   COST_ESTIMATE=true POLICY=true > /dev/null; then
@@ -312,6 +342,168 @@ expect "...which doesn't depend on how the list is spaced" "$east" \
 expect "the title shows the call and its environment, always" \
   "OpenTofu: \`iac/app\` · \`prod\` → \`prod\`" \
   "$(output_of title names.sh WORKING_DIRECTORY=iac/app DEPLOYMENT=prod APPLY_ENVIRONMENT=prod)"
+
+# --- Mise scoping ------------------------------------------------------------------
+
+make_repo
+trusted="$(cd iac/app && source "$REPO_ROOT/shared/scripts/common.sh" && scope_mise_to_module && echo "$MISE_TRUSTED_CONFIG_PATHS")"
+expect "mise trusts only the module's own directory" "$(cd iac/app && pwd -P)" "$trusted"
+
+# --- Apply preflight -------------------------------------------------------------
+
+# A target branch that moved on by one commit, changing iac/app/main.tf and
+# docs/readme.md, and a stub gh whose compare answer lists 300 unrelated
+# files (the API's cap) -- so only git can tell what really changed.
+PREFLIGHT="$REPO_ROOT/shared/scripts/apply-preflight.sh"
+mkdir -p "$WORK/bin"
+cat > "$WORK/bin/gh" << 'STUB'
+#!/usr/bin/env bash
+cat "$GH_STUB_RESPONSE"
+STUB
+chmod +x "$WORK/bin/gh"
+
+make_origin() {
+  make_repo
+  git clone -q --bare . "$WORK/origin.git"
+  git -C "$WORK/origin.git" config uploadpack.allowFilter true
+  git -C "$WORK/origin.git" config uploadpack.allowAnySHA1InWant true
+  git remote add origin "file://$WORK/origin.git"
+  git fetch -q origin
+  for f in "$@"; do
+    mkdir -p "$(dirname "$f")"
+    echo '# moved on' >> "$f"
+  done
+  git add -A
+  git commit -qm "moved on"
+  git push -q origin main
+}
+
+compare_response() {
+  jq -n --argjson n "$1" '{ahead_by: 1, files: [range($n) | {filename: "unrelated/f\(.).txt"}]}' > "$WORK/compare.json"
+}
+
+# Usage: preflight [VAR=value ...]
+preflight() {
+  : > "$WORK/output"
+  env PATH="$WORK/bin:$PATH" GITHUB_OUTPUT="$WORK/output" GH_STUB_RESPONSE="$WORK/compare.json" \
+    GH_TOKEN=secret-token GITHUB_REPOSITORY=org/repo TARGET_BRANCH=main TARGET_SHA="$BASE" \
+    PREFLIGHT_PATHS=iac/app "$@" "$PREFLIGHT" > "$WORK/log" 2>&1
+}
+
+make_origin iac/app/main.tf docs/readme.md
+compare_response 3
+cases=$((cases + 1))
+if preflight; then
+  log_success "under 300 files, the API's list is used (git isn't asked)"
+else
+  log_error "under 300 files, the API's list is used: refused"
+  sed 's/^/    /' "$WORK/log" >&2
+  failures=$((failures + 1))
+fi
+
+compare_response 300
+expect_refused "300 files: git finds the relevant change the API list cut off" \
+  "Files this plan depends on changed on main since it was made (iac/app/main.tf)" \
+  ../../shared/scripts/apply-preflight.sh PATH="$WORK/bin:$PATH" GH_STUB_RESPONSE="$WORK/compare.json" \
+  GH_TOKEN=secret-token GITHUB_REPOSITORY=org/repo TARGET_BRANCH=main TARGET_SHA="$BASE" PREFLIGHT_PATHS=iac/app
+# Neither the token nor its base64 form may reach the log, apart from the
+# mask command that tells the runner to hide it (only emitted in Actions)
+encoded_token="$(printf 'x-access-token:%s' secret-token | base64 | tr -d '\n')"
+assert_token_unlogged() {
+  cases=$((cases + 1))
+  if grep -v '^::add-mask::' "$WORK/log" | grep -qF -e "secret-token" -e "$encoded_token"; then
+    log_error "$1: the token (or its encoded form) was logged"
+    failures=$((failures + 1))
+  else
+    log_success "$1"
+  fi
+}
+assert_token_unlogged "...and the token never reaches the log"
+
+# In Actions, the encoded credential is masked as a command of its own, never
+# captured as if it were a changed file
+cases=$((cases + 1))
+if preflight GITHUB_ACTIONS=true PREFLIGHT_PATHS=. ; then
+  log_error "300 files, in Actions: the relevant change went unnoticed"
+  failures=$((failures + 1))
+elif [ "$(grep -cxF "::add-mask::${encoded_token}" "$WORK/log")" -eq 1 ] \
+  && ! grep -qF "since it was made (::add-mask" "$WORK/log" \
+  && [ "$(grep -cF "$encoded_token" "$WORK/log")" -eq 1 ]; then
+  log_success "300 files, in Actions: the encoded token is masked, and appears nowhere else"
+else
+  log_error "300 files, in Actions: the encoded token is not masked exactly once:"
+  sed 's/^/    /' "$WORK/log" >&2
+  failures=$((failures + 1))
+fi
+
+cases=$((cases + 1))
+if preflight PREFLIGHT_PATHS=iac/other; then
+  log_success "300 files: a change elsewhere doesn't stop the apply"
+else
+  log_error "300 files: a change elsewhere doesn't stop the apply: refused"
+  sed 's/^/    /' "$WORK/log" >&2
+  failures=$((failures + 1))
+fi
+
+# A shallow checkout, as actions/checkout makes by default
+git clone -q --depth 1 "file://$WORK/origin.git" "$WORK/shallow"
+cd "$WORK/shallow"
+cases=$((cases + 1))
+if preflight; then
+  log_error "300 files, shallow checkout: the relevant change went unnoticed"
+  failures=$((failures + 1))
+elif grep -qF "(iac/app/main.tf)" "$WORK/log"; then
+  log_success "300 files: a shallow checkout finds the relevant change"
+else
+  log_error "300 files, shallow checkout: refused, but not for the change:"
+  sed 's/^/    /' "$WORK/log" >&2
+  failures=$((failures + 1))
+fi
+cases=$((cases + 1))
+if preflight PREFLIGHT_PATHS=iac/other; then
+  log_success "...and ignores a change elsewhere"
+else
+  log_error "...and ignores a change elsewhere: refused"
+  sed 's/^/    /' "$WORK/log" >&2
+  failures=$((failures + 1))
+fi
+
+cd "$WORK"
+mkdir -p "$WORK/not-a-repo"
+cd "$WORK/not-a-repo"
+cases=$((cases + 1))
+if preflight; then
+  log_error "300 files without git: it succeeded"
+  failures=$((failures + 1))
+elif grep -qF "git couldn't list the changes" "$WORK/log"; then
+  log_success "300 files without a usable checkout: refused, saying why"
+  assert_token_unlogged "...and the token stays out of the log on that path too"
+  preflight GITHUB_ACTIONS=true || true
+  assert_token_unlogged "...also in Actions"
+else
+  log_error "300 files without a usable checkout: refused, but not saying why:"
+  sed 's/^/    /' "$WORK/log" >&2
+  failures=$((failures + 1))
+fi
+
+# A checkout whose origin can't be fetched from: git's own error is logged
+git init -q "$WORK/bad-origin"
+cd "$WORK/bad-origin"
+git remote add origin "file://$WORK/does-not-exist.git"
+cases=$((cases + 1))
+if preflight; then
+  log_error "300 files, unreachable origin: it succeeded"
+  failures=$((failures + 1))
+elif grep -qF "git said:" "$WORK/log"; then
+  log_success "300 files, unreachable origin: refused, with git's error"
+  assert_token_unlogged "...and the token stays out of that log too"
+  preflight GITHUB_ACTIONS=true || true
+  assert_token_unlogged "...also in Actions"
+else
+  log_error "300 files, unreachable origin: no git error logged:"
+  sed 's/^/    /' "$WORK/log" >&2
+  failures=$((failures + 1))
+fi
 
 if [ "$failures" -gt 0 ]; then
   log_error "${failures} of ${cases} OpenTofu script test(s) failed. Run tests/opentofu/scripts-test.sh to reproduce."

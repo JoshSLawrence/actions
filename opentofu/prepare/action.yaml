@@ -162,6 +162,7 @@ runs:
         AZURE_CLIENT_ID: ${{ inputs.azure-client-id }}
         AZURE_TENANT_ID: ${{ inputs.azure-tenant-id }}
         PLAN_AZURE_CLIENT_ID: ${{ inputs.plan-azure-client-id }}
+        PLAN_ENVIRONMENT: ${{ inputs.plan-environment }}
         HAS_AZURE_CLIENT_SECRET: ${{ inputs.has-azure-client-secret }}
         HAS_PLAN_AZURE_CLIENT_SECRET: ${{ inputs.has-plan-azure-client-secret }}
         CHECKS_RUNS_ON: ${{ inputs.checks-runs-on }}

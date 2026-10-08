@@ -335,10 +335,16 @@ cd_working_dir() {
 # - Pointing the global and system config at a directory that doesn't exist
 #   shuts out a runner's (or your machine's) ~/.config/mise and /etc/mise.
 #   Installed tools are unaffected: they live in mise's data directory.
+# - Trusting only the module's own directory is defence in depth: the
+#   ceiling and the empty global and system paths already keep other configs
+#   from loading, and jdx/mise-action would otherwise trust the whole
+#   workspace.
 scope_mise_to_module() {
   local nowhere="/nonexistent/actions-mise"
   MISE_CEILING_PATHS="$(cd .. && pwd -P)"
   export MISE_CEILING_PATHS
+  MISE_TRUSTED_CONFIG_PATHS="$(pwd -P)"
+  export MISE_TRUSTED_CONFIG_PATHS
   export MISE_CONFIG_DIR="$nowhere"
   export MISE_GLOBAL_CONFIG_FILE="$nowhere/config.toml"
   export MISE_SYSTEM_CONFIG_DIR="$nowhere"

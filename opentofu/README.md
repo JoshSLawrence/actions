@@ -262,6 +262,11 @@ way leaves its required checks pending forever.
   it, so it can't be applied. A `warn` doesn't fail by default, but every
   one is listed in the PR comment. `policy-fail-on-warn: true` makes any
   warn fail too; failing only above a severity isn't supported.
+- **Severity is informational:** a rule's `metadata.severity`, when it has
+  one, is shown next to its message. It never changes pass or fail. A rule
+  sets one by returning an object instead of a string, e.g.
+  `{"msg": "...", "severity": "high"}`, which conftest reports as
+  `metadata.severity`.
 
 ## Azure
 
@@ -321,8 +326,24 @@ present:
   `gh api repos/<owner>/<repo>/actions/oidc/customization/sub`
   (`sub_claim_prefix`). A mismatch fails `tofu init` with AADSTS700213,
   which quotes the subject presented.
-- Since each subject is bound to an environment, only the job running there
-  can use the identity: the apply identity only after approval.
+- A subject bound to an environment can only be presented by a job running
+  there. The apply identity is usable only after approval **if it is
+  federated only to `environment:<apply-environment>`**. Without
+  `plan-azure-client-id`, the plan job signs in as `azure-client-id`, with
+  the `pull_request` and `ref:refs/heads/main` subjects (or
+  `environment:<plan-environment>`), so anyone who can open a PR could get
+  a token that can write. `plan-environment` alone only helps if that
+  environment has required reviewers.
+- **Protect the apply identity.** Set `plan-azure-client-id` to a read-only
+  identity: Reader on the resources, plus whatever reading the
+  configuration makes (e.g. *Reader and Data Access* for storage account
+  keys, Key Vault reader roles for data sources), and Storage Blob Data
+  Reader on the state container (plans run with `-lock=false`). Federate
+  the apply identity only to `environment:<apply-environment>`. The
+  workflow warns when `plan-azure-client-id` isn't set.
+- The workflow sets only `ARM_USE_OIDC`; the azapi, azuread and msgraph
+  providers read GitHub's `ACTIONS_ID_TOKEN_REQUEST_*` themselves, so no
+  extra inputs are needed.
 
 Only Azure is supported for now. Other providers will get their own
 optional inputs (`aws-*`, `google-*`, ...) as they're needed.

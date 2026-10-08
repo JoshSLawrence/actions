@@ -20,5 +20,8 @@ deny contains msg if {
 warn contains msg if {
 	some rc in changes
 	rc.change.actions == ["delete", "create"]
-	msg := sprintf("%s would be replaced", [rc.address])
+	msg := {
+		"msg": sprintf("%s would be replaced", [rc.address]),
+		"severity": "high",
+	}
 }

@@ -10,7 +10,7 @@
 #   WORKING_DIR, VAR_FILES, NAME, APPLY_ENVIRONMENT, EXTRA_PATHS
 #   CHECKS, TESTS, TEST_FILTER, INTEGRATION_TESTS, INTEGRATION_TEST_FILTER
 #   POLICY, POLICY_PATH, POLICY_SOURCE, COST_ESTIMATE
-#   AZURE_CLIENT_ID, AZURE_TENANT_ID, PLAN_AZURE_CLIENT_ID
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, PLAN_AZURE_CLIENT_ID, PLAN_ENVIRONMENT
 #   CHECKS_RUNS_ON, INTEGRATION_TEST_RUNS_ON, PLAN_RUNS_ON, APPLY_RUNS_ON
 #   HAS_INFRACOST_API_KEY, HAS_AZURE_CLIENT_SECRET,
 #   HAS_PLAN_AZURE_CLIENT_SECRET
@@ -33,7 +33,7 @@ source "$SCRIPT_DIR/common.sh"
 
 log_config WORKING_DIR VAR_FILES NAME APPLY_ENVIRONMENT EXTRA_PATHS CHECKS TESTS TEST_FILTER \
   INTEGRATION_TESTS INTEGRATION_TEST_FILTER POLICY POLICY_PATH POLICY_SOURCE COST_ESTIMATE \
-  AZURE_CLIENT_ID AZURE_TENANT_ID PLAN_AZURE_CLIENT_ID CHECKS_RUNS_ON INTEGRATION_TEST_RUNS_ON \
+  AZURE_CLIENT_ID AZURE_TENANT_ID PLAN_AZURE_CLIENT_ID PLAN_ENVIRONMENT CHECKS_RUNS_ON INTEGRATION_TEST_RUNS_ON \
   PLAN_RUNS_ON APPLY_RUNS_ON IS_FORK_PR IS_DEPENDABOT
 
 problems=()
@@ -155,6 +155,18 @@ fi
 while IFS= read -r line; do
   [ -n "$line" ] && problem "$line"
 done <<< "$azure"
+
+# Not a problem (many callers accept it), but worth saying: without a plan
+# identity, the plan job signs in as the apply identity. plan-environment
+# doesn't change that: the apply identity then has to trust that environment,
+# which usually has no required reviewers.
+if [ -z "$secrets_skipped" ] && [ -n "${AZURE_CLIENT_ID:-}" ] && [ -z "${PLAN_AZURE_CLIENT_ID:-}" ]; then
+  if is_true "${HAS_AZURE_CLIENT_SECRET:-false}"; then
+    log_warn "Plans use the apply identity (azure-client-id) because plan-azure-client-id isn't set, so pull request plans receive its client secret: anyone who can open a PR could get a credential that can write. Set plan-azure-client-id (with plan-azure-client-secret) to a read-only identity."
+  else
+    log_warn "Plans sign in with the apply identity (azure-client-id) because plan-azure-client-id isn't set, so its federated credentials must trust the plan job's subject (pull_request and main, or environment:${PLAN_ENVIRONMENT:-<plan-environment>}, which usually has no required reviewers): anyone who can open a PR could get a token that can write. Set plan-azure-client-id to a read-only identity and federate azure-client-id only to environment:${APPLY_ENVIRONMENT:-<apply-environment>}."
+  fi
+fi
 
 # --- Runners ---------------------------------------------------------------------
 
