@@ -343,8 +343,7 @@ present:
   workflow warns when `plan-azure-client-id` isn't set.
 - The workflow sets only `ARM_USE_OIDC`; the azapi, azuread and msgraph
   providers read GitHub's `ACTIONS_ID_TOKEN_REQUEST_*` themselves, so no
-  extra inputs are needed. Never set `ARM_OIDC_REQUEST_URL`: it breaks
-  msgraph with a 405.
+  extra inputs are needed.
 
 Only Azure is supported for now. Other providers will get their own
 optional inputs (`aws-*`, `google-*`, ...) as they're needed.
