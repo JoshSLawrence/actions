@@ -231,7 +231,7 @@ expect_warned() {
     failures=$((failures + 1))
     return
   fi
-  grep -qF "Plans sign in with the apply identity" "$WORK/log" && got=yes
+  grep -qF "apply identity (azure-client-id) because plan-azure-client-id isn't set" "$WORK/log" && got=yes
   if [ "$got" == "$want" ]; then
     log_success "$name"
   else
@@ -242,7 +242,9 @@ expect_warned() {
 }
 expect_warned "no plan identity or environment: passes, but warns" yes
 expect_warned "...not with a plan identity" no PLAN_AZURE_CLIENT_ID=p
-expect_warned "...not with a plan environment" no PLAN_ENVIRONMENT=prod-plan
+expect_warned "...and still with a plan environment, which isn't protection by itself" yes PLAN_ENVIRONMENT=prod-plan
+expect_warned "...with a client secret, the risk is the secret" yes HAS_AZURE_CLIENT_SECRET=true
+expect_warned "...not on a Dependabot PR, which isn't planned" no IS_DEPENDABOT=true
 expect_warned "...not on a fork PR, which isn't planned" no IS_FORK_PR=true
 
 cases=$((cases + 1))
@@ -404,13 +406,18 @@ expect_refused "300 files: git finds the relevant change the API list cut off" \
   "Files this plan depends on changed on main since it was made (iac/app/main.tf)" \
   ../../shared/scripts/apply-preflight.sh PATH="$WORK/bin:$PATH" GH_STUB_RESPONSE="$WORK/compare.json" \
   GH_TOKEN=secret-token GITHUB_REPOSITORY=org/repo TARGET_BRANCH=main TARGET_SHA="$BASE" PREFLIGHT_PATHS=iac/app
-cases=$((cases + 1))
-if grep -q "secret-token" "$WORK/log"; then
-  log_error "the token never reaches the log: it was logged"
-  failures=$((failures + 1))
-else
-  log_success "...and the token never reaches the log"
-fi
+# Neither the token nor its base64 form may reach the log
+encoded_token="$(printf 'x-access-token:%s' secret-token | base64 | tr -d '\n')"
+assert_token_unlogged() {
+  cases=$((cases + 1))
+  if grep -qF -e "secret-token" -e "$encoded_token" "$WORK/log"; then
+    log_error "$1: the token (or its encoded form) was logged"
+    failures=$((failures + 1))
+  else
+    log_success "$1"
+  fi
+}
+assert_token_unlogged "...and the token never reaches the log"
 
 cases=$((cases + 1))
 if preflight PREFLIGHT_PATHS=iac/other; then
@@ -423,13 +430,23 @@ fi
 
 # A shallow checkout, as actions/checkout makes by default
 git clone -q --depth 1 "file://$WORK/origin.git" "$WORK/shallow"
-git -C "$WORK/shallow" fetch -q --depth 1 origin "$BASE"
 cd "$WORK/shallow"
 cases=$((cases + 1))
-if preflight PREFLIGHT_PATHS=iac/other; then
-  log_success "300 files: works in a shallow checkout"
+if preflight; then
+  log_error "300 files, shallow checkout: the relevant change went unnoticed"
+  failures=$((failures + 1))
+elif grep -qF "(iac/app/main.tf)" "$WORK/log"; then
+  log_success "300 files: a shallow checkout finds the relevant change"
 else
-  log_error "300 files: works in a shallow checkout: refused"
+  log_error "300 files, shallow checkout: refused, but not for the change:"
+  sed 's/^/    /' "$WORK/log" >&2
+  failures=$((failures + 1))
+fi
+cases=$((cases + 1))
+if preflight PREFLIGHT_PATHS=iac/other; then
+  log_success "...and ignores a change elsewhere"
+else
+  log_error "...and ignores a change elsewhere: refused"
   sed 's/^/    /' "$WORK/log" >&2
   failures=$((failures + 1))
 fi
@@ -443,8 +460,26 @@ if preflight; then
   failures=$((failures + 1))
 elif grep -qF "git couldn't list the changes" "$WORK/log"; then
   log_success "300 files without a usable checkout: refused, saying why"
+  assert_token_unlogged "...and the token stays out of the log on that path too"
 else
   log_error "300 files without a usable checkout: refused, but not saying why:"
+  sed 's/^/    /' "$WORK/log" >&2
+  failures=$((failures + 1))
+fi
+
+# A checkout whose origin can't be fetched from: git's own error is logged
+git init -q "$WORK/bad-origin"
+cd "$WORK/bad-origin"
+git remote add origin "file://$WORK/does-not-exist.git"
+cases=$((cases + 1))
+if preflight; then
+  log_error "300 files, unreachable origin: it succeeded"
+  failures=$((failures + 1))
+elif grep -qF "git said:" "$WORK/log"; then
+  log_success "300 files, unreachable origin: refused, with git's error"
+  assert_token_unlogged "...and the token stays out of that log too"
+else
+  log_error "300 files, unreachable origin: no git error logged:"
   sed 's/^/    /' "$WORK/log" >&2
   failures=$((failures + 1))
 fi

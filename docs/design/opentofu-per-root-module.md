@@ -509,11 +509,14 @@ and apply jobs:
   (`environment:prod`, `environment:prod-plan`, `pull_request`), so only
   the job running there can use it. That protects the apply identity only
   if it is federated to `environment:<apply-environment>` alone: without
-  `plan-azure-client-id` (or `plan-environment`) the plan job uses
-  `azure-client-id` with the `pull_request` and main subjects, which
-  anyone who can open a PR presents. Use a read-only `plan-azure-client-id`
-  (plans run with `-lock=false`); `validate-inputs.sh` warns when neither
-  is set.
+  `plan-azure-client-id` the plan job uses `azure-client-id` with the
+  `pull_request` and main subjects (or `environment:<plan-environment>`),
+  which anyone who can open a PR presents; `plan-environment` alone only
+  helps if that environment has required reviewers. Use a read-only
+  `plan-azure-client-id`: Reader on the resources plus whatever reading the
+  configuration makes (*Reader and Data Access*, Key Vault reader roles),
+  and Storage Blob Data Reader on the state container (plans run with
+  `-lock=false`). `validate-inputs.sh` warns when it isn't set.
 - **Secrets are masked** in the log, like any secret passed to a workflow.
 
 ### Private modules and policies

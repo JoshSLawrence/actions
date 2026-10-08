@@ -263,7 +263,10 @@ way leaves its required checks pending forever.
   one is listed in the PR comment. `policy-fail-on-warn: true` makes any
   warn fail too; failing only above a severity isn't supported.
 - **Severity is informational:** a rule's `metadata.severity`, when it has
-  one, is shown next to its message. It never changes pass or fail.
+  one, is shown next to its message. It never changes pass or fail. A rule
+  sets one by returning an object instead of a string, e.g.
+  `{"msg": "...", "severity": "high"}`, which conftest reports as
+  `metadata.severity`.
 
 ## Azure
 
@@ -326,19 +329,22 @@ present:
 - A subject bound to an environment can only be presented by a job running
   there. The apply identity is usable only after approval **if it is
   federated only to `environment:<apply-environment>`**. Without
-  `plan-azure-client-id` (or `plan-environment`), the plan job signs in as
-  `azure-client-id` with the `pull_request` and `ref:refs/heads/main`
-  subjects, so anyone who can open a PR could get a token that can write.
+  `plan-azure-client-id`, the plan job signs in as `azure-client-id`, with
+  the `pull_request` and `ref:refs/heads/main` subjects (or
+  `environment:<plan-environment>`), so anyone who can open a PR could get
+  a token that can write. `plan-environment` alone only helps if that
+  environment has required reviewers.
 - **Protect the apply identity.** Set `plan-azure-client-id` to a read-only
-  identity (Reader on the resources and Storage Blob Data Reader on the
-  state container; enough, since plans run with `-lock=false`), and
-  federate the apply identity only to `environment:<apply-environment>`.
-  The workflow warns when neither `plan-azure-client-id` nor
-  `plan-environment` is set.
-- The azapi, azuread, msgraph and azuredevops providers read the same
-  `ARM_*` variables and GitHub's `ACTIONS_ID_TOKEN_REQUEST_*`, so they need
-  no extra inputs. Never set `ARM_OIDC_REQUEST_URL`: it breaks msgraph with
-  a 405.
+  identity: Reader on the resources, plus whatever reading the
+  configuration makes (e.g. *Reader and Data Access* for storage account
+  keys, Key Vault reader roles for data sources), and Storage Blob Data
+  Reader on the state container (plans run with `-lock=false`). Federate
+  the apply identity only to `environment:<apply-environment>`. The
+  workflow warns when `plan-azure-client-id` isn't set.
+- The workflow sets only `ARM_USE_OIDC`; the azapi, azuread and msgraph
+  providers read GitHub's `ACTIONS_ID_TOKEN_REQUEST_*` themselves, so no
+  extra inputs are needed. Never set `ARM_OIDC_REQUEST_URL`: it breaks
+  msgraph with a 405.
 
 Only Azure is supported for now. Other providers will get their own
 optional inputs (`aws-*`, `google-*`, ...) as they're needed.
