@@ -28,7 +28,7 @@ repos:
         name: Reusable workflows' shared inputs in sync
         entry: .github/scripts/check-workflow-inputs.sh
         language: system
-        files: ^\.github/(workflows/(datafactory|synapse).*\.yaml|scripts/check-workflow-inputs\.sh)$
+        files: ^\.github/(workflows/(datafactory|synapse|opentofu).*\.yaml|scripts/check-workflow-inputs\.sh)$
         pass_filenames: false
       - id: opentofu-script-tests
         name: OpenTofu script tests

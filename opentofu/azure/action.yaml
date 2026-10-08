@@ -2,9 +2,11 @@ name: OpenTofu Azure credentials
 description: >-
   Exports the azurerm provider's and backend's ARM_* variables for the rest
   of the job from the workflow's Azure inputs and secrets, for one job's
-  role: azure-client-id is the apply (and integration test) identity,
-  plan-azure-client-id overrides it for the plan job, a client secret means
-  secret auth and none means OIDC. Microsoft Entra ID storage auth is on
+  role: azure-client-id is the apply identity (and the integration tests',
+  unless overridden), plan-azure-client-id overrides it for the plan job and
+  integration-test-azure-client-id for the integration test job, each as a
+  pair with its secret; a client secret means secret auth and none means
+  OIDC. Microsoft Entra ID storage auth is on
   unless use-azuread is "false". Sets nothing else without a client ID.
 
 inputs:
@@ -35,6 +37,14 @@ inputs:
     description: The plan-azure-client-secret secret.
     required: false
     default: ""
+  test-client-id:
+    description: The integration-test-azure-client-id input.
+    required: false
+    default: ""
+  test-client-secret:
+    description: The integration-test-azure-client-secret secret.
+    required: false
+    default: ""
   use-azuread:
     description: '"true" (default) for Microsoft Entra ID auth to storage.'
     required: false
@@ -54,4 +64,6 @@ runs:
         AZURE_CLIENT_SECRET: ${{ inputs.client-secret }}
         PLAN_AZURE_CLIENT_ID: ${{ inputs.plan-client-id }}
         PLAN_AZURE_CLIENT_SECRET: ${{ inputs.plan-client-secret }}
+        INTEGRATION_TEST_AZURE_CLIENT_ID: ${{ inputs.test-client-id }}
+        INTEGRATION_TEST_AZURE_CLIENT_SECRET: ${{ inputs.test-client-secret }}
         AZURE_USE_AZUREAD: ${{ inputs.use-azuread }}

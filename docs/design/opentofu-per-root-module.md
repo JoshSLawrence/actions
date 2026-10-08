@@ -1,7 +1,8 @@
 # Design: one OpenTofu workflow call per root module
 
 - **Status:** approved (revision 3), 2026-10-06; drift dropped from
-  `v0.2.0` in implementation review
+  `v0.2.0` in implementation review and back in `v0.4.0` (see
+  [Drift detection](#drift-detection))
 - **Date:** 2026-10-06
 - **Replaces:** the discovery-based design on PR #8 (unmerged), and the
   `v0.1.0` OpenTofu interface on `main`
@@ -105,8 +106,9 @@ PR #8, or GitHub's documentation.
 - Providers other than Azure (AWS, Google Cloud, the GitHub provider, ...),
   and generic environment variables or secrets. They're added as named
   inputs when they're needed (see [Adding a provider](#adding-a-provider)).
-- Drift detection: removed in this release, back later (see
-  [Decisions](#decisions)).
+- Drift detection inside `opentofu.yaml`: it was removed in this release
+  and came back in `v0.4.0` as its own workflow (see
+  [Drift detection](#drift-detection)).
 - Orchestration across calls beyond what Actions offers (`needs:`, `if:`).
 
 ## Design
@@ -219,7 +221,8 @@ prepare ──> checks ──> integration-tests ──> plan ──> apply ─�
   call's var files where the tool takes them (see [Checks](#checks)). No
   credentials, so fork PRs can run it.
 - **integration-tests:** `tofu test` with the call's var files and the
-  apply identity, in `integration-test-environment`. Off by default.
+  apply identity (or `integration-test-azure-client-id`), in
+  `integration-test-environment`. Off by default.
 - **plan:** plans to a saved file in `plan-environment`, renders the
   summary (with optional policy and cost), uploads the plan, comments on
   the PR. Skipped for PRs from forks and Dependabot.
@@ -227,6 +230,114 @@ prepare ──> checks ──> integration-tests ──> plan ──> apply ─�
   stale plan, checks the plan's digest, applies exactly that plan, updates
   the PR comment (see [When it applies](#when-it-applies)).
 - **result:** one check per call, for branch protection.
+
+Every job that runs `tofu init` (checks, integration-tests, plan, apply)
+restores the provider cache first (see [Provider cache](#provider-cache)).
+
+### Drift detection
+
+`opentofu-drift.yaml` (added in `v0.4.0`, additive) plans one deployment on a
+schedule and reports whether the live infrastructure still matches the
+configuration. It is a second workflow, called once per deployment like
+`opentofu.yaml`, and takes the same inputs for what it shares with it
+(`working-directory`, `var-files`, `name`, the Azure inputs, `runs-on`,
+`provider-cache`, `mise-version`; `.github/scripts/check-workflow-inputs.sh`
+keeps them identical), so a deployment's drift call repeats its main call's
+values.
+
+```text
+prepare ──> drift
+          (plan, report)
+```
+
+- **prepare:** the same `opentofu/prepare` action, in drift mode
+  (`DRIFT=true` in `validate-inputs.sh`): every input problem at once, no
+  apply environment to require, no change detection (a drift check always
+  plans), and the drift job's `environment`, if any, checked to exist before
+  a job names it. A separate job for the same reason as in `opentofu.yaml`:
+  naming a missing environment in the job itself would create it,
+  unprotected, before any step could notice.
+- **drift:** `shared/setup`, the provider cache, `opentofu/azure` as the plan
+  role, then `opentofu/plan` (no policy, cost estimate or checks section;
+  `-lock=false` like every plan), then `opentofu/drift-report`. The plan is
+  never uploaded: it embeds a copy of the state, and nothing needs it.
+- **Identity:** the read-only `plan-azure-client-id` is enough on its own;
+  `azure-client-id` is only the fallback for a caller with one identity, and
+  validation warns when the check signs in with it. `environment` binds the
+  OIDC subject like `plan-environment` does; unlike an apply environment it
+  can't have required reviewers, since nobody is there to approve a
+  scheduled run.
+- **The report** reads the plan action's `exit-code` output (0 no drift, 2
+  drift, anything else, or none because the plan never ran, an error) and
+  its `summary-file` (the plan itself is deleted by the plan action's last
+  step). It runs after a failed plan too, so a broken check is reported as
+  one:
+  - *Error:* the job fails, and the issues are left as they were.
+  - *Drift:* one issue per deployment, found by a hidden marker (derived
+    from the plan action's key) among the open issues with the first of
+    `issue-labels`, authored by the bot. Created with the summary as its
+    body (cut to GitHub's limit by `fit_github_body`), or its body updated
+    in place, which notifies nobody. An issue carrying the `drift-resolved`
+    label gets it removed and one comment that the drift is back.
+  - *No drift:* an open drift issue gets one comment and the
+    `drift-resolved` label, once. It is not closed: a person decides when
+    it's dealt with, and an auto-closing issue would reopen as a new one
+    (and a new notification) every time the drift flickers.
+  - `fail-on-drift` fails the job when there is drift, after reporting it.
+  - Issues are only touched on the default branch: the marker has no ref in
+    it, so a manual run on a feature branch could otherwise resolve the
+    default branch's issue. Other refs still plan and output `drift`.
+  - A created issue is checked for its first label (the one that finds it
+    again) and gets it added if GitHub dropped it, or the next check would
+    open a duplicate.
+  - `issue-plan: false` leaves the plan text out of the issue body (change
+    counts, resource addresses and the run link only): GitHub masks secrets
+    in logs but not in issue bodies, and a drift plan can show values changed
+    outside OpenTofu that are not marked sensitive. Recommended, like
+    `issues: false`, for public repositories.
+  - `issues: false` only reports in the job summary and the outputs `drift`
+    (`true`, `false` or `error`; empty if the report step itself failed)
+    and `issue` (the number, or empty).
+- **Concurrency:** one drift job per deployment at a time (not cancelled), so
+  two runs can't both open the issue.
+- **Permissions:** `actions: read` (the environment check), `contents: read`,
+  `id-token: write` and `issues: write` (`actions: read` is for the prepare
+  job's environment existence check). A new workflow, so requiring
+  `issues: write` of its callers is not a breaking change.
+- **Not in the first version:** one issue shared by several deployments, a
+  summary dashboard, notifications other than GitHub's own (use
+  `fail-on-drift` and Actions' failure notifications, or the outputs), and
+  closing issues automatically.
+
+### Provider cache
+
+Every job that runs `tofu init` (checks, integration tests, plan, apply)
+restores and saves OpenTofu's provider plugin cache, so providers are
+downloaded once and not once per job per run:
+
+- **One place.** The `opentofu/provider-cache` composite action sets
+  `TF_PLUGIN_CACHE_DIR` (a directory under `runner.temp`, made absolute
+  because tools run from inside the module) and runs `actions/cache` on it,
+  keyed on the runner's OS and architecture and the hash of the module's
+  `.terraform.lock.hcl`, matched exactly (no restore-keys prefix, which
+  would carry every old provider version into each new entry and grow
+  against the repository's cache limit). Each of those jobs calls it once
+  after `shared/setup`. `provider-cache: false` makes it do nothing.
+- **Compatible with `-lockfile=readonly` and several inits per job.**
+  OpenTofu installs into the cache only providers it has verified, and
+  uses a cached one only if its checksum is in the lock file; otherwise it
+  downloads and verifies the provider again. So the lock file keeps the
+  last word, and the checks job's `init -backend=false`, the tests' init
+  and the plan's init can share one directory (the cache is locked per
+  provider while being written).
+- **`TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE` is not set.** It would
+  make a lock file with no `h1:` checksum for the runner's platform use the
+  cache anyway, by not verifying the cached package. That trades the
+  supply-chain check the lock file gives for speed; the documented fix is to
+  commit the platform's checksums (`tofu providers lock
+  -platform=linux_amd64`).
+- **Cache scope.** Pull requests can read the default branch's entries but
+  write their own, visible to that PR only.
 
 ### Inputs
 
@@ -253,10 +364,11 @@ Without `var-files`, the module uses its defaults (and its
 | `plan-environment`                 | none                 | The plan job's environment; none = no environment                      |
 | `integration-test-environment`     | none                 | The integration test job's environment; none = no environment          |
 | **Azure** (secrets: see below)     |                      |                                                                        |
-| `azure-client-id`                  | none                 | Identity for the apply and integration test jobs, and plan by default  |
+| `azure-client-id`                  | none                 | Apply identity; also plans and integration tests unless overridden     |
 | `azure-tenant-id`                  | none                 | Tenant ID; required with any client ID                                 |
 | `azure-subscription-id`            | none                 | Subscription ID                                                        |
 | `plan-azure-client-id`             | `azure-client-id`    | Identity for the plan job, e.g. a read-only one                        |
+| `integration-test-azure-client-id` | `azure-client-id`    | Identity for the integration test job, e.g. a test-subscription one    |
 | `azure-use-azuread`                | `true`               | Microsoft Entra ID (RBAC) auth for storage: state and data plane       |
 | **Checks**                         |                      |                                                                        |
 | `checks`                           | `true`               | Run the checks job at all; `false` skips every check below             |
@@ -292,6 +404,8 @@ Without `var-files`, the module uses its defaults (and its
 | `apply-runs-on`                    | `runs-on`            | Runner of the apply job                                                |
 | `timeout-minutes`                  | `30`                 | Timeout for each job                                                   |
 | `mise-version`                     | the setup pin        | The mise version; the module's `mise.toml` pins its tools              |
+| **Providers**                      |                      |                                                                        |
+| `provider-cache`                   | `true`               | Cache providers across runs and jobs, keyed on the lock file           |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -309,12 +423,13 @@ spaces:
 
 <!-- markdownlint-disable MD013 -->
 
-| Secret                     | Description                                                        |
-| -------------------------- | ------------------------------------------------------------------ |
-| `azure-client-secret`      | Secret of `azure-client-id`; without it, OIDC                      |
-| `plan-azure-client-secret` | Secret of `plan-azure-client-id`; without it, OIDC                 |
-| `modules-token`            | Reads private GitHub repositories used as module or policy sources |
-| `infracost-api-key`        | For `cost-estimate`                                                |
+| Secret                                 | Description                                                        |
+| -------------------------------------- | ------------------------------------------------------------------ |
+| `azure-client-secret`                  | Secret of `azure-client-id`; without it, OIDC                      |
+| `plan-azure-client-secret`             | Secret of `plan-azure-client-id`; without it, OIDC                 |
+| `integration-test-azure-client-secret` | Secret of `integration-test-azure-client-id`; without it, OIDC     |
+| `modules-token`                        | Reads private GitHub repositories used as module or policy sources |
+| `infracost-api-key`                    | For `cost-estimate`                                                |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -352,8 +467,11 @@ what to do about each:
   `mise.toml`: `opentofu`; `tflint`, `trivy`, `terraform-docs` for their
   checks; `conftest` for `policy`; `infracost` for `cost-estimate`.
 - Azure: a client ID needs `azure-tenant-id`; `azure-client-secret` needs
-  `azure-client-id`; `plan-azure-client-id` needs `azure-client-id`;
-  `plan-azure-client-secret` needs `plan-azure-client-id`.
+  `azure-client-id`; `plan-azure-client-id` and
+  `integration-test-azure-client-id` need `azure-client-id`;
+  `plan-azure-client-secret` needs `plan-azure-client-id`;
+  `integration-test-azure-client-secret` needs
+  `integration-test-azure-client-id`.
 - `cost-estimate` needs the `infracost-api-key` secret.
 - `policy` needs `policy-source` or `policy-path`, and every `policy-path`
   directory exists (`policy-path: ""` to use only `policy-source`).
@@ -464,24 +582,26 @@ and apply jobs:
 
 <!-- markdownlint-disable MD013 -->
 
-| Variable                  | Integration test and apply jobs | Plan job                                       |
-| ------------------------- | ------------------------------- | ---------------------------------------------- |
-| `ARM_CLIENT_ID`           | `azure-client-id`               | `plan-azure-client-id`, else `azure-client-id` |
-| `ARM_CLIENT_SECRET`       | `azure-client-secret`           | the plan identity's secret (see below)         |
-| `ARM_TENANT_ID`           | `azure-tenant-id`               | `azure-tenant-id`                              |
-| `ARM_SUBSCRIPTION_ID`     | `azure-subscription-id`         | `azure-subscription-id`                        |
-| `ARM_USE_OIDC`            | `true` without a secret         | `true` without a secret                        |
-| `ARM_USE_AZUREAD`         | `azure-use-azuread`             | `azure-use-azuread`                            |
-| `ARM_STORAGE_USE_AZUREAD` | `azure-use-azuread`             | `azure-use-azuread`                            |
+| Variable                  | Apply job               | Plan job                                       | Integration test job                                       |
+| ------------------------- | ----------------------- | ---------------------------------------------- | ---------------------------------------------------------- |
+| `ARM_CLIENT_ID`           | `azure-client-id`       | `plan-azure-client-id`, else `azure-client-id` | `integration-test-azure-client-id`, else `azure-client-id` |
+| `ARM_CLIENT_SECRET`       | `azure-client-secret`   | the plan identity's secret (see below)         | the integration test identity's secret (see below)         |
+| `ARM_TENANT_ID`           | `azure-tenant-id`       | `azure-tenant-id`                              | `azure-tenant-id`                                          |
+| `ARM_SUBSCRIPTION_ID`     | `azure-subscription-id` | `azure-subscription-id`                        | `azure-subscription-id`                                    |
+| `ARM_USE_OIDC`            | `true` without a secret | `true` without a secret                        | `true` without a secret                                    |
+| `ARM_USE_AZUREAD`         | `azure-use-azuread`     | `azure-use-azuread`                            | `azure-use-azuread`                                        |
+| `ARM_STORAGE_USE_AZUREAD` | `azure-use-azuread`     | `azure-use-azuread`                            | `azure-use-azuread`                                        |
 
 <!-- markdownlint-enable MD013 -->
 
 - **`azure-client-id` is the apply identity, always**, the one that can
   write. `plan-azure-client-id` overrides it for the plan job only, the way
-  `plan-environment` adds a plan-only environment. The plan identity
-  switches as a pair: with `plan-azure-client-id`, the plan job uses
-  `plan-azure-client-secret` (or OIDC without it), never the apply
-  identity's secret.
+  `plan-environment` adds a plan-only environment, and
+  `integration-test-azure-client-id` does the same for the integration test
+  job. Each override switches as a pair: with `plan-azure-client-id`, the
+  plan job uses `plan-azure-client-secret` (or OIDC without it), never the
+  apply identity's secret; likewise the integration tests with
+  `integration-test-azure-client-secret`.
 - **OIDC or a client secret, per job.** A job with a client secret uses it;
   one without uses OIDC (`ARM_USE_OIDC=true`; the jobs already request
   `id-token: write`). Nothing else chooses the method, so a job can't end
@@ -502,9 +622,12 @@ and apply jobs:
   [Decisions](#decisions)).
 - **Approval.** A secret the caller passes reaches only the jobs that use
   it. The apply job's identity (`azure-client-id` and its secret) is also
-  the integration test job's, which runs before the plan: give
-  `integration-test-environment` reviewers if that matters, and document
-  that `azure-client-id` needs whatever the tests need. With OIDC, each
+  the integration test job's by default, and that job runs before the plan,
+  with whatever code the PR holds: give it its own
+  `integration-test-azure-client-id` (scoped to a test subscription or
+  resource group) and/or an `integration-test-environment` with required
+  reviewers; otherwise `azure-client-id` needs whatever the tests need. With
+  OIDC, each
   identity's federated credential is bound to a subject
   (`environment:prod`, `environment:prod-plan`, `pull_request`), so only
   the job running there can use it. That protects the apply identity only
@@ -516,7 +639,10 @@ and apply jobs:
   `plan-azure-client-id`: Reader on the resources plus whatever reading the
   configuration makes (*Reader and Data Access*, Key Vault reader roles),
   and Storage Blob Data Reader on the state container (plans run with
-  `-lock=false`). `validate-inputs.sh` warns when it isn't set.
+  `-lock=false`). `validate-inputs.sh` warns when it isn't set, and likewise
+  whenever integration tests would run as the apply identity (no
+  `integration-test-azure-client-id`): an `integration-test-environment`
+  only helps if it has required reviewers, which it can't tell.
 - **Secrets are masked** in the log, like any secret passed to a workflow.
 
 ### Private modules and policies
@@ -617,7 +743,8 @@ with the plan override and Entra ID storage auth.
   validation and `export-declared.sh`.
 - The generic `KEY=VALUE` export (`export-env.sh`).
 - Drift detection: `opentofu-drift.yaml`, `opentofu/drift-report` and its
-  example, until it returns in the per-call shape.
+  example, until it returned in the per-call shape in `v0.4.0` (see
+  [Drift detection](#drift-detection)).
 - `opentofu-config.yaml` and `opentofu-deploy.yaml`: their jobs move into
   `opentofu.yaml`.
 - The five `v0.1.0` OpenTofu examples, replaced by two: one module with
@@ -645,15 +772,28 @@ The OpenTofu README is rewritten around this design:
   files, no lock file), with a per-file `result` job. The fixtures don't
   use Azure, so the Azure mapping is covered by script tests; a real OIDC
   run against Azure comes later (see [Decisions](#decisions)).
+- **Drift in CI:** `opentofu-drift.yaml` runs against `basic` with
+  `issues: false`; its local state is empty on a fresh runner, so the plan
+  always has changes and a follow-up job asserts `drift == 'true'`
+  (`.github/scripts/assert-equal.sh`). Opening, updating and resolving
+  issues needs a real repository, so those paths are covered by script
+  tests with a stubbed `gh`.
 - **Script tests:** change detection (watched paths, events, diff
   failures) in throwaway Git repositories, like today's discovery tests;
   input validation (each rule, all problems reported at once); and the
-  Azure mapping (OIDC or secret per job, the plan override as a pair,
-  Entra ID storage auth).
+  Azure mapping (OIDC or secret per job, the plan and integration test
+  overrides as pairs, Entra ID storage auth); the provider cache setup; and
+  the drift report (the exit code mapping, `fail-on-drift`, and the issue
+  create, update, resolve and re-flag paths).
 - **Lint:** the existing hooks; the input sync check shrinks to the ARM
   families, since OpenTofu has one workflow.
 
 ### Versioning
+
+`v0.4.0` adds, without breaking `v0.3.x` callers: `opentofu-drift.yaml`,
+`integration-test-azure-client-id` and its secret, and `provider-cache`
+(on by default; it changes where providers come from, not what runs). The
+examples pin `@v0.4.0` where they use them.
 
 `v0.2.0`, breaking relative to `v0.1.0`: `opentofu.yaml` changes from the
 discovery entry point to the per-module workflow, the inner workflows and
@@ -692,13 +832,22 @@ Settled in review, with what we gave up, so they can be revisited:
 - **Warnings fail all or nothing.** `policy-fail-on-warn` fails on any
   warn; failing only above a severity needs a severity convention in the
   policies and is deferred.
-- **Drift detection is removed in `v0.2.0`** and comes back in a later
-  release in the same shape (one call per deployment, the same inputs).
-  Keeping it working meanwhile would have meant keeping discovery just for
-  it.
+- **Drift detection was removed in `v0.2.0`** (keeping it working would
+  have meant keeping discovery just for it) **and came back in `v0.4.0`**
+  in the same shape: one call per deployment, the same inputs, as a
+  separate workflow so `opentofu.yaml` keeps its meaning and its required
+  permissions. Its report is GitHub issues, as the old script's was; issues
+  are marked resolved rather than closed (see
+  [Drift detection](#drift-detection)).
 - **A real Azure run in CI later.** The Data Factory e2e already uses a
   real identity through OIDC; an OpenTofu fixture planning against Azure
   can reuse it.
+- **A provider cache by default.** It saves a download per job (a module's
+  providers can be hundreds of megabytes) at the price of cache storage
+  and one more action (`actions/cache`, SHA-pinned). On by default because
+  it never changes what runs, only where providers come from, and the lock
+  file still verifies them; `provider-cache: false` for runners with a cache
+  of their own or a ban on `actions/cache`.
 - **Runners per job.** `checks-runs-on`, `integration-test-runs-on`,
   `plan-runs-on` and `apply-runs-on` override `runs-on` for the jobs that
   do the work: those that reach the cloud (e.g. a runner group in a private
@@ -707,8 +856,12 @@ Settled in review, with what we gave up, so they can be revisited:
   Each is a label or JSON (from `{` or `[`), the forms `runs-on` itself
   takes, rather than separate group and label inputs per job. A plain label
   stays as before.
-- **Integration tests use the apply identity**, documented; a separate
-  `integration-test-azure-client-id` is added when a caller needs one.
+- **Integration tests use the apply identity unless told otherwise.**
+  `integration-test-azure-client-id` and its secret (added in `v0.4.0`)
+  give them an identity of their own, with the same pair semantics as the
+  plan identity. It stays optional, so existing callers are unaffected, and
+  the validation only warns when the tests would run ungated as the apply
+  identity.
 
 ## Alternatives considered
 

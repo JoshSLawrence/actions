@@ -107,7 +107,8 @@ jobs:
       policy-source: git::https://github.com/${{ github.repository }}.git//tests/fixtures/opentofu/policy?ref=${{ github.event.pull_request.head.sha || github.sha }}
 
   # Change detection on: plans and applies only when the fixture, this call
-  # or the OpenTofu workflow and its scripts changed. Checks off.
+  # or the OpenTofu workflow and its scripts changed. Checks off, and no
+  # provider cache (the others use it).
   e2e-tofu-staging:
     name: E2E tofu basic-staging-eu
     uses: $/.github/workflows/opentofu.yaml
@@ -121,6 +122,7 @@ jobs:
       var-files: deployments/staging-eu.tfvars
       apply-environment: staging
       checks: false
+      provider-cache: false
       extra-paths: |
         .github/workflows/opentofu.yaml
         opentofu/**
@@ -144,10 +146,51 @@ jobs:
       docs: false
       checks-runs-on: '{"labels": "ubuntu-latest"}'
 
+  # Drift detection: the fixture's state is local and empty on a fresh
+  # runner, so the plan always has changes and the call must report drift.
+  # Without issues (this repository keeps none for it) it only reports.
+  e2e-tofu-drift:
+    name: E2E tofu basic-drift
+    uses: $/.github/workflows/opentofu-drift.yaml
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      issues: write
+    with:
+      working-directory: tests/fixtures/opentofu/basic
+      var-files: deployments/dev.tfvars
+      issues: false
+
+  e2e-tofu-drift-found:
+    name: E2E tofu basic-drift found drift
+    needs: e2e-tofu-drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the drift output
+        run: .github/scripts/assert-equal.sh
+        env:
+          WHAT: The drift output
+          EXPECTED: "true"
+          ACTUAL: ${{ needs.e2e-tofu-drift.outputs.drift }}
+
   # The one check for every OpenTofu call above
   e2e-opentofu:
     name: E2E OpenTofu
-    needs: [e2e-tofu-dev, e2e-tofu-prod, e2e-tofu-staging, e2e-tofu-minimal]
+    needs:
+      - e2e-tofu-dev
+      - e2e-tofu-prod
+      - e2e-tofu-staging
+      - e2e-tofu-minimal
+      - e2e-tofu-drift
+      - e2e-tofu-drift-found
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -172,4 +172,4 @@ fi
 plan_diff="$(mktemp)"
 TMP_FILES+=("$plan_diff")
 sed -E 's/^([[:space:]]+)(-\/\+|\+\/-|[-+~])( )/\2\1\3/' "$PLAN_TEXT" > "$plan_diff"
-collapsible_block "Full plan" "diff" "$plan_diff"
+collapsible_block "$FULL_PLAN_SUMMARY" "diff" "$plan_diff"

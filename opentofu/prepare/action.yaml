@@ -5,7 +5,9 @@ description: >-
   would otherwise create a missing one, unprotected), and decides whether
   this run plans -- on pull_request and push runs, only if a watched path
   changed -- and resolves the call's unique key. Check out with fetch-depth
-  0 so changes can be diffed. Needs actions read.
+  0 so changes can be diffed. Needs actions read. With drift, it prepares a
+  drift call instead: no apply environment, and no change detection, since a
+  drift check always plans.
 
 inputs:
   working-directory:
@@ -19,6 +21,21 @@ inputs:
     description: "Label for the call (default: the last var file's name)."
     required: false
     default: ""
+  drift:
+    description: >-
+      "true" when checking a drift call (opentofu-drift.yaml): apply-environment
+      isn't required, plan-environment is the drift job's environment, and
+      changes aren't detected (a drift check always plans).
+    required: false
+    default: "false"
+  issues:
+    description: '"true" when the drift call opens issues (drift only).'
+    required: false
+    default: "true"
+  issue-labels:
+    description: Labels of the drift call's issues (drift only).
+    required: false
+    default: opentofu-drift
   changed-only:
     description: '"true" to plan only when a watched path changed.'
     required: false
@@ -91,12 +108,20 @@ inputs:
     description: The plan-azure-client-id input.
     required: false
     default: ""
+  integration-test-azure-client-id:
+    description: The integration-test-azure-client-id input.
+    required: false
+    default: ""
   has-azure-client-secret:
     description: '"true" if the azure-client-secret secret was passed.'
     required: false
     default: "false"
   has-plan-azure-client-secret:
     description: '"true" if the plan-azure-client-secret secret was passed.'
+    required: false
+    default: "false"
+  has-integration-test-azure-client-secret:
+    description: '"true" if the integration-test-azure-client-secret secret was passed.'
     required: false
     default: "false"
   checks-runs-on:
@@ -144,6 +169,9 @@ runs:
       shell: bash
       run: '"${GITHUB_ACTION_PATH}/../scripts/validate-inputs.sh"'
       env:
+        DRIFT: ${{ inputs.drift }}
+        ISSUES: ${{ inputs.issues }}
+        ISSUE_LABELS: ${{ inputs.issue-labels }}
         WORKING_DIR: ${{ inputs.working-directory }}
         VAR_FILES: ${{ inputs.var-files }}
         NAME: ${{ inputs.name }}
@@ -163,8 +191,11 @@ runs:
         AZURE_TENANT_ID: ${{ inputs.azure-tenant-id }}
         PLAN_AZURE_CLIENT_ID: ${{ inputs.plan-azure-client-id }}
         PLAN_ENVIRONMENT: ${{ inputs.plan-environment }}
+        INTEGRATION_TEST_AZURE_CLIENT_ID: ${{ inputs.integration-test-azure-client-id }}
+        INTEGRATION_TEST_ENVIRONMENT: ${{ inputs.integration-test-environment }}
         HAS_AZURE_CLIENT_SECRET: ${{ inputs.has-azure-client-secret }}
         HAS_PLAN_AZURE_CLIENT_SECRET: ${{ inputs.has-plan-azure-client-secret }}
+        HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET: ${{ inputs.has-integration-test-azure-client-secret }}
         CHECKS_RUNS_ON: ${{ inputs.checks-runs-on }}
         INTEGRATION_TEST_RUNS_ON: ${{ inputs.integration-test-runs-on }}
         PLAN_RUNS_ON: ${{ inputs.plan-runs-on }}
@@ -195,8 +226,10 @@ runs:
           ${{ inputs.plan-environment }}
           ${{ inputs.integration-tests == 'true' && inputs.integration-test-environment || '' }}
 
+    # A drift check always plans
     - name: Detect changes
       id: changes
+      if: inputs.drift != 'true'
       shell: bash
       run: '"${GITHUB_ACTION_PATH}/../scripts/changes.sh"'
       env:

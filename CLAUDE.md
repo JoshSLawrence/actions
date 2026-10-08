@@ -39,8 +39,10 @@ catalog, layout and principles.
   - `arm/scripts/arm.sh`: what Data Factory and Synapse share (deployments
     of ARM parameters files, parameter layering, the export bundle,
     plans).
-- **OpenTofu is one reusable workflow, `opentofu.yaml`, called once per
-  deployment:** one root module, its var files, one apply environment.
+- **OpenTofu is two reusable workflows, called once per deployment:**
+  `opentofu.yaml` (one root module, its var files, one apply environment)
+  and `opentofu-drift.yaml` (the same deployment planned on a schedule and
+  reported as a GitHub issue; never applies, never uploads the plan).
   Callers write one job per deployment in their own workflow files; there's
   no discovery and no file format of our own. The design, with the
   decisions behind it, is `docs/design/opentofu-per-root-module.md`: don't
@@ -48,21 +50,24 @@ catalog, layout and principles.
   agreement). Jobs: prepare (`validate-inputs.sh`: every input problem at
   once; tool pins through `shared/setup` with `install: false`;
   `require-environments.sh`; `changes.sh`) → checks → integration-tests →
-  plan → apply → result. The composite actions are internals.
+  plan → apply → result. The drift workflow is prepare (the same action,
+  with `drift`: no apply environment, no change detection) → drift (plan,
+  then `drift-report.sh`). The composite actions are internals.
 - **OpenTofu change detection is inside the run** (`changes.sh`): it watches
   the module directory, the var files, the calling workflow file
   (`github.workflow_ref`) and `extra-paths`; the same paths make a plan
   stale. State keys come from a backend variable set in the var files;
   there's no `backend-config` or `.tfbackend` support.
 - **OpenTofu credentials are named provider inputs**, Azure only for now:
-  `azure-client-id` (the apply and integration test identity),
-  `plan-azure-client-id` (plan override, switching as a pair with its
-  secret), `azure-tenant-id`, `azure-subscription-id`, `azure-use-azuread`
-  (default true), and the `azure-client-secret` /
-  `plan-azure-client-secret` secrets; a secret means secret auth, none
-  means OIDC. `azure-env.sh` maps them to `ARM_*`; its rules live in
-  `azure_input_problems` (`opentofu/scripts/common.sh`), shared with input
-  validation. Add other providers as their own optional inputs.
+  `azure-client-id` (the apply identity, and the integration tests' unless
+  overridden), `plan-azure-client-id` and `integration-test-azure-client-id`
+  (overrides for their job, each switching as a pair with its secret),
+  `azure-tenant-id`, `azure-subscription-id`, `azure-use-azuread` (default
+  true), and the `azure-client-secret` / `plan-azure-client-secret` /
+  `integration-test-azure-client-secret` secrets; a secret means secret
+  auth, none means OIDC. `azure-env.sh` maps them to `ARM_*`; its rules
+  live in `azure_input_problems` (`opentofu/scripts/common.sh`), shared with
+  input validation. Add other providers as their own optional inputs.
 - **Data Factory and Synapse workflows** follow the same nested shape:
   `datafactory.yaml` (build the template once, resolve deployments) →
   `datafactory-deploy.yaml` (plan → apply one deployment); likewise
@@ -70,8 +75,9 @@ catalog, layout and principles.
   `shared/setup`, `shared/pr-comment` and `shared/result`.
 - **Workflow inputs stay in sync:**
   - An input means the same thing in every workflow of a family that has
-    it (the Data Factory and Synapse workflows). OpenTofu has a single
-    workflow.
+    it (the Data Factory and Synapse workflows, and the two OpenTofu
+    ones: `opentofu-drift.yaml` repeats `opentofu.yaml`'s inputs for the
+    same deployment).
   - Callers pass shared inputs through unchanged.
   - `.github/scripts/check-workflow-inputs.sh` enforces both. When you add
     or change an input, change it in every workflow that has it; the
@@ -89,6 +95,11 @@ catalog, layout and principles.
   or `[` (an array of labels or a runner group), parsed by the job's
   `runs-on` expression: copy that expression to a new job. OpenTofu checks
   the overrides up front (`runs_on_problem` in `shared/scripts/common.sh`).
+- **Providers are cached** by `opentofu/provider-cache` (restore and save
+  through `actions/cache`, keyed on the lock file), called by every job that
+  runs `tofu init`; `provider-cache: false` disables it. It never sets
+  `TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE`: the lock file keeps
+  verifying cached providers.
 - **Composite actions find their scripts** via
   `"${GITHUB_ACTION_PATH}/../scripts/<script>.sh"`, or
   `"${GITHUB_ACTION_PATH}/../../shared/scripts/<script>.sh"` (and

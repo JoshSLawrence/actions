@@ -1,0 +1,43 @@
+name: OpenTofu provider cache
+description: >-
+  Caches OpenTofu's providers across runs and jobs: points
+  TF_PLUGIN_CACHE_DIR at a directory for the rest of the job and restores it
+  from (and saves it to) the Actions cache, keyed on the runner's OS and
+  architecture and the root module's .terraform.lock.hcl, so a lock file
+  change gets a fresh entry.
+  OpenTofu still checks every cached provider against the lock file, so
+  -lockfile=readonly keeps working. Run it after actions/checkout, before the
+  first tofu command; the cache is saved when the job succeeds.
+
+inputs:
+  working-directory:
+    description: The root module, relative to the workspace (its lock file keys the cache).
+    required: false
+    default: "."
+  enabled:
+    description: '"false" does nothing, for callers that turn the cache off.'
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up the provider cache
+      id: dir
+      if: inputs.enabled == 'true'
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/provider-cache.sh"'
+      env:
+        CACHE_DIR: ${{ runner.temp }}/tofu-provider-cache
+        WORKING_DIR: ${{ inputs.working-directory }}
+
+    # Exact key only: an entry is never saved again once it exists (cache
+    # entries are immutable), and a lock file change starts a fresh one. A
+    # restore-keys prefix would carry every old provider version into each
+    # new entry, growing without bound against the repository's cache limit.
+    - name: Cache the providers
+      if: inputs.enabled == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.dir.outputs.dir }}
+        key: tofu-providers-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(format('{0}/.terraform.lock.hcl', inputs.working-directory)) }}

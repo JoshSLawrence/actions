@@ -7,13 +7,18 @@
 # false, require-environments.sh).
 #
 # Environment variables (the workflow's inputs):
+#   DRIFT         - "true" for the drift workflow, which has no apply job:
+#                   APPLY_ENVIRONMENT isn't required, and PLAN_ENVIRONMENT is
+#                   the drift job's environment (optional). Also read in
+#                   this mode: ISSUES and ISSUE_LABELS.
 #   WORKING_DIR, VAR_FILES, NAME, APPLY_ENVIRONMENT, EXTRA_PATHS
 #   CHECKS, TESTS, TEST_FILTER, INTEGRATION_TESTS, INTEGRATION_TEST_FILTER
 #   POLICY, POLICY_PATH, POLICY_SOURCE, COST_ESTIMATE
 #   AZURE_CLIENT_ID, AZURE_TENANT_ID, PLAN_AZURE_CLIENT_ID, PLAN_ENVIRONMENT
+#   INTEGRATION_TEST_AZURE_CLIENT_ID, INTEGRATION_TEST_ENVIRONMENT
 #   CHECKS_RUNS_ON, INTEGRATION_TEST_RUNS_ON, PLAN_RUNS_ON, APPLY_RUNS_ON
 #   HAS_INFRACOST_API_KEY, HAS_AZURE_CLIENT_SECRET,
-#   HAS_PLAN_AZURE_CLIENT_SECRET
+#   HAS_PLAN_AZURE_CLIENT_SECRET, HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET
 #                 - "true" if that secret was passed
 #   IS_FORK_PR    - "true" on a pull request from a fork, which gets no
 #                   secrets and isn't planned: secret rules are skipped
@@ -31,9 +36,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=opentofu/scripts/common.sh
 source "$SCRIPT_DIR/common.sh"
 
-log_config WORKING_DIR VAR_FILES NAME APPLY_ENVIRONMENT EXTRA_PATHS CHECKS TESTS TEST_FILTER \
+log_config DRIFT ISSUES ISSUE_LABELS WORKING_DIR VAR_FILES NAME APPLY_ENVIRONMENT EXTRA_PATHS CHECKS TESTS TEST_FILTER \
   INTEGRATION_TESTS INTEGRATION_TEST_FILTER POLICY POLICY_PATH POLICY_SOURCE COST_ESTIMATE \
-  AZURE_CLIENT_ID AZURE_TENANT_ID PLAN_AZURE_CLIENT_ID PLAN_ENVIRONMENT CHECKS_RUNS_ON INTEGRATION_TEST_RUNS_ON \
+  AZURE_CLIENT_ID AZURE_TENANT_ID PLAN_AZURE_CLIENT_ID PLAN_ENVIRONMENT \
+  INTEGRATION_TEST_AZURE_CLIENT_ID INTEGRATION_TEST_ENVIRONMENT CHECKS_RUNS_ON INTEGRATION_TEST_RUNS_ON \
   PLAN_RUNS_ON APPLY_RUNS_ON IS_FORK_PR IS_DEPENDABOT
 
 problems=()
@@ -101,7 +107,12 @@ if [ -n "$name" ] && ! [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
   fi
 fi
 
-if [ -z "${APPLY_ENVIRONMENT:-}" ]; then
+drift=false
+if is_true "${DRIFT:-false}"; then
+  drift=true
+fi
+
+if [ "$drift" = false ] && [ -z "${APPLY_ENVIRONMENT:-}" ]; then
   problem "apply-environment is empty. Set it to the GitHub environment the apply job runs in (with required reviewers)."
 fi
 
@@ -133,6 +144,13 @@ if is_true "${POLICY:-false}"; then
   done <<< "$policy_paths"
 fi
 
+# --- Drift: issues ---------------------------------------------------------------
+
+# The first label finds the deployment's issue again, so there has to be one
+if [ "$drift" = true ] && is_true "${ISSUES:-true}" && [ -z "$(tr -d ', \t\n' <<< "${ISSUE_LABELS-opentofu-drift}")" ]; then
+  problem "issue-labels is empty, but issues is on. Set at least one label (the first finds the deployment's issue again), or turn issues off."
+fi
+
 # Runs that get no secrets or OIDC token: checked, never planned
 secrets_skipped=""
 if is_true "${IS_FORK_PR:-false}"; then
@@ -148,7 +166,8 @@ fi
 
 if [ -n "$secrets_skipped" ]; then
   # A fork's (or Dependabot's) run gets no secrets, so only the inputs can be checked
-  azure="$(HAS_AZURE_CLIENT_SECRET=false HAS_PLAN_AZURE_CLIENT_SECRET=false azure_input_problems)"
+  azure="$(HAS_AZURE_CLIENT_SECRET=false HAS_PLAN_AZURE_CLIENT_SECRET=false \
+    HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET=false azure_input_problems)"
 else
   azure="$(azure_input_problems)"
 fi
@@ -160,12 +179,27 @@ done <<< "$azure"
 # identity, the plan job signs in as the apply identity. plan-environment
 # doesn't change that: the apply identity then has to trust that environment,
 # which usually has no required reviewers.
-if [ -z "$secrets_skipped" ] && [ -n "${AZURE_CLIENT_ID:-}" ] && [ -z "${PLAN_AZURE_CLIENT_ID:-}" ]; then
+if [ "$drift" = true ]; then
+  # A scheduled check only reads, and runs unattended: it needs no write access
+  if [ -n "${AZURE_CLIENT_ID:-}" ] && [ -z "${PLAN_AZURE_CLIENT_ID:-}" ]; then
+    log_warn "Drift checks sign in with azure-client-id because plan-azure-client-id isn't set. They only read and run unattended, so set plan-azure-client-id to a read-only identity (Reader on the resources, plus whatever reading the configuration needs, e.g. Reader and Data Access, Key Vault reader roles; and Storage Blob Data Reader on the state container) and keep the identity that can write out of scheduled runs."
+  fi
+elif [ -z "$secrets_skipped" ] && [ -n "${AZURE_CLIENT_ID:-}" ] && [ -z "${PLAN_AZURE_CLIENT_ID:-}" ]; then
   if is_true "${HAS_AZURE_CLIENT_SECRET:-false}"; then
     log_warn "Plans use the apply identity (azure-client-id) because plan-azure-client-id isn't set, so pull request plans receive its client secret: anyone who can open a PR could get a credential that can write. Set plan-azure-client-id (with plan-azure-client-secret) to a read-only identity."
   else
     log_warn "Plans sign in with the apply identity (azure-client-id) because plan-azure-client-id isn't set, so its federated credentials must trust the plan job's subject (pull_request and main, or environment:${PLAN_ENVIRONMENT:-<plan-environment>}, which usually has no required reviewers): anyone who can open a PR could get a token that can write. Set plan-azure-client-id to a read-only identity and federate azure-client-id only to environment:${APPLY_ENVIRONMENT:-<apply-environment>}."
   fi
+fi
+
+# Likewise the integration tests, which run before the plan and any approval:
+# without their own identity (integration-test-azure-client-id) they sign in
+# as the apply identity on every non-fork pull request. An environment only
+# helps if it has required reviewers, which isn't known here (the apply job's
+# gate is checked at run time).
+if [ -z "$secrets_skipped" ] && is_true "${INTEGRATION_TESTS:-false}" && [ -n "${AZURE_CLIENT_ID:-}" ] &&
+  [ -z "${INTEGRATION_TEST_AZURE_CLIENT_ID:-}" ]; then
+  log_warn "Integration tests sign in with the apply identity (azure-client-id) and run before any approval, because integration-test-azure-client-id isn't set: anyone who can open a PR could run code with a token that can write. Set integration-test-azure-client-id to an identity scoped to a test subscription or resource group. integration-test-environment only helps if that environment has required reviewers${INTEGRATION_TEST_ENVIRONMENT:+ (check ${INTEGRATION_TEST_ENVIRONMENT})}."
 fi
 
 # --- Runners ---------------------------------------------------------------------

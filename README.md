@@ -1,6 +1,6 @@
 # actions
 
-[![CI](https://github.com/JoshSLawrence/actions/actions/workflows/ci.yaml/badge.svg)](https://github.com/JoshSLawrence/actions/actions/workflows/ci.yaml)
+[![CI](https://github.com/JoshSLawrence/actions/actions/workflows/ci.yaml/badge.svg?branch=main&event=push)](https://github.com/JoshSLawrence/actions/actions/workflows/ci.yaml?query=branch%3Amain+event%3Apush)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A library of reusable GitHub Actions workflows and composite actions.
@@ -11,7 +11,8 @@ A library of reusable GitHub Actions workflows and composite actions.
 
 | Name | Kind | Does |
 | --- | --- | --- |
-| [OpenTofu](opentofu/README.md) | Reusable workflow | Checks, tests, plans and applies one root module per call, with its var files, in its environment, when a PR touches it; Azure OIDC or secrets; PR comments; approval-gated apply |
+| [OpenTofu](opentofu/README.md) | Reusable workflow | Checks, tests, plans and applies one root module per call, with its var files, in its environment, when a PR touches it; Azure OIDC or secrets; PR comments; approval-gated apply; providers cached across jobs |
+| [OpenTofu drift](opentofu/README.md#drift-detection) | Reusable workflow | Plans one deployment on a schedule, never applying, and reports drift as a GitHub issue per deployment (updated in place, marked resolved when it's gone) |
 | [Data Factory](datafactory/README.md) | Reusable workflows + composite actions | Validate and export a factory's Git folder to an ARM template on every PR (no Publish, no `adf_publish`), what-if plans per environment, approval-gated deploys with trigger handling; PR comments |
 | [Synapse](synapse/README.md) | Reusable workflows + composite actions | The same for a Synapse workspace's artifacts (no `workspace_publish`), deployed with GitHub OIDC; PR comments |
 
@@ -79,6 +80,7 @@ actions/
 │       ├── ci.yaml           # lint + end-to-end runs of the workflows
 │       ├── datafactory-deploy.yaml
 │       ├── datafactory.yaml
+│       ├── opentofu-drift.yaml
 │       ├── opentofu.yaml
 │       ├── synapse-deploy.yaml
 │       └── synapse.yaml
@@ -93,8 +95,10 @@ actions/
 │   ├── apply/                # composite actions, one per directory
 │   ├── azure/
 │   ├── checks/
+│   ├── drift-report/
 │   ├── plan/
 │   ├── prepare/
+│   ├── provider-cache/
 │   ├── README.md
 │   └── scripts/              # the logic; actions are thin wrappers
 ├── shared/                   # the library every area builds on

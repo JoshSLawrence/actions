@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 #
-# Tests the OpenTofu workflow's own scripts, which run before anything is
+# Tests the OpenTofu workflows' own scripts, which run before anything is
 # planned: change detection (changes.sh), input validation
-# (validate-inputs.sh, runners included), the Azure credentials mapping
-# (azure-env.sh), and the plan names (names.sh), plus two shared helpers the
+# (validate-inputs.sh, runners and the drift mode included), the Azure
+# credentials mapping (azure-env.sh), the provider cache (provider-cache.sh),
+# the plan names (names.sh), and the drift report (drift-report.sh, with a
+# stubbed gh), plus two shared helpers the
 # OpenTofu workflow depends on: the apply preflight's git fallback
 # (apply-preflight.sh, with a stubbed gh) and scope_mise_to_module. Change
 # detection and the preflight run in throwaway Git repositories, the way a
@@ -207,6 +209,13 @@ expect_refused "a plan identity without the apply identity" "plan-azure-client-i
 expect_refused "a plan secret without a plan client ID" "plan-azure-client-id isn't" \
   validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod AZURE_CLIENT_ID=c AZURE_TENANT_ID=t \
   HAS_PLAN_AZURE_CLIENT_SECRET=true
+expect_refused "an integration test identity without the apply identity" "integration-test-azure-client-id is set, but azure-client-id isn't" \
+  validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod INTEGRATION_TEST_AZURE_CLIENT_ID=i
+expect_refused "an integration test secret without its client ID" "integration-test-azure-client-id isn't" \
+  validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod AZURE_CLIENT_ID=c AZURE_TENANT_ID=t \
+  HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET=true
+expect "...but a consistent integration test identity passes" prod \
+  "$(valid AZURE_CLIENT_ID=c AZURE_TENANT_ID=t INTEGRATION_TEST_AZURE_CLIENT_ID=i HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET=true)"
 expect "runners: a label, an array of labels, a runner group" prod \
   "$(valid INTEGRATION_TEST_RUNS_ON=self-hosted PLAN_RUNS_ON='["self-hosted", "linux"]' \
     APPLY_RUNS_ON=$'{"group": "private-network",\n "labels": ["linux-x64"]}\n')"
@@ -246,6 +255,72 @@ expect_warned "...and still with a plan environment, which isn't protection by i
 expect_warned "...with a client secret, the risk is the secret" yes HAS_AZURE_CLIENT_SECRET=true
 expect_warned "...not on a Dependabot PR, which isn't planned" no IS_DEPENDABOT=true
 expect_warned "...not on a fork PR, which isn't planned" no IS_FORK_PR=true
+
+# Integration tests running as the apply identity, ungated, warn too
+# Usage: expect_test_warned "<case name>" <yes|no> [VAR=value ...]
+expect_test_warned() {
+  local name="$1" want="$2" got=no
+  shift 2
+  cases=$((cases + 1))
+  if ! valid AZURE_CLIENT_ID=c AZURE_TENANT_ID=t PLAN_AZURE_CLIENT_ID=p "$@" > /dev/null; then
+    log_error "${name}: the inputs were refused"
+    sed 's/^/    /' "$WORK/log" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  grep -qF "Integration tests sign in with the apply identity" "$WORK/log" && got=yes
+  if [ "$got" == "$want" ]; then
+    log_success "$name"
+  else
+    log_error "${name}: expected warning=${want}, got ${got}"
+    sed 's/^/    /' "$WORK/log" >&2
+    failures=$((failures + 1))
+  fi
+}
+expect_test_warned "integration tests as the apply identity, ungated: passes, but warns" yes INTEGRATION_TESTS=true
+expect_test_warned "...not with their own identity" no INTEGRATION_TESTS=true INTEGRATION_TEST_AZURE_CLIENT_ID=i
+expect_test_warned "...also with an environment, which only helps with reviewers" yes INTEGRATION_TESTS=true INTEGRATION_TEST_ENVIRONMENT=test
+expect_test_warned "...not with integration tests off" no
+expect_test_warned "...not on a Dependabot PR, which isn't planned" no INTEGRATION_TESTS=true IS_DEPENDABOT=true
+
+# The drift workflow has no apply job, so no apply environment
+drift_inputs() {
+  output_of name validate-inputs.sh DRIFT=true WORKING_DIR=iac/app VAR_FILES=deployments/prod.tfvars "$@"
+}
+expect "drift: no apply environment needed, named after the last var file" prod "$(drift_inputs)"
+expect_refused "drift: a missing var file is still refused" "'deployments/dev.tfvars' doesn't exist" \
+  validate-inputs.sh DRIFT=true WORKING_DIR=iac/app VAR_FILES=deployments/dev.tfvars
+expect_refused "drift: issues without a label" "issue-labels is empty, but issues is on" \
+  validate-inputs.sh DRIFT=true WORKING_DIR=iac/app ISSUES=true ISSUE_LABELS=" , "
+expect "drift: ...unless issues are off" "" "$(drift_inputs VAR_FILES= ISSUES=false ISSUE_LABELS=)"
+expect "drift: a label list passes" prod "$(drift_inputs ISSUES=true ISSUE_LABELS='opentofu-drift, infra')"
+expect_refused "drift: the Azure rules apply" "azure-tenant-id isn't" \
+  validate-inputs.sh DRIFT=true WORKING_DIR=iac/app AZURE_CLIENT_ID=c
+
+# Drift checks should plan as a read-only identity
+# Usage: expect_drift_warned "<case name>" <yes|no> [VAR=value ...]
+expect_drift_warned() {
+  local name="$1" want="$2" got=no
+  shift 2
+  cases=$((cases + 1))
+  if ! drift_inputs AZURE_CLIENT_ID=c AZURE_TENANT_ID=t "$@" > /dev/null; then
+    log_error "${name}: the inputs were refused"
+    sed 's/^/    /' "$WORK/log" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  grep -qF "Drift checks sign in with azure-client-id" "$WORK/log" && got=yes
+  if [ "$got" == "$want" ]; then
+    log_success "$name"
+  else
+    log_error "${name}: expected warning=${want}, got ${got}"
+    sed 's/^/    /' "$WORK/log" >&2
+    failures=$((failures + 1))
+  fi
+}
+expect_drift_warned "drift: no plan identity: passes, but warns" yes
+expect_drift_warned "drift: ...not with a plan identity" no PLAN_AZURE_CLIENT_ID=p
+expect_drift_warned "drift: ...even in an environment, which a scheduled run can't wait on" yes ENVIRONMENT=x PLAN_ENVIRONMENT=x
 
 cases=$((cases + 1))
 if output_of name validate-inputs.sh WORKING_DIR=iac/app VAR_FILES=missing.tfvars \
@@ -299,6 +374,28 @@ expect "...or with its own secret" \
 expect "the apply and test jobs ignore the plan identity" \
   "ARM_CLIENT_ID=apply ARM_STORAGE_USE_AZUREAD=true ARM_TENANT_ID=t ARM_USE_AZUREAD=true ARM_USE_OIDC=true" \
   "$(azure ROLE=test AZURE_CLIENT_ID=apply AZURE_TENANT_ID=t PLAN_AZURE_CLIENT_ID=read)"
+expect "the integration test job uses the apply identity by default" \
+  "ARM_CLIENT_ID=apply ARM_CLIENT_SECRET=shh ARM_STORAGE_USE_AZUREAD=true ARM_TENANT_ID=t ARM_USE_AZUREAD=true" \
+  "$(azure ROLE=test AZURE_CLIENT_ID=apply AZURE_TENANT_ID=t AZURE_CLIENT_SECRET=shh)"
+expect "integration-test-azure-client-id switches the test job's identity, as a pair (OIDC)" \
+  "ARM_CLIENT_ID=tester ARM_STORAGE_USE_AZUREAD=true ARM_TENANT_ID=t ARM_USE_AZUREAD=true ARM_USE_OIDC=true" \
+  "$(azure ROLE=test AZURE_CLIENT_ID=apply AZURE_TENANT_ID=t AZURE_CLIENT_SECRET=shh INTEGRATION_TEST_AZURE_CLIENT_ID=tester)"
+expect "...or with its own secret" \
+  "ARM_CLIENT_ID=tester ARM_CLIENT_SECRET=tt ARM_STORAGE_USE_AZUREAD=true ARM_TENANT_ID=t ARM_USE_AZUREAD=true" \
+  "$(azure ROLE=test AZURE_CLIENT_ID=apply AZURE_TENANT_ID=t AZURE_CLIENT_SECRET=shh INTEGRATION_TEST_AZURE_CLIENT_ID=tester INTEGRATION_TEST_AZURE_CLIENT_SECRET=tt)"
+expect "the plan and apply jobs ignore the integration test identity" \
+  "ARM_CLIENT_ID=apply ARM_STORAGE_USE_AZUREAD=true ARM_TENANT_ID=t ARM_USE_AZUREAD=true ARM_USE_OIDC=true" \
+  "$(azure ROLE=apply AZURE_CLIENT_ID=apply AZURE_TENANT_ID=t INTEGRATION_TEST_AZURE_CLIENT_ID=tester)"
+expect "...the plan job too" \
+  "ARM_CLIENT_ID=apply ARM_STORAGE_USE_AZUREAD=true ARM_TENANT_ID=t ARM_USE_AZUREAD=true ARM_USE_OIDC=true" \
+  "$(azure ROLE=plan AZURE_CLIENT_ID=apply AZURE_TENANT_ID=t INTEGRATION_TEST_AZURE_CLIENT_ID=tester)"
+cases=$((cases + 1))
+if azure ROLE=test AZURE_CLIENT_ID=apply AZURE_TENANT_ID=t INTEGRATION_TEST_AZURE_CLIENT_SECRET=tt > /dev/null; then
+  log_error "an integration test secret without its client ID fails the job: it succeeded"
+  failures=$((failures + 1))
+else
+  log_success "an integration test secret without its client ID fails the job"
+fi
 cases=$((cases + 1))
 if azure ROLE=plan AZURE_CLIENT_ID=apply > /dev/null; then
   log_error "inconsistent Azure inputs fail the job: it succeeded"
@@ -306,6 +403,362 @@ if azure ROLE=plan AZURE_CLIENT_ID=apply > /dev/null; then
 else
   log_success "inconsistent Azure inputs fail the job"
 fi
+
+# --- Provider cache --------------------------------------------------------------
+
+# Print what provider-cache.sh exports (TF_PLUGIN_CACHE_DIR) and outputs (dir)
+provider_cache() {
+  local env_file="$WORK/github_env"
+  : > "$env_file"
+  : > "$WORK/output"
+  env GITHUB_ACTIONS=true GITHUB_ENV="$env_file" GITHUB_OUTPUT="$WORK/output" "$@" \
+    "$SCRIPTS/provider-cache.sh" > "$WORK/log" 2>&1 || return 1
+  awk '/<<EOF_/ { split($0, a, "<<"); name = a[1]; getline; print name "=" $0 }' "$env_file"
+}
+
+cache_dir="$WORK/cache/providers"
+expect "the provider cache is created and exported to the job" \
+  "TF_PLUGIN_CACHE_DIR=$cache_dir" "$(provider_cache CACHE_DIR="$cache_dir")"
+cases=$((cases + 1))
+if [ -d "$cache_dir" ] && [ "$(sed -n 's/^dir=//p' "$WORK/output")" == "$cache_dir" ]; then
+  log_success "...as a directory, and its path is the step's output"
+else
+  log_error "...as a directory, and its path is the step's output: not created, or the wrong output"
+  failures=$((failures + 1))
+fi
+expect "a relative cache directory is made absolute, since tofu runs from the module" \
+  "TF_PLUGIN_CACHE_DIR=$WORK/relative-cache" \
+  "$(cd "$WORK" && provider_cache CACHE_DIR=relative-cache)"
+expect "an existing cache is kept as it is" "TF_PLUGIN_CACHE_DIR=$cache_dir" \
+  "$(echo cached > "$cache_dir/provider"; provider_cache CACHE_DIR="$cache_dir")"
+cases=$((cases + 1))
+if [ "$(cat "$cache_dir/provider")" == "cached" ]; then
+  log_success "...and its contents too"
+else
+  log_error "...and its contents too: they changed"
+  failures=$((failures + 1))
+fi
+cases=$((cases + 1))
+if provider_cache > /dev/null; then
+  log_error "no cache directory is refused: it succeeded"
+  failures=$((failures + 1))
+else
+  log_success "no cache directory is refused"
+fi
+cases=$((cases + 1))
+make_repo
+provider_cache CACHE_DIR="$cache_dir" WORKING_DIR=iac/app > /dev/null
+if grep -qF "No .terraform.lock.hcl in iac/app" "$WORK/log"; then
+  log_success "a module without a lock file is mentioned"
+else
+  log_error "a module without a lock file is mentioned: no note in the log"
+  failures=$((failures + 1))
+fi
+
+# --- Drift report ----------------------------------------------------------------
+
+# A stub gh that records each call (and the JSON body it was given, on one
+# line) and answers the few reads the report makes:
+#   GH_STUB_FIND     - the number of the deployment's open issue, if any
+#   GH_STUB_RESOLVED - "true" if that issue carries the drift-resolved label
+#   GH_STUB_MISSING_LABELS=1 - labels don't exist yet
+#   GH_STUB_NO_BRANCH=1 - the default branch lookup fails
+#   GH_STUB_DROP_LABEL=1 - a created issue comes back without its labels
+#   GH_STUB_FAIL=1   - every call fails
+mkdir -p "$WORK/driftbin"
+cat > "$WORK/driftbin/gh" << 'STUB'
+#!/usr/bin/env bash
+args="$*"
+echo "gh $args" >> "$GH_STUB_LOG"
+for arg in "$@"; do
+  if [ "$arg" == "-" ]; then
+    echo "  body: $(jq -c . < /dev/stdin)" >> "$GH_STUB_LOG"
+    break
+  fi
+done
+if [ -n "${GH_STUB_FAIL:-}" ]; then
+  echo "gh: HTTP 403" >&2
+  exit 1
+fi
+case "$args" in
+  *"repos/org/repo --jq .default_branch"*) [ -z "${GH_STUB_NO_BRANCH:-}" ] || exit 1; echo main ;;
+  *--paginate*) echo "${GH_STUB_FIND:-}" ;;
+  *'\(.number)'*) if [ -n "${GH_STUB_DROP_LABEL:-}" ]; then echo "42 false"; else echo "42 true"; fi ;;
+  *"/labels/"*"--method"*) ;;
+  *"/labels/"*) [ -z "${GH_STUB_MISSING_LABELS:-}" ] || exit 1 ;;
+  *"/issues/"*"--jq"*) echo "${GH_STUB_RESOLVED:-false}" ;;
+esac
+STUB
+chmod +x "$WORK/driftbin/gh"
+
+printf '## Plan\n\n3 to add\n' > "$WORK/summary.md"
+
+# Run drift-report.sh as the drift workflow's report step does; print what
+# it outputs as "drift=<> issue=<>". Fails if the script did.
+# Usage: drift_report [VAR=value ...]
+drift_report() {
+  local status=0
+  : > "$WORK/gh.log"
+  : > "$WORK/output"
+  env PATH="$WORK/driftbin:$PATH" GH_STUB_LOG="$WORK/gh.log" GITHUB_OUTPUT="$WORK/output" \
+    GH_TOKEN=t GITHUB_REPOSITORY=org/repo GITHUB_RUN_ID=9 GITHUB_REF_NAME=main \
+    GITHUB_REF=refs/heads/main RUN_REF=refs/heads/main DEFAULT_BRANCH=main \
+    KEY='iac/app:prod@abc' TITLE="OpenTofu: \`iac/app\` · \`prod\`" SUMMARY_FILE="$WORK/summary.md" \
+    "$@" "$SCRIPTS/drift-report.sh" > "$WORK/log" 2>&1 || status=$?
+  echo "drift=$(sed -n 's/^drift=//p' "$WORK/output") issue=$(sed -n 's/^issue=//p' "$WORK/output")"
+  return "$status"
+}
+
+# Succeeds if the stub gh was called with / given the text (fixed string)
+gh_called() {
+  grep -qF -- "$1" "$WORK/gh.log"
+}
+
+# Usage: expect_gh "<case name>" <called|not-called> "<text>"
+expect_gh() {
+  local got=not-called
+  cases=$((cases + 1))
+  gh_called "$3" && got=called
+  if [ "$got" == "$2" ]; then
+    log_success "$1"
+  else
+    log_error "$1: expected gh to be ${2} with '${3}', it was ${got}:"
+    sed 's/^/    /' "$WORK/gh.log" >&2
+    failures=$((failures + 1))
+  fi
+}
+
+# Usage: expect_drift_report "<case name>" "<drift=.. issue=..>" [VAR=value ...]
+expect_drift_report() {
+  local name="$1" want="$2" got status=0
+  shift 2
+  got="$(drift_report "$@")" || status=$?
+  expect "$name" "$want" "$got"
+  return 0
+}
+
+# Exit code mapping: 0 no drift, 2 drift, anything else an error
+expect_drift_report "plan exit code 0 is no drift" "drift=false issue=" PLAN_EXIT_CODE=0
+expect_drift_report "plan exit code 2 is drift" "drift=true issue=42" PLAN_EXIT_CODE=2
+for code in 1 3 ""; do
+  expect_drift_report "plan exit code '${code}' is an error" "drift=error issue=" PLAN_EXIT_CODE="$code"
+  cases=$((cases + 1))
+  if drift_report PLAN_EXIT_CODE="$code" > /dev/null; then
+    log_error "plan exit code '${code}' fails the job: it succeeded"
+    failures=$((failures + 1))
+  elif [ ! -s "$WORK/gh.log" ] && grep -qF "Issues were left as they were" "$WORK/log"; then
+    log_success "...which fails the job and leaves the issues alone, even an open one"
+  else
+    log_error "plan exit code '${code}' fails the job, leaving issues alone: failed differently"
+    sed 's/^/    /' "$WORK/log" "$WORK/gh.log" >&2
+    failures=$((failures + 1))
+  fi
+done
+GH_STUB_FIND=7 drift_report PLAN_EXIT_CODE=1 > /dev/null || true
+expect_gh "an error doesn't even look for the issue" not-called "gh"
+
+# fail-on-drift
+cases=$((cases + 1))
+if drift_report PLAN_EXIT_CODE=2 FAIL_ON_DRIFT=true > /dev/null; then
+  log_error "fail-on-drift fails the job on drift: it succeeded"
+  failures=$((failures + 1))
+elif [ "$(sed -n 's/^drift=//p' "$WORK/output")" == "true" ] && gh_called "POST repos/org/repo/issues"; then
+  log_success "fail-on-drift fails the job on drift, after reporting it"
+else
+  log_error "fail-on-drift fails the job on drift, after reporting it: failed differently"
+  sed 's/^/    /' "$WORK/log" >&2
+  failures=$((failures + 1))
+fi
+cases=$((cases + 1))
+if drift_report PLAN_EXIT_CODE=0 FAIL_ON_DRIFT=true > /dev/null && drift_report PLAN_EXIT_CODE=2 > /dev/null; then
+  log_success "...but no drift passes, and so does drift without it"
+else
+  log_error "...but no drift passes, and so does drift without it: failed"
+  failures=$((failures + 1))
+fi
+
+# issues: false only reports
+expect_drift_report "issues off: drift is only reported" "drift=true issue=" PLAN_EXIT_CODE=2 CREATE_ISSUES=false
+expect_gh "...without touching GitHub" not-called "gh"
+
+# Drift, no issue yet: one is opened
+expect_drift_report "drift opens an issue" "drift=true issue=42" PLAN_EXIT_CODE=2
+expect_gh "...found by the hidden marker among open issues with the first label" called \
+  "gh api --paginate repos/org/repo/issues?state=open&labels=opentofu-drift&per_page=100"
+expect_gh "...with the author and the marker in the filter" called 'github-actions[bot]'
+expect_gh "...creating it" called "gh api --method POST repos/org/repo/issues --input - --jq"
+expect_gh "...with the marker for its key" called '<!-- opentofu-drift:iac/app:prod@abc -->'
+expect_gh "...the plan summary as its body" called '3 to add'
+expect_gh "...titled after the deployment" called '"title":"OpenTofu drift: iac/app · prod"'
+expect_gh "...and labelled" called '"labels":["opentofu-drift"]'
+expect_gh "...without assignees by default" not-called '"assignees"'
+expect_gh "...without creating labels that exist" not-called "--method POST repos/org/repo/labels"
+drift_report PLAN_EXIT_CODE=2 ISSUE_LABELS="opentofu-drift, infra" ISSUE_ASSIGNEES="alice, bob" > /dev/null
+expect_gh "labels and assignees come as lists" called '"labels":["opentofu-drift","infra"]'
+expect_gh "...assignees too" called '"assignees":["alice","bob"]'
+expect_gh "...checking the first label stuck, and it did" not-called "issues/42/labels"
+drift_report PLAN_EXIT_CODE=2 GH_STUB_DROP_LABEL=1 > /dev/null
+expect_gh "a label GitHub dropped is added to the new issue" called '{"labels":["opentofu-drift"]}'
+expect_gh "...on that issue" called "gh api --method POST repos/org/repo/issues/42/labels --input -"
+drift_report PLAN_EXIT_CODE=2 GH_STUB_MISSING_LABELS=1 > /dev/null
+expect_gh "a missing label is created first" called "gh api --method POST repos/org/repo/labels -f name=opentofu-drift"
+
+# issue-plan off: counts and addresses only
+cat > "$WORK/full-summary.md" << 'SUMMARY'
+### Plan: 1 to add
+
+<details><summary>Resources (1)</summary>
+
+| Action | Resource |
+| --- | --- |
+| create | `random_pet.this` |
+
+</details>
+
+<details><summary>Full plan</summary>
+
+````diff
++ secret_value = "hunter2"
+````
+
+</details>
+SUMMARY
+drift_report PLAN_EXIT_CODE=2 SUMMARY_FILE="$WORK/full-summary.md" > /dev/null
+expect_gh "the plan text is in the issue by default" called 'hunter2'
+drift_report PLAN_EXIT_CODE=2 SUMMARY_FILE="$WORK/full-summary.md" ISSUE_PLAN=false > /dev/null
+expect_gh "issue-plan off: the plan text is left out" not-called 'hunter2'
+expect_gh "...keeping the counts" called '1 to add'
+expect_gh "...the resource addresses" called 'random_pet.this'
+expect_gh "...and a pointer to the run" called 'issue-plan is off'
+
+# issue-plan off, against the real summary renderer (plan-summary.sh), so a
+# change to its layout can't silently put the plan text in an issue
+cat > "$WORK/plan.json" << 'PLANJSON'
+{"resource_changes": [{"address": "azurerm_thing.main", "change": {"actions": ["create"]}}]}
+PLANJSON
+printf 'Terraform will perform:\n  # azurerm_thing.main will be created\n+ secret = "hunter2"\n' > "$WORK/plan.txt"
+PLAN_EXIT_CODE=2 PLAN_JSON="$WORK/plan.json" PLAN_TEXT="$WORK/plan.txt" "$SCRIPTS/plan-summary.sh" > "$WORK/real-summary.md" 2> /dev/null
+drift_report PLAN_EXIT_CODE=2 SUMMARY_FILE="$WORK/real-summary.md" > /dev/null
+expect_gh "the real summary puts the plan text in the issue by default" called 'hunter2'
+drift_report PLAN_EXIT_CODE=2 SUMMARY_FILE="$WORK/real-summary.md" ISSUE_PLAN=false > /dev/null
+expect_gh "issue-plan off, real summary: no plan text" not-called 'hunter2'
+expect_gh "...but the resource address" called 'azurerm_thing.main'
+printf '### Plan: 1 to add\n\nsomething new\n+ secret = "hunter2"\n' > "$WORK/odd-summary.md"
+drift_report PLAN_EXIT_CODE=2 SUMMARY_FILE="$WORK/odd-summary.md" ISSUE_PLAN=false > /dev/null
+expect_gh "a summary without the full plan block fails closed: no plan text" not-called 'hunter2'
+expect_gh "...keeping its heading" called '### Plan: 1 to add'
+cases=$((cases + 1))
+if grep -qF "format wasn't recognised" "$WORK/log"; then
+  log_success "...and warning that the format wasn't recognised"
+else
+  log_error "...and warning that the format wasn't recognised: no warning"
+  failures=$((failures + 1))
+fi
+
+# Only the default branch touches issues
+expect_drift_report "a feature branch reports drift..." "drift=true issue=" PLAN_EXIT_CODE=2 RUN_REF=refs/heads/feature
+expect_gh "...without any GitHub call" not-called "gh"
+expect_drift_report "...even for an open issue and no drift" "drift=false issue=" \
+  PLAN_EXIT_CODE=0 RUN_REF=refs/pull/1/merge GH_STUB_FIND=7
+expect_gh "...resolving nothing" not-called "gh"
+expect_drift_report "an event without the default branch looks it up, and opens the issue" "drift=true issue=42" \
+  PLAN_EXIT_CODE=2 DEFAULT_BRANCH=
+expect_gh "...with the API" called "gh api repos/org/repo --jq .default_branch"
+expect_drift_report "...a feature branch still touches nothing" "drift=true issue=" \
+  PLAN_EXIT_CODE=2 DEFAULT_BRANCH= RUN_REF=refs/heads/feature
+expect_gh "...after the lookup only" not-called "issues"
+cases=$((cases + 1))
+if drift_report PLAN_EXIT_CODE=2 DEFAULT_BRANCH= GH_STUB_NO_BRANCH=1 > /dev/null; then
+  log_error "a failed default branch lookup fails the job: it succeeded"
+  failures=$((failures + 1))
+elif grep -qF "Couldn't look up org/repo's default branch" "$WORK/log" && ! gh_called "issues"; then
+  log_success "a failed default branch lookup fails the job, saying why, touching no issue"
+else
+  log_error "a failed default branch lookup fails the job: failed differently"
+  sed 's/^/    /' "$WORK/log" >&2
+  failures=$((failures + 1))
+fi
+
+# The body is kept under GitHub's limit
+head -c 70000 /dev/zero | tr '\0' 'x' > "$WORK/big-summary.md"
+drift_report PLAN_EXIT_CODE=2 SUMMARY_FILE="$WORK/big-summary.md" > /dev/null
+posted_length="$(sed -n 's/^  body: //p' "$WORK/gh.log" | tail -n 1 | jq -r '.body | length')"
+cases=$((cases + 1))
+if [ "$posted_length" -lt 65536 ] && gh_called "truncated"; then
+  log_success "a long summary is truncated to fit the issue body"
+else
+  log_error "a long summary is truncated to fit the issue body: ${posted_length} characters posted"
+  failures=$((failures + 1))
+fi
+drift_report PLAN_EXIT_CODE=2 SUMMARY_FILE="$WORK/missing.md" > /dev/null
+expect_gh "a missing summary is said in the body" called "The plan summary is missing"
+
+# Drift, issue already open: updated in place, nobody notified
+expect_drift_report "drift updates the open issue" "drift=true issue=7" PLAN_EXIT_CODE=2 GH_STUB_FIND=7
+expect_gh "...by editing its body" called "gh api --method PATCH repos/org/repo/issues/7 --input -"
+expect_gh "...not opening another" not-called "POST repos/org/repo/issues"
+expect_gh "...or commenting" not-called "/comments"
+
+# Drift back after it was marked resolved
+expect_drift_report "drift on a resolved issue updates it" "drift=true issue=7" \
+  PLAN_EXIT_CODE=2 GH_STUB_FIND=7 GH_STUB_RESOLVED=true
+expect_gh "...removes the resolved label" called "gh api --method DELETE repos/org/repo/issues/7/labels/drift-resolved"
+expect_gh "...and says the drift is back, once" called "Drift is back"
+expect_gh "...after updating the body" called "gh api --method PATCH repos/org/repo/issues/7 --input -"
+
+# No drift
+expect_drift_report "no drift and no issue does nothing" "drift=false issue=" PLAN_EXIT_CODE=0
+expect_gh "...but looking for one" called "--paginate"
+expect_gh "...writing nothing" not-called "--method"
+expect_drift_report "no drift resolves the open issue" "drift=false issue=7" PLAN_EXIT_CODE=0 GH_STUB_FIND=7
+expect_gh "...with the resolved label" called '{"labels":["drift-resolved"]}'
+expect_gh "...and one comment" called "No drift as of"
+expect_gh "...never closing it" not-called "state=closed"
+expect_gh "...by any other spelling" not-called '"state"'
+expect_gh "...without touching its body" not-called "PATCH"
+expect_drift_report "...a resolved issue isn't commented on again" "drift=false issue=7" \
+  PLAN_EXIT_CODE=0 GH_STUB_FIND=7 GH_STUB_RESOLVED=true
+expect_gh "...nor labelled" not-called "--method POST"
+
+# A GitHub API failure fails the job, saying what to check
+cases=$((cases + 1))
+if drift_report PLAN_EXIT_CODE=2 GH_STUB_FAIL=1 > /dev/null; then
+  log_error "an API failure fails the job: it succeeded"
+  failures=$((failures + 1))
+elif grep -qF "issues: write" "$WORK/log" && [ "$(sed -n 's/^drift=//p' "$WORK/output")" == "true" ]; then
+  log_success "an API failure fails the job, saying what to check, with the result still output"
+else
+  log_error "an API failure fails the job, saying what to check: failed differently"
+  sed 's/^/    /' "$WORK/log" >&2
+  failures=$((failures + 1))
+fi
+
+# --- Context line ----------------------------------------------------------------
+
+# The line under a PR comment's title, without its date. Usage: context [VAR=value ...]
+context() {
+  (
+    unset GITHUB_REPOSITORY GITHUB_RUN_ID
+    local kv
+    for kv in "$@"; do declare -x "$kv"; done
+    context_line | sed 's/ · [0-9-]* [0-9:]* UTC//'
+  )
+}
+aaa="$(printf 'a%.0s' {1..40})"
+bbb="$(printf 'b%.0s' {1..40})"
+pr_line="$(context PR_NUMBER=5 HEAD_SHA="$aaa" TARGET_SHA="$bbb" TARGET_BRANCH=main)"
+echo "$pr_line" > "$WORK/log"
+expect "a PR's context line says what the plan is against" \
+  "<sub>commit \`aaaaaaa\` · against \`main\` at \`bbbbbbb\`</sub>" "$pr_line"
+cases=$((cases + 1))
+if [[ "$pr_line" != *"merged into"* ]]; then
+  log_success "...and doesn't claim a merge happened"
+else
+  log_error "...and doesn't claim a merge happened: '${pr_line}'"
+  failures=$((failures + 1))
+fi
+expect "without a PR there is no 'against'" "<sub>commit \`aaaaaaa\`</sub>" \
+  "$(context HEAD_SHA="$aaa" TARGET_SHA="$bbb")"
 
 # --- Plan names ------------------------------------------------------------------
 

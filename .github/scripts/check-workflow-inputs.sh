@@ -10,8 +10,10 @@
 # Data Factory and Synapse deploy the same kind of ARM template with the same
 # scripts, so the inputs they share (runs-on, apply-environment, ...) must
 # also match: datafactory.yaml and synapse.yaml, and the same for the deploy
-# workflows (no call). OpenTofu has a single workflow, opentofu.yaml, so it
-# has nothing to keep in sync.
+# workflows (no call). OpenTofu has two workflows that don't call each other:
+# opentofu.yaml and opentofu-drift.yaml, a call of which is made for the same
+# deployment (the same working-directory, var files, identities), so the
+# inputs they share are defined identically.
 #
 # For a calling pair it checks that:
 #   1. every input of the called workflow is also an input of the caller,
@@ -108,6 +110,13 @@ check_pair synapse.yaml synapse-deploy.yaml deploy \
 check_pair datafactory.yaml synapse.yaml "" '[]' '[]' '["working-directory", "deployments", "what-if"]'
 check_pair datafactory-deploy.yaml synapse-deploy.yaml "" '[]' '[]' \
   '["working-directory", "template-artifact", "what-if"]'
+
+# OpenTofu: a deployment's drift call repeats its call's inputs. What the two
+# describe their own way is COMPUTED: the identity that plans when
+# plan-azure-client-id isn't set, the var files (the drift call has no checks
+# or tests), and the runner and timeout (one job or several).
+check_pair opentofu.yaml opentofu-drift.yaml "" '[]' '[]' \
+  '["azure-client-id", "var-files", "runs-on", "timeout-minutes"]'
 
 if [ "$failures" -gt 0 ]; then
   log_error "${failures} problem(s) keeping the reusable workflows in sync. See .github/scripts/check-workflow-inputs.sh for the rules."

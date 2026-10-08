@@ -56,6 +56,11 @@ jobs:
       azure-subscription-id: ${{ vars.DEV_SUBSCRIPTION_ID }}
       azure-client-id: ${{ vars.DEV_CLIENT_ID }}
       plan-azure-client-id: ${{ vars.DEV_READ_CLIENT_ID }}
+      # With integration tests on, give them an identity of their own (scoped
+      # to a test subscription) instead of the apply identity (needs
+      # opentofu.yaml@v0.4.0 or later):
+      #   integration-tests: true
+      #   integration-test-azure-client-id: ${{ vars.DEV_TEST_CLIENT_ID }}
 
   # Applied after merge (not from the PR), once dev has applied
   prod-eastus:
