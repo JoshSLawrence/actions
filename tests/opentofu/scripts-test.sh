@@ -733,6 +733,33 @@ else
   failures=$((failures + 1))
 fi
 
+# --- Context line ----------------------------------------------------------------
+
+# The line under a PR comment's title, without its date. Usage: context [VAR=value ...]
+context() {
+  (
+    unset GITHUB_REPOSITORY GITHUB_RUN_ID
+    local kv
+    for kv in "$@"; do declare -x "$kv"; done
+    context_line | sed 's/ · [0-9-]* [0-9:]* UTC//'
+  )
+}
+aaa="$(printf 'a%.0s' {1..40})"
+bbb="$(printf 'b%.0s' {1..40})"
+pr_line="$(context PR_NUMBER=5 HEAD_SHA="$aaa" TARGET_SHA="$bbb" TARGET_BRANCH=main)"
+echo "$pr_line" > "$WORK/log"
+expect "a PR's context line says what the plan is against" \
+  "<sub>commit \`aaaaaaa\` · against \`main\` at \`bbbbbbb\`</sub>" "$pr_line"
+cases=$((cases + 1))
+if [[ "$pr_line" != *"merged into"* ]]; then
+  log_success "...and doesn't claim a merge happened"
+else
+  log_error "...and doesn't claim a merge happened: '${pr_line}'"
+  failures=$((failures + 1))
+fi
+expect "without a PR there is no 'against'" "<sub>commit \`aaaaaaa\`</sub>" \
+  "$(context HEAD_SHA="$aaa" TARGET_SHA="$bbb")"
+
 # --- Plan names ------------------------------------------------------------------
 
 # A call named after a module path, and "-" vs "/", used to sanitize to the
