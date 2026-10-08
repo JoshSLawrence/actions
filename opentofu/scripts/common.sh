@@ -17,7 +17,7 @@ source "$OPENTOFU_COMMON_DIR/../../shared/scripts/common.sh"
 # The summary of the collapsed block that holds a plan's full text, the last
 # thing in the plan summary. plan-summary.sh writes it; drift-report.sh cuts
 # the summary off at it for issue-plan: false, so the two must agree.
-FULL_PLAN_SUMMARY="Full plan"
+export FULL_PLAN_SUMMARY="Full plan"
 
 # Let `tofu init` fetch module sources from private GitHub repositories
 # (git::https://github.com/..., git@github.com:...). Uses MODULES_GITHUB_TOKEN
