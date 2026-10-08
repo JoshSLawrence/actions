@@ -1,6 +1,6 @@
 # actions
 
-[![CI](https://github.com/JoshSLawrence/actions/actions/workflows/ci.yaml/badge.svg)](https://github.com/JoshSLawrence/actions/actions/workflows/ci.yaml)
+[![CI](https://github.com/JoshSLawrence/actions/actions/workflows/ci.yaml/badge.svg?branch=main&event=push)](https://github.com/JoshSLawrence/actions/actions/workflows/ci.yaml?query=branch%3Amain+event%3Apush)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A library of reusable GitHub Actions workflows and composite actions.
