@@ -5,7 +5,8 @@ description: >-
   for the drift, or updates the open one in place; when the drift is gone,
   comments once and adds the drift-resolved label (a person closes it). A
   failed plan fails the action and leaves the issues alone; fail-on-drift
-  also fails it when there is drift. Run it after opentofu/plan, with
+  also fails it when there is drift. Issues are only touched on the default
+  branch. Run it after opentofu/plan, with
   if !cancelled() so a failed plan is reported too. Needs issues write.
 
 inputs:
@@ -29,6 +30,10 @@ inputs:
     description: '"true" opens, updates and resolves an issue per deployment; "false" only reports in the job.'
     required: false
     default: "true"
+  issue-plan:
+    description: '"false" keeps the plan text out of the issue: only the change counts, the resource addresses and a link to the run.'
+    required: false
+    default: "true"
   issue-labels:
     description: Labels of new issues, comma-separated; the first also finds the deployment's issue.
     required: false
@@ -41,6 +46,14 @@ inputs:
     description: '"true" fails the action when there is drift.'
     required: false
     default: "false"
+  default-branch:
+    description: The repository's default branch. Issues are only touched on runs of it.
+    required: false
+    default: ${{ github.event.repository.default_branch }}
+  ref:
+    description: The ref being checked (default - the run's).
+    required: false
+    default: ${{ github.ref }}
   github-token:
     description: Token that opens and updates the issues (needs issues write).
     required: false
@@ -48,7 +61,7 @@ inputs:
 
 outputs:
   drift:
-    description: "'true' if the plan found drift, 'false' if not, 'error' if the check itself failed."
+    description: "'true' if the plan found drift, 'false' if not, 'error' if the plan failed (empty if this action itself failed)."
     value: ${{ steps.report.outputs.drift }}
   issue:
     description: Number of the deployment's open drift issue, if there is one.
@@ -67,6 +80,9 @@ runs:
         KEY: ${{ inputs.key }}
         TITLE: ${{ inputs.title }}
         CREATE_ISSUES: ${{ inputs.issues }}
+        ISSUE_PLAN: ${{ inputs.issue-plan }}
+        DEFAULT_BRANCH: ${{ inputs.default-branch }}
+        GITHUB_REF: ${{ inputs.ref }}
         ISSUE_LABELS: ${{ inputs.issue-labels }}
         ISSUE_ASSIGNEES: ${{ inputs.issue-assignees }}
         FAIL_ON_DRIFT: ${{ inputs.fail-on-drift }}

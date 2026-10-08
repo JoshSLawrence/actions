@@ -362,8 +362,9 @@ present:
   them `integration-test-azure-client-id` (an identity that can only touch a
   test subscription or resource group) and/or an
   `integration-test-environment` with required reviewers. The workflow warns
-  when integration tests would run as the apply identity with neither; it
-  can't tell whether a named environment has reviewers. Federate the
+  whenever integration tests would run as the apply identity (no
+  `integration-test-azure-client-id`); an environment only helps if it has
+  required reviewers, which it can't tell. Federate the
   integration test identity for the subject in the table above.
 - The workflow sets only `ARM_USE_OIDC`; the azapi, azuread and msgraph
   providers read GitHub's `ACTIONS_ID_TOKEN_REQUEST_*` themselves, so no
@@ -437,11 +438,13 @@ per job per run. `provider-cache: false` turns it off.
   temporary directory and restores it with `actions/cache` before the first
   `tofu` command. The cache is saved when the job succeeds.
 - **Key:** the runner's OS and architecture plus the hash of the module's
-  `.terraform.lock.hcl`. A lock file change misses the exact key, starts from
-  the newest entry for the same OS and architecture, and saves a new entry,
-  so the cache only grows by what changed (GitHub evicts entries unused for
-  seven days). Without a lock file the key is OS and architecture only, so
-  it never follows provider upgrades; commit the lock file.
+  `.terraform.lock.hcl`, matched exactly: a lock file change starts a fresh
+  entry, which holds only that lock file's providers. There is no fallback
+  to an older entry, which would carry every old provider version into each
+  new one and grow against the repository's 10 GB cache limit (GitHub
+  evicts entries unused for seven days). Without a lock file the key is OS
+  and architecture only, so it never follows provider upgrades and cached
+  providers aren't checked against anything; commit the lock file.
 - **The lock file still decides.** OpenTofu uses a cached provider only if
   its checksum is one of the lock file's, so `-lockfile=readonly` keeps
   working and a tampered cache entry is never trusted. When the lock file has
@@ -534,34 +537,43 @@ A complete caller, with one job per deployment of a module:
   created.
 - **Concurrency:** a run waits for an earlier one of the same deployment
   instead of racing it for the issue.
-- **Run it on the default branch** (`schedule` does; so does
-  `workflow_dispatch` there). The issue says which ref was planned.
-- **Issues show the plan.** Anyone who can read the repository can read its
-  issues, as with PR comments: keep secrets out of state, and don't use issues
-  on a public repository for a module whose plan you wouldn't show. Set
-  `issues: false` to report only in the job summary and the outputs.
+- **Issues are only touched on the default branch** (`schedule` runs there;
+  so does `workflow_dispatch` on it). On any other ref the check still plans
+  and reports `drift`, but opens, updates and resolves nothing, since a
+  deployment's issue isn't keyed by ref.
+- **Issues show the plan, and outlive the run.** GitHub masks registered
+  secrets in logs, but not in issue bodies. A drift plan can show values
+  changed outside OpenTofu (in the portal, say), which are never in your
+  code and may not be marked sensitive in the provider's schema. Anyone who
+  can read the repository can read its issues, and they persist (and keep
+  their edit history) after the drift is gone. Set `issue-plan: false` to
+  leave the plan text out (the issue then holds the change counts, the
+  resource addresses and a link to the run), or `issues: false` to report
+  only in the job summary and the outputs; both are recommended for public
+  repositories.
 
 <!-- markdownlint-disable MD013 -->
 
-| Input                   | Default              | Description                                                             |
-| ----------------------- | -------------------- | ----------------------------------------------------------------------- |
-| `working-directory`     | **required**         | The root module; its own `mise.toml` pins its tools                     |
-| `var-files`             | none                 | `.tfvars` files, in order, for `init` and `plan`                        |
-| `name`                  | last var file's name | Label for this call in titles and names                                 |
-| `environment`           | none                 | The drift job's environment (binds the OIDC subject); must exist        |
-| `azure-client-id`       | none                 | Fallback identity when `plan-azure-client-id` isn't set                 |
-| `azure-tenant-id`       | none                 | Tenant ID; required with any client ID                                  |
-| `azure-subscription-id` | none                 | Subscription ID                                                         |
-| `plan-azure-client-id`  | `azure-client-id`    | The identity that plans, e.g. a read-only one                           |
-| `azure-use-azuread`     | `true`               | Microsoft Entra ID (RBAC) auth for storage: state and data plane        |
-| `issues`                | `true`               | Open, update and resolve an issue per deployment                        |
-| `issue-labels`          | `opentofu-drift`     | Labels of new issues (comma-separated); the first finds the issue again |
-| `issue-assignees`       | none                 | Logins new issues are assigned to (comma-separated)                     |
-| `fail-on-drift`         | `false`              | Fail the job when there's drift                                         |
-| `runs-on`               | `ubuntu-latest`      | Runner: a label, or JSON, as for `opentofu.yaml`; must reach the state  |
-| `timeout-minutes`       | `30`                 | Timeout of the drift job                                                |
-| `provider-cache`        | `true`               | Cache providers across runs                                             |
-| `mise-version`          | the setup pin        | The mise version; the module's `mise.toml` pins its tools               |
+| Input                   | Default              | Description                                                               |
+| ----------------------- | -------------------- | ------------------------------------------------------------------------- |
+| `working-directory`     | **required**         | The root module; its own `mise.toml` pins its tools                       |
+| `var-files`             | none                 | `.tfvars` files, in order, for `init` and `plan`                          |
+| `name`                  | last var file's name | Label for this call in titles and names                                   |
+| `environment`           | none                 | The drift job's environment (binds the OIDC subject); must exist          |
+| `azure-client-id`       | none                 | Fallback identity when `plan-azure-client-id` isn't set                   |
+| `azure-tenant-id`       | none                 | Tenant ID; required with any client ID                                    |
+| `azure-subscription-id` | none                 | Subscription ID                                                           |
+| `plan-azure-client-id`  | `azure-client-id`    | The identity that plans, e.g. a read-only one                             |
+| `azure-use-azuread`     | `true`               | Microsoft Entra ID (RBAC) auth for storage: state and data plane          |
+| `issues`                | `true`               | Open, update and resolve an issue per deployment                          |
+| `issue-plan`            | `true`               | Put the plan text in the issue; `false`: counts, addresses and a run link |
+| `issue-labels`          | `opentofu-drift`     | Labels of new issues (comma-separated); the first finds the issue again   |
+| `issue-assignees`       | none                 | Logins new issues are assigned to (comma-separated)                       |
+| `fail-on-drift`         | `false`              | Fail the job when there's drift                                           |
+| `runs-on`               | `ubuntu-latest`      | Runner: a label, or JSON, as for `opentofu.yaml`; must reach the state    |
+| `timeout-minutes`       | `30`                 | Timeout of the drift job                                                  |
+| `provider-cache`        | `true`               | Cache providers across runs                                               |
+| `mise-version`          | the setup pin        | The mise version; the module's `mise.toml` pins its tools                 |
 
 | Secret                     | Description                                                        |
 | -------------------------- | ------------------------------------------------------------------ |
@@ -569,10 +581,10 @@ A complete caller, with one job per deployment of a module:
 | `plan-azure-client-secret` | Secret of `plan-azure-client-id`; without it, OIDC                 |
 | `modules-token`            | Reads private GitHub repositories used as module or policy sources |
 
-| Output  | Description                                                                 |
-| ------- | --------------------------------------------------------------------------- |
-| `drift` | `true` if the plan found drift, `false` if not, `error` if the check failed |
-| `issue` | Number of the deployment's open drift issue, if there is one                |
+| Output  | Description                                                                                                        |
+| ------- | ------------------------------------------------------------------------------------------------------------------ |
+| `drift` | `true` if the plan found drift, `false` if not, `error` if the plan failed; empty if the report step itself failed |
+| `issue` | Number of the deployment's open drift issue, if there is one                                                       |
 
 <!-- markdownlint-enable MD013 -->
 

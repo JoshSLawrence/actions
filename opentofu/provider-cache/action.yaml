@@ -4,7 +4,7 @@ description: >-
   TF_PLUGIN_CACHE_DIR at a directory for the rest of the job and restores it
   from (and saves it to) the Actions cache, keyed on the runner's OS and
   architecture and the root module's .terraform.lock.hcl, so a lock file
-  change gets a fresh entry that starts from the closest earlier one.
+  change gets a fresh entry.
   OpenTofu still checks every cached provider against the lock file, so
   -lockfile=readonly keeps working. Run it after actions/checkout, before the
   first tofu command; the cache is saved when the job succeeds.
@@ -31,14 +31,13 @@ runs:
         CACHE_DIR: ${{ runner.temp }}/tofu-provider-cache
         WORKING_DIR: ${{ inputs.working-directory }}
 
-    # An exact hit is never saved again (cache entries are immutable); a lock
-    # file change misses, restores the newest entry of the prefix, and saves
-    # a new one with whatever init added.
+    # Exact key only: an entry is never saved again once it exists (cache
+    # entries are immutable), and a lock file change starts a fresh one. A
+    # restore-keys prefix would carry every old provider version into each
+    # new entry, growing without bound against the repository's cache limit.
     - name: Cache the providers
       if: inputs.enabled == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.dir.outputs.dir }}
         key: tofu-providers-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(format('{0}/.terraform.lock.hcl', inputs.working-directory)) }}
-        restore-keys: |
-          tofu-providers-${{ runner.os }}-${{ runner.arch }}-

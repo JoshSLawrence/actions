@@ -29,7 +29,15 @@
 #   SUMMARY_FILE    - the plan action's summary-file output: the issue body.
 #                     The plan itself is deleted by then, and never uploaded.
 #   CREATE_ISSUES   - "true" to open, update and resolve issues (default
-#                     true)
+#                     true). Issues are only touched on the default branch
+#                     (GITHUB_REF is DEFAULT_BRANCH's): the issue isn't keyed
+#                     by ref, so a run on a feature branch would otherwise
+#                     open, update or resolve the default branch's issue.
+#   DEFAULT_BRANCH  - the repository's default branch (required to touch
+#                     issues)
+#   ISSUE_PLAN      - "false" keeps the plan text out of the issue: its body
+#                     has only the counts, the changed resource addresses and
+#                     the run link (default true)
 #   ISSUE_LABELS    - labels of new issues, comma-separated (default:
 #                     opentofu-drift); the first also finds the issue
 #   ISSUE_ASSIGNEES - who new issues are assigned to, comma-separated
@@ -54,10 +62,11 @@ source "$SCRIPT_DIR/common.sh"
 CREATE_ISSUES="${CREATE_ISSUES:-true}"
 ISSUE_LABELS="${ISSUE_LABELS:-opentofu-drift}"
 ISSUE_AUTHOR="${ISSUE_AUTHOR:-github-actions[bot]}"
+ISSUE_PLAN="${ISSUE_PLAN:-true}"
 RESOLVED_LABEL="drift-resolved"
 RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}"
 
-log_config PLAN_EXIT_CODE KEY CREATE_ISSUES ISSUE_LABELS ISSUE_ASSIGNEES FAIL_ON_DRIFT
+log_config PLAN_EXIT_CODE KEY CREATE_ISSUES DEFAULT_BRANCH GITHUB_REF ISSUE_PLAN ISSUE_LABELS ISSUE_ASSIGNEES FAIL_ON_DRIFT
 
 case "${PLAN_EXIT_CODE:-}" in
   0) drift=false ;;
@@ -110,7 +119,14 @@ issue_body() {
   local summary
   summary="$(mktemp)"
   if [ -n "${SUMMARY_FILE:-}" ] && [ -s "$SUMMARY_FILE" ]; then
-    cp "$SUMMARY_FILE" "$summary"
+    if is_true "$ISSUE_PLAN"; then
+      cp "$SUMMARY_FILE" "$summary"
+    else
+      # Everything above the collapsed full plan: the counts, destroys and
+      # the table of resource addresses (see plan-summary.sh)
+      sed '/^<details><summary>Full plan<\/summary>$/,$d' "$SUMMARY_FILE" > "$summary"
+      echo "_The plan text is left out of this issue (issue-plan is off): see the [drift check](${RUN_URL})'s job summary._" >> "$summary"
+    fi
   else
     echo "_The plan summary is missing: see the [drift check](${RUN_URL})._" > "$summary"
   fi
@@ -124,6 +140,11 @@ issue_body() {
   cat "$summary"
   rm -f "$summary"
 }
+
+if is_true "$CREATE_ISSUES" && [ "${GITHUB_REF:-}" != "refs/heads/${DEFAULT_BRANCH:-}" ]; then
+  log_notice "Not on the default branch (${DEFAULT_BRANCH:-unknown}; this run is ${GITHUB_REF:-unknown}): issues are only touched on the default branch, so this run can't open, update or resolve the deployment's issue. The drift result is in the job summary and the outputs."
+  CREATE_ISSUES=false
+fi
 
 if is_true "$CREATE_ISSUES"; then
   require_tool gh "GitHub CLI (gh)"
@@ -167,8 +188,18 @@ if is_true "$CREATE_ISSUES"; then
           --arg assignees "$(trim_list "${ISSUE_ASSIGNEES:-}" | paste -sd, -)" '
           {title: $title, body: ., labels: ($labels | split(","))}
           + (($assignees | split(",") | map(select(length > 0))) as $a | if ($a | length) > 0 then {assignees: $a} else {} end)')"
-        issue="$(gh api --method POST "$issue_api" --input - --jq .number <<< "$payload")"
+        first_json="$(jq -rn --arg v "$first_label" '$v | tojson')"
+        created="$(gh api --method POST "$issue_api" --input - \
+          --jq "\"\(.number) \([.labels[].name] | index(${first_json}) != null)\"" <<< "$payload")"
+        issue="${created%% *}"
         log_warn "Opened drift issue #${issue} for ${what_plain}."
+        # Without its first label the next check wouldn't find this issue and
+        # would open another, every day
+        if [ "${created##* }" != true ]; then
+          log_warn "Drift issue #${issue} was created without the label '${first_label}' (GitHub dropped it). Adding it, so the next check finds this issue."
+          jq -n --arg label "$first_label" '{labels: [$label]}' |
+            gh api --method POST "${issue_api}/${issue}/labels" --input - > /dev/null
+        fi
       fi
     elif [ -n "$issue" ]; then
       was_resolved="$(gh api "${issue_api}/${issue}" --jq "[.labels[].name] | index(\"${RESOLVED_LABEL}\") != null")"

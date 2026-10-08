@@ -89,6 +89,10 @@ on:
         description: Open a GitHub issue per drifted deployment, update it while the drift lasts, and mark it resolved when it's gone. false only reports in the job summary and the outputs.
         type: boolean
         default: true
+      issue-plan:
+        description: Put the plan in the issue. false leaves the plan text out (only the change counts, the resource addresses and a link to the run), for repositories where issues are more widely readable than the state.
+        type: boolean
+        default: true
       issue-labels:
         description: "Labels of new issues, comma-separated (created if missing). The first also finds the deployment's issue again: don't remove it from an issue."
         type: string
@@ -139,7 +143,7 @@ on:
 
     outputs:
       drift:
-        description: "'true' if the plan found drift, 'false' if not, 'error' if the check itself failed."
+        description: "'true' if the plan found drift, 'false' if not, 'error' if the plan failed (empty if the report step itself failed)."
         value: ${{ jobs.drift.outputs.drift }}
       issue:
         description: Number of the deployment's open drift issue, if there is one.
@@ -157,7 +161,9 @@ jobs:
     runs-on: ${{ (startsWith(inputs.runs-on, '{') || startsWith(inputs.runs-on, '[')) && fromJSON(inputs.runs-on) || inputs.runs-on }}
     timeout-minutes: 10
     permissions:
-      actions: read # check the environment exists
+      # The environment existence check reads the repository's environments
+      # through the API (require-environments.sh)
+      actions: read
       contents: read
     outputs:
       name: ${{ steps.prepare.outputs.name }}
@@ -269,6 +275,7 @@ jobs:
           key: ${{ steps.plan.outputs.key }}
           title: ${{ steps.plan.outputs.title }}
           issues: ${{ inputs.issues }}
+          issue-plan: ${{ inputs.issue-plan }}
           issue-labels: ${{ inputs.issue-labels }}
           issue-assignees: ${{ inputs.issue-assignees }}
           fail-on-drift: ${{ inputs.fail-on-drift }}

@@ -284,12 +284,25 @@ prepare ──> drift
     it's dealt with, and an auto-closing issue would reopen as a new one
     (and a new notification) every time the drift flickers.
   - `fail-on-drift` fails the job when there is drift, after reporting it.
+  - Issues are only touched on the default branch: the marker has no ref in
+    it, so a manual run on a feature branch could otherwise resolve the
+    default branch's issue. Other refs still plan and output `drift`.
+  - A created issue is checked for its first label (the one that finds it
+    again) and gets it added if GitHub dropped it, or the next check would
+    open a duplicate.
+  - `issue-plan: false` leaves the plan text out of the issue body (change
+    counts, resource addresses and the run link only): GitHub masks secrets
+    in logs but not in issue bodies, and a drift plan can show values changed
+    outside OpenTofu that are not marked sensitive. Recommended, like
+    `issues: false`, for public repositories.
   - `issues: false` only reports in the job summary and the outputs `drift`
-    (`true`, `false` or `error`) and `issue` (the number, or empty).
+    (`true`, `false` or `error`; empty if the report step itself failed)
+    and `issue` (the number, or empty).
 - **Concurrency:** one drift job per deployment at a time (not cancelled), so
   two runs can't both open the issue.
 - **Permissions:** `actions: read` (the environment check), `contents: read`,
-  `id-token: write` and `issues: write`. A new workflow, so requiring
+  `id-token: write` and `issues: write` (`actions: read` is for the prepare
+  job's environment existence check). A new workflow, so requiring
   `issues: write` of its callers is not a breaking change.
 - **Not in the first version:** one issue shared by several deployments, a
   summary dashboard, notifications other than GitHub's own (use
@@ -306,9 +319,10 @@ downloaded once and not once per job per run:
   `TF_PLUGIN_CACHE_DIR` (a directory under `runner.temp`, made absolute
   because tools run from inside the module) and runs `actions/cache` on it,
   keyed on the runner's OS and architecture and the hash of the module's
-  `.terraform.lock.hcl`, with the OS-and-architecture prefix as the
-  restore key. Each of those jobs calls it once after `shared/setup`.
-  `provider-cache: false` makes it do nothing.
+  `.terraform.lock.hcl`, matched exactly (no restore-keys prefix, which
+  would carry every old provider version into each new entry and grow
+  against the repository's cache limit). Each of those jobs calls it once
+  after `shared/setup`. `provider-cache: false` makes it do nothing.
 - **Compatible with `-lockfile=readonly` and several inits per job.**
   OpenTofu installs into the cache only providers it has verified, and
   uses a cached one only if its checksum is in the lock file; otherwise it
@@ -626,9 +640,9 @@ and apply jobs:
   configuration makes (*Reader and Data Access*, Key Vault reader roles),
   and Storage Blob Data Reader on the state container (plans run with
   `-lock=false`). `validate-inputs.sh` warns when it isn't set, and likewise
-  when integration tests would run as the apply identity with neither
-  `integration-test-azure-client-id` nor `integration-test-environment` (it
-  can't tell whether a named environment has reviewers).
+  whenever integration tests would run as the apply identity (no
+  `integration-test-azure-client-id`): an `integration-test-environment`
+  only helps if it has required reviewers, which it can't tell.
 - **Secrets are masked** in the log, like any secret passed to a workflow.
 
 ### Private modules and policies

@@ -9,8 +9,9 @@
 # - Repository variables as in examples/opentofu-deployments.yaml:
 #   AZURE_TENANT_ID, DEV_SUBSCRIPTION_ID and PROD_SUBSCRIPTION_ID, and the
 #   read-only DEV_READ_CLIENT_ID and PROD_READ_CLIENT_ID (Reader on the
-#   resources and Storage Blob Data Reader on the state container: plans run
-#   without locking the state).
+#   resources, plus whatever reading the configuration needs -- Reader and
+#   Data Access, Key Vault reader roles -- and Storage Blob Data Reader on the
+#   state container: plans run without locking the state).
 # - Federated credentials for the read-only identities for the subject
 #   `ref:refs/heads/main` (what a scheduled run presents without an
 #   environment) -- see opentofu/README.md. With `environment:` set, the
@@ -19,7 +20,10 @@
 # - Issues enabled in the repository. The first label of `issue-labels` is
 #   created if missing.
 # - Scheduled workflows run only on the default branch, and GitHub pauses
-#   them after 60 days without repository activity.
+#   them after 60 days without repository activity, in public repositories.
+# - Public repository: issues hold the plan, which can show values changed
+#   outside OpenTofu. Set `issue-plan: false` (counts and resource addresses
+#   only) or `issues: false`.
 
 name: OpenTofu identity drift
 
@@ -62,7 +66,8 @@ jobs:
       azure-tenant-id: ${{ vars.AZURE_TENANT_ID }}
       azure-subscription-id: ${{ vars.PROD_SUBSCRIPTION_ID }}
       plan-azure-client-id: ${{ vars.PROD_READ_CLIENT_ID }}
-      issue-assignees: platform-oncall
+      # GitHub user logins, comma-separated
+      issue-assignees: your-login
       # Also fail the run (and notify whoever watches failures) on drift
       fail-on-drift: true
 

@@ -182,7 +182,7 @@ done <<< "$azure"
 if [ "$drift" = true ]; then
   # A scheduled check only reads, and runs unattended: it needs no write access
   if [ -n "${AZURE_CLIENT_ID:-}" ] && [ -z "${PLAN_AZURE_CLIENT_ID:-}" ]; then
-    log_warn "Drift checks sign in with azure-client-id because plan-azure-client-id isn't set. They only read and run unattended, so set plan-azure-client-id to a read-only identity (Reader on the resources, Storage Blob Data Reader on the state container) and keep the identity that can write out of scheduled runs."
+    log_warn "Drift checks sign in with azure-client-id because plan-azure-client-id isn't set. They only read and run unattended, so set plan-azure-client-id to a read-only identity (Reader on the resources, plus whatever reading the configuration needs, e.g. Reader and Data Access, Key Vault reader roles; and Storage Blob Data Reader on the state container) and keep the identity that can write out of scheduled runs."
   fi
 elif [ -z "$secrets_skipped" ] && [ -n "${AZURE_CLIENT_ID:-}" ] && [ -z "${PLAN_AZURE_CLIENT_ID:-}" ]; then
   if is_true "${HAS_AZURE_CLIENT_SECRET:-false}"; then
@@ -193,13 +193,13 @@ elif [ -z "$secrets_skipped" ] && [ -n "${AZURE_CLIENT_ID:-}" ] && [ -z "${PLAN_
 fi
 
 # Likewise the integration tests, which run before the plan and any approval:
-# without their own identity (integration-test-azure-client-id) or an
-# environment to gate them, they sign in as the apply identity on every
-# non-fork pull request. Whether an environment has required reviewers isn't
-# known here (the apply job's gate is checked at run time); name one that does.
+# without their own identity (integration-test-azure-client-id) they sign in
+# as the apply identity on every non-fork pull request. An environment only
+# helps if it has required reviewers, which isn't known here (the apply job's
+# gate is checked at run time).
 if [ -z "$secrets_skipped" ] && is_true "${INTEGRATION_TESTS:-false}" && [ -n "${AZURE_CLIENT_ID:-}" ] &&
-  [ -z "${INTEGRATION_TEST_AZURE_CLIENT_ID:-}" ] && [ -z "${INTEGRATION_TEST_ENVIRONMENT:-}" ]; then
-  log_warn "Integration tests sign in with the apply identity (azure-client-id) and run before any approval, because neither integration-test-azure-client-id nor integration-test-environment is set: anyone who can open a PR could run code with a token that can write. Set integration-test-azure-client-id to an identity scoped to a test subscription or resource group, and/or integration-test-environment to an environment with required reviewers."
+  [ -z "${INTEGRATION_TEST_AZURE_CLIENT_ID:-}" ]; then
+  log_warn "Integration tests sign in with the apply identity (azure-client-id) and run before any approval, because integration-test-azure-client-id isn't set: anyone who can open a PR could run code with a token that can write. Set integration-test-azure-client-id to an identity scoped to a test subscription or resource group. integration-test-environment only helps if that environment has required reviewers${INTEGRATION_TEST_ENVIRONMENT:+ (check ${INTEGRATION_TEST_ENVIRONMENT})}."
 fi
 
 # --- Runners ---------------------------------------------------------------------

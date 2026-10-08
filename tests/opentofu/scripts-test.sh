@@ -279,7 +279,7 @@ expect_test_warned() {
 }
 expect_test_warned "integration tests as the apply identity, ungated: passes, but warns" yes INTEGRATION_TESTS=true
 expect_test_warned "...not with their own identity" no INTEGRATION_TESTS=true INTEGRATION_TEST_AZURE_CLIENT_ID=i
-expect_test_warned "...not with an environment" no INTEGRATION_TESTS=true INTEGRATION_TEST_ENVIRONMENT=test
+expect_test_warned "...also with an environment, which only helps with reviewers" yes INTEGRATION_TESTS=true INTEGRATION_TEST_ENVIRONMENT=test
 expect_test_warned "...not with integration tests off" no
 expect_test_warned "...not on a Dependabot PR, which isn't planned" no INTEGRATION_TESTS=true IS_DEPENDABOT=true
 
@@ -462,6 +462,7 @@ fi
 #   GH_STUB_FIND     - the number of the deployment's open issue, if any
 #   GH_STUB_RESOLVED - "true" if that issue carries the drift-resolved label
 #   GH_STUB_MISSING_LABELS=1 - labels don't exist yet
+#   GH_STUB_DROP_LABEL=1 - a created issue comes back without its labels
 #   GH_STUB_FAIL=1   - every call fails
 mkdir -p "$WORK/driftbin"
 cat > "$WORK/driftbin/gh" << 'STUB'
@@ -480,7 +481,7 @@ if [ -n "${GH_STUB_FAIL:-}" ]; then
 fi
 case "$args" in
   *--paginate*) echo "${GH_STUB_FIND:-}" ;;
-  *"--jq .number"*) echo 42 ;;
+  *'\(.number)'*) if [ -n "${GH_STUB_DROP_LABEL:-}" ]; then echo "42 false"; else echo "42 true"; fi ;;
   *"/labels/"*"--method"*) ;;
   *"/labels/"*) [ -z "${GH_STUB_MISSING_LABELS:-}" ] || exit 1 ;;
   *"/issues/"*"--jq"*) echo "${GH_STUB_RESOLVED:-false}" ;;
@@ -499,6 +500,7 @@ drift_report() {
   : > "$WORK/output"
   env PATH="$WORK/driftbin:$PATH" GH_STUB_LOG="$WORK/gh.log" GITHUB_OUTPUT="$WORK/output" \
     GH_TOKEN=t GITHUB_REPOSITORY=org/repo GITHUB_RUN_ID=9 GITHUB_REF_NAME=main \
+    GITHUB_REF=refs/heads/main DEFAULT_BRANCH=main \
     KEY='iac/app:prod@abc' TITLE="OpenTofu: \`iac/app\` · \`prod\`" SUMMARY_FILE="$WORK/summary.md" \
     "$@" "$SCRIPTS/drift-report.sh" > "$WORK/log" 2>&1 || status=$?
   echo "drift=$(sed -n 's/^drift=//p' "$WORK/output") issue=$(sed -n 's/^issue=//p' "$WORK/output")"
@@ -582,7 +584,7 @@ expect_drift_report "drift opens an issue" "drift=true issue=42" PLAN_EXIT_CODE=
 expect_gh "...found by the hidden marker among open issues with the first label" called \
   "gh api --paginate repos/org/repo/issues?state=open&labels=opentofu-drift&per_page=100"
 expect_gh "...with the author and the marker in the filter" called 'github-actions[bot]'
-expect_gh "...creating it" called "gh api --method POST repos/org/repo/issues --input - --jq .number"
+expect_gh "...creating it" called "gh api --method POST repos/org/repo/issues --input - --jq"
 expect_gh "...with the marker for its key" called '<!-- opentofu-drift:iac/app:prod@abc -->'
 expect_gh "...the plan summary as its body" called '3 to add'
 expect_gh "...titled after the deployment" called '"title":"OpenTofu drift: iac/app · prod"'
@@ -592,8 +594,49 @@ expect_gh "...without creating labels that exist" not-called "--method POST repo
 drift_report PLAN_EXIT_CODE=2 ISSUE_LABELS="opentofu-drift, infra" ISSUE_ASSIGNEES="alice, bob" > /dev/null
 expect_gh "labels and assignees come as lists" called '"labels":["opentofu-drift","infra"]'
 expect_gh "...assignees too" called '"assignees":["alice","bob"]'
+expect_gh "...checking the first label stuck, and it did" not-called "issues/42/labels"
+drift_report PLAN_EXIT_CODE=2 GH_STUB_DROP_LABEL=1 > /dev/null
+expect_gh "a label GitHub dropped is added to the new issue" called '{"labels":["opentofu-drift"]}'
+expect_gh "...on that issue" called "gh api --method POST repos/org/repo/issues/42/labels --input -"
 drift_report PLAN_EXIT_CODE=2 GH_STUB_MISSING_LABELS=1 > /dev/null
 expect_gh "a missing label is created first" called "gh api --method POST repos/org/repo/labels -f name=opentofu-drift"
+
+# issue-plan off: counts and addresses only
+cat > "$WORK/full-summary.md" << 'SUMMARY'
+### Plan: 1 to add
+
+<details><summary>Resources (1)</summary>
+
+| Action | Resource |
+| --- | --- |
+| create | `random_pet.this` |
+
+</details>
+
+<details><summary>Full plan</summary>
+
+````diff
++ secret_value = "hunter2"
+````
+
+</details>
+SUMMARY
+drift_report PLAN_EXIT_CODE=2 SUMMARY_FILE="$WORK/full-summary.md" > /dev/null
+expect_gh "the plan text is in the issue by default" called 'hunter2'
+drift_report PLAN_EXIT_CODE=2 SUMMARY_FILE="$WORK/full-summary.md" ISSUE_PLAN=false > /dev/null
+expect_gh "issue-plan off: the plan text is left out" not-called 'hunter2'
+expect_gh "...keeping the counts" called '1 to add'
+expect_gh "...the resource addresses" called 'random_pet.this'
+expect_gh "...and a pointer to the run" called 'issue-plan is off'
+
+# Only the default branch touches issues
+expect_drift_report "a feature branch reports drift..." "drift=true issue=" PLAN_EXIT_CODE=2 GITHUB_REF=refs/heads/feature
+expect_gh "...without any GitHub call" not-called "gh"
+expect_drift_report "...even for an open issue and no drift" "drift=false issue=" \
+  PLAN_EXIT_CODE=0 GITHUB_REF=refs/pull/1/merge GH_STUB_FIND=7
+expect_gh "...resolving nothing" not-called "gh"
+expect_drift_report "an unknown default branch touches nothing either" "drift=true issue=" PLAN_EXIT_CODE=2 DEFAULT_BRANCH=
+expect_gh "...no GitHub call" not-called "gh"
 
 # The body is kept under GitHub's limit
 head -c 70000 /dev/zero | tr '\0' 'x' > "$WORK/big-summary.md"
