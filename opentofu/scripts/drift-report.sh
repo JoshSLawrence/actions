@@ -30,11 +30,12 @@
 #                     The plan itself is deleted by then, and never uploaded.
 #   CREATE_ISSUES   - "true" to open, update and resolve issues (default
 #                     true). Issues are only touched on the default branch
-#                     (GITHUB_REF is DEFAULT_BRANCH's): the issue isn't keyed
+#                     (RUN_REF is DEFAULT_BRANCH's): the issue isn't keyed
 #                     by ref, so a run on a feature branch would otherwise
 #                     open, update or resolve the default branch's issue.
-#   DEFAULT_BRANCH  - the repository's default branch (required to touch
-#                     issues)
+#   DEFAULT_BRANCH  - the repository's default branch (default: looked up with
+#                     the API, since scheduled runs' event has no repository)
+#   RUN_REF         - the ref being checked (default: GITHUB_REF)
 #   ISSUE_PLAN      - "false" keeps the plan text out of the issue: its body
 #                     has only the counts, the changed resource addresses and
 #                     the run link (default true)
@@ -66,7 +67,7 @@ ISSUE_PLAN="${ISSUE_PLAN:-true}"
 RESOLVED_LABEL="drift-resolved"
 RUN_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}"
 
-log_config PLAN_EXIT_CODE KEY CREATE_ISSUES DEFAULT_BRANCH GITHUB_REF ISSUE_PLAN ISSUE_LABELS ISSUE_ASSIGNEES FAIL_ON_DRIFT
+log_config PLAN_EXIT_CODE KEY CREATE_ISSUES DEFAULT_BRANCH RUN_REF GITHUB_REF ISSUE_PLAN ISSUE_LABELS ISSUE_ASSIGNEES FAIL_ON_DRIFT
 
 case "${PLAN_EXIT_CODE:-}" in
   0) drift=false ;;
@@ -123,8 +124,19 @@ issue_body() {
       cp "$SUMMARY_FILE" "$summary"
     else
       # Everything above the collapsed full plan: the counts, destroys and
-      # the table of resource addresses (see plan-summary.sh)
-      sed '/^<details><summary>Full plan<\/summary>$/,$d' "$SUMMARY_FILE" > "$summary"
+      # the table of resource addresses (see plan-summary.sh). Fails closed:
+      # if the full plan's block isn't found, nothing of the summary but its
+      # heading is used, never the plan text.
+      local marker_line
+      marker_line="$(grep -nxF "<details><summary>${FULL_PLAN_SUMMARY}</summary>" "$SUMMARY_FILE" || true)"
+      marker_line="${marker_line%%:*}"
+      if [ -n "$marker_line" ]; then
+        head -n $((marker_line - 1)) "$SUMMARY_FILE" > "$summary"
+      else
+        log_warn "The plan summary format wasn't recognised (no '${FULL_PLAN_SUMMARY}' block), so issue-plan: false puts only its heading in the issue. This is a bug in the drift report: please report it."
+        grep -m1 '^### ' "$SUMMARY_FILE" > "$summary" || true
+      fi
+      echo "" >> "$summary"
       echo "_The plan text is left out of this issue (issue-plan is off): see the [drift check](${RUN_URL})'s job summary._" >> "$summary"
     fi
   else
@@ -141,8 +153,23 @@ issue_body() {
   rm -f "$summary"
 }
 
-if is_true "$CREATE_ISSUES" && [ "${GITHUB_REF:-}" != "refs/heads/${DEFAULT_BRANCH:-}" ]; then
-  log_notice "Not on the default branch (${DEFAULT_BRANCH:-unknown}; this run is ${GITHUB_REF:-unknown}): issues are only touched on the default branch, so this run can't open, update or resolve the deployment's issue. The drift result is in the job summary and the outputs."
+if is_true "$CREATE_ISSUES"; then
+  require_tool gh "GitHub CLI (gh)"
+  require_env GH_TOKEN
+  require_env GITHUB_REPOSITORY
+  # A scheduled run's event has no repository object, so the workflow can't
+  # pass it; failing to find out must not look like "not the default branch"
+  if [ -z "${DEFAULT_BRANCH:-}" ]; then
+    if ! DEFAULT_BRANCH="$(gh api "repos/${GITHUB_REPOSITORY}" --jq .default_branch)" || [ -z "$DEFAULT_BRANCH" ]; then
+      log_error "Couldn't look up ${GITHUB_REPOSITORY}'s default branch, which decides whether this run may touch the drift issue. Check the token can read the repository, or set it as DEFAULT_BRANCH (default-branch). The drift result (${drift}) is in the output 'drift'."
+      exit 1
+    fi
+  fi
+  run_ref="${RUN_REF:-${GITHUB_REF:-}}"
+fi
+
+if is_true "$CREATE_ISSUES" && [ "$run_ref" != "refs/heads/${DEFAULT_BRANCH}" ]; then
+  log_notice "Not on the default branch (${DEFAULT_BRANCH}; this run is ${run_ref:-unknown}): issues are only touched on the default branch, so this run can't open, update or resolve the deployment's issue. The drift result is in the job summary and the outputs."
   CREATE_ISSUES=false
 fi
 

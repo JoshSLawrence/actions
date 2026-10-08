@@ -540,7 +540,9 @@ A complete caller, with one job per deployment of a module:
 - **Issues are only touched on the default branch** (`schedule` runs there;
   so does `workflow_dispatch` on it). On any other ref the check still plans
   and reports `drift`, but opens, updates and resolves nothing, since a
-  deployment's issue isn't keyed by ref.
+  deployment's issue isn't keyed by ref. The default branch is looked up
+  through the API (a scheduled run's event doesn't carry it); if that
+  fails, the check fails rather than silently skipping the issues.
 - **Issues show the plan, and outlive the run.** GitHub masks registered
   secrets in logs, but not in issue bodies. A drift plan can show values
   changed outside OpenTofu (in the portal, say), which are never in your

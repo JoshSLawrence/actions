@@ -47,7 +47,7 @@ inputs:
     required: false
     default: "false"
   default-branch:
-    description: The repository's default branch. Issues are only touched on runs of it.
+    description: The repository's default branch (default - looked up with the API when the event doesn't carry it, as scheduled runs' doesn't). Issues are only touched on runs of it.
     required: false
     default: ${{ github.event.repository.default_branch }}
   ref:
@@ -82,7 +82,7 @@ runs:
         CREATE_ISSUES: ${{ inputs.issues }}
         ISSUE_PLAN: ${{ inputs.issue-plan }}
         DEFAULT_BRANCH: ${{ inputs.default-branch }}
-        GITHUB_REF: ${{ inputs.ref }}
+        RUN_REF: ${{ inputs.ref }}
         ISSUE_LABELS: ${{ inputs.issue-labels }}
         ISSUE_ASSIGNEES: ${{ inputs.issue-assignees }}
         FAIL_ON_DRIFT: ${{ inputs.fail-on-drift }}

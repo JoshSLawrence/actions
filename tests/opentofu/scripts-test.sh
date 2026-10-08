@@ -462,6 +462,7 @@ fi
 #   GH_STUB_FIND     - the number of the deployment's open issue, if any
 #   GH_STUB_RESOLVED - "true" if that issue carries the drift-resolved label
 #   GH_STUB_MISSING_LABELS=1 - labels don't exist yet
+#   GH_STUB_NO_BRANCH=1 - the default branch lookup fails
 #   GH_STUB_DROP_LABEL=1 - a created issue comes back without its labels
 #   GH_STUB_FAIL=1   - every call fails
 mkdir -p "$WORK/driftbin"
@@ -480,6 +481,7 @@ if [ -n "${GH_STUB_FAIL:-}" ]; then
   exit 1
 fi
 case "$args" in
+  *"repos/org/repo --jq .default_branch"*) [ -z "${GH_STUB_NO_BRANCH:-}" ] || exit 1; echo main ;;
   *--paginate*) echo "${GH_STUB_FIND:-}" ;;
   *'\(.number)'*) if [ -n "${GH_STUB_DROP_LABEL:-}" ]; then echo "42 false"; else echo "42 true"; fi ;;
   *"/labels/"*"--method"*) ;;
@@ -500,7 +502,7 @@ drift_report() {
   : > "$WORK/output"
   env PATH="$WORK/driftbin:$PATH" GH_STUB_LOG="$WORK/gh.log" GITHUB_OUTPUT="$WORK/output" \
     GH_TOKEN=t GITHUB_REPOSITORY=org/repo GITHUB_RUN_ID=9 GITHUB_REF_NAME=main \
-    GITHUB_REF=refs/heads/main DEFAULT_BRANCH=main \
+    GITHUB_REF=refs/heads/main RUN_REF=refs/heads/main DEFAULT_BRANCH=main \
     KEY='iac/app:prod@abc' TITLE="OpenTofu: \`iac/app\` · \`prod\`" SUMMARY_FILE="$WORK/summary.md" \
     "$@" "$SCRIPTS/drift-report.sh" > "$WORK/log" 2>&1 || status=$?
   echo "drift=$(sed -n 's/^drift=//p' "$WORK/output") issue=$(sed -n 's/^issue=//p' "$WORK/output")"
@@ -629,14 +631,53 @@ expect_gh "...keeping the counts" called '1 to add'
 expect_gh "...the resource addresses" called 'random_pet.this'
 expect_gh "...and a pointer to the run" called 'issue-plan is off'
 
+# issue-plan off, against the real summary renderer (plan-summary.sh), so a
+# change to its layout can't silently put the plan text in an issue
+cat > "$WORK/plan.json" << 'PLANJSON'
+{"resource_changes": [{"address": "azurerm_thing.main", "change": {"actions": ["create"]}}]}
+PLANJSON
+printf 'Terraform will perform:\n  # azurerm_thing.main will be created\n+ secret = "hunter2"\n' > "$WORK/plan.txt"
+PLAN_EXIT_CODE=2 PLAN_JSON="$WORK/plan.json" PLAN_TEXT="$WORK/plan.txt" "$SCRIPTS/plan-summary.sh" > "$WORK/real-summary.md" 2> /dev/null
+drift_report PLAN_EXIT_CODE=2 SUMMARY_FILE="$WORK/real-summary.md" > /dev/null
+expect_gh "the real summary puts the plan text in the issue by default" called 'hunter2'
+drift_report PLAN_EXIT_CODE=2 SUMMARY_FILE="$WORK/real-summary.md" ISSUE_PLAN=false > /dev/null
+expect_gh "issue-plan off, real summary: no plan text" not-called 'hunter2'
+expect_gh "...but the resource address" called 'azurerm_thing.main'
+printf '### Plan: 1 to add\n\nsomething new\n+ secret = "hunter2"\n' > "$WORK/odd-summary.md"
+drift_report PLAN_EXIT_CODE=2 SUMMARY_FILE="$WORK/odd-summary.md" ISSUE_PLAN=false > /dev/null
+expect_gh "a summary without the full plan block fails closed: no plan text" not-called 'hunter2'
+expect_gh "...keeping its heading" called '### Plan: 1 to add'
+cases=$((cases + 1))
+if grep -qF "format wasn't recognised" "$WORK/log"; then
+  log_success "...and warning that the format wasn't recognised"
+else
+  log_error "...and warning that the format wasn't recognised: no warning"
+  failures=$((failures + 1))
+fi
+
 # Only the default branch touches issues
-expect_drift_report "a feature branch reports drift..." "drift=true issue=" PLAN_EXIT_CODE=2 GITHUB_REF=refs/heads/feature
+expect_drift_report "a feature branch reports drift..." "drift=true issue=" PLAN_EXIT_CODE=2 RUN_REF=refs/heads/feature
 expect_gh "...without any GitHub call" not-called "gh"
 expect_drift_report "...even for an open issue and no drift" "drift=false issue=" \
-  PLAN_EXIT_CODE=0 GITHUB_REF=refs/pull/1/merge GH_STUB_FIND=7
+  PLAN_EXIT_CODE=0 RUN_REF=refs/pull/1/merge GH_STUB_FIND=7
 expect_gh "...resolving nothing" not-called "gh"
-expect_drift_report "an unknown default branch touches nothing either" "drift=true issue=" PLAN_EXIT_CODE=2 DEFAULT_BRANCH=
-expect_gh "...no GitHub call" not-called "gh"
+expect_drift_report "an event without the default branch looks it up, and opens the issue" "drift=true issue=42" \
+  PLAN_EXIT_CODE=2 DEFAULT_BRANCH=
+expect_gh "...with the API" called "gh api repos/org/repo --jq .default_branch"
+expect_drift_report "...a feature branch still touches nothing" "drift=true issue=" \
+  PLAN_EXIT_CODE=2 DEFAULT_BRANCH= RUN_REF=refs/heads/feature
+expect_gh "...after the lookup only" not-called "issues"
+cases=$((cases + 1))
+if drift_report PLAN_EXIT_CODE=2 DEFAULT_BRANCH= GH_STUB_NO_BRANCH=1 > /dev/null; then
+  log_error "a failed default branch lookup fails the job: it succeeded"
+  failures=$((failures + 1))
+elif grep -qF "Couldn't look up org/repo's default branch" "$WORK/log" && ! gh_called "issues"; then
+  log_success "a failed default branch lookup fails the job, saying why, touching no issue"
+else
+  log_error "a failed default branch lookup fails the job: failed differently"
+  sed 's/^/    /' "$WORK/log" >&2
+  failures=$((failures + 1))
+fi
 
 # The body is kept under GitHub's limit
 head -c 70000 /dev/zero | tr '\0' 'x' > "$WORK/big-summary.md"
