@@ -507,7 +507,13 @@ and apply jobs:
   that `azure-client-id` needs whatever the tests need. With OIDC, each
   identity's federated credential is bound to a subject
   (`environment:prod`, `environment:prod-plan`, `pull_request`), so only
-  the job running there can use it.
+  the job running there can use it. That protects the apply identity only
+  if it is federated to `environment:<apply-environment>` alone: without
+  `plan-azure-client-id` (or `plan-environment`) the plan job uses
+  `azure-client-id` with the `pull_request` and main subjects, which
+  anyone who can open a PR presents. Use a read-only `plan-azure-client-id`
+  (plans run with `-lock=false`); `validate-inputs.sh` warns when neither
+  is set.
 - **Secrets are masked** in the log, like any secret passed to a workflow.
 
 ### Private modules and policies

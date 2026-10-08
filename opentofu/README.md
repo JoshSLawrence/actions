@@ -262,6 +262,8 @@ way leaves its required checks pending forever.
   it, so it can't be applied. A `warn` doesn't fail by default, but every
   one is listed in the PR comment. `policy-fail-on-warn: true` makes any
   warn fail too; failing only above a severity isn't supported.
+- **Severity is informational:** a rule's `metadata.severity`, when it has
+  one, is shown next to its message. It never changes pass or fail.
 
 ## Azure
 
@@ -321,8 +323,22 @@ present:
   `gh api repos/<owner>/<repo>/actions/oidc/customization/sub`
   (`sub_claim_prefix`). A mismatch fails `tofu init` with AADSTS700213,
   which quotes the subject presented.
-- Since each subject is bound to an environment, only the job running there
-  can use the identity: the apply identity only after approval.
+- A subject bound to an environment can only be presented by a job running
+  there. The apply identity is usable only after approval **if it is
+  federated only to `environment:<apply-environment>`**. Without
+  `plan-azure-client-id` (or `plan-environment`), the plan job signs in as
+  `azure-client-id` with the `pull_request` and `ref:refs/heads/main`
+  subjects, so anyone who can open a PR could get a token that can write.
+- **Protect the apply identity.** Set `plan-azure-client-id` to a read-only
+  identity (Reader on the resources and Storage Blob Data Reader on the
+  state container; enough, since plans run with `-lock=false`), and
+  federate the apply identity only to `environment:<apply-environment>`.
+  The workflow warns when neither `plan-azure-client-id` nor
+  `plan-environment` is set.
+- The azapi, azuread, msgraph and azuredevops providers read the same
+  `ARM_*` variables and GitHub's `ACTIONS_ID_TOKEN_REQUEST_*`, so they need
+  no extra inputs. Never set `ARM_OIDC_REQUEST_URL`: it breaks msgraph with
+  a 405.
 
 Only Azure is supported for now. Other providers will get their own
 optional inputs (`aws-*`, `google-*`, ...) as they're needed.
