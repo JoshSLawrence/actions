@@ -184,10 +184,13 @@ fi
       fi
     fi
     echo ""
+    # The severity a rule's metadata declares is shown for reviewers only; it
+    # never changes pass or fail
     jq -r '
+      def sev: if (.metadata.severity? // "") != "" then " (severity: \(.metadata.severity))" else "" end;
       .[] | .namespace as $ns
-      | ((.failures // [])[] | "- 🛑 **deny** `\($ns)`: \(.msg)"),
-        ((.warnings // [])[] | "- ⚠️ **warn** `\($ns)`: \(.msg)")
+      | ((.failures // [])[] | "- 🛑 **deny** `\($ns)`: \(.msg)\(sev)"),
+        ((.warnings // [])[] | "- ⚠️ **warn** `\($ns)`: \(.msg)\(sev)")
     ' <<< "$results"
   fi
 } > "$FRAGMENT_FILE"
