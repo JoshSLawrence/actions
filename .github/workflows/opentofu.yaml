@@ -83,9 +83,9 @@ on:
         type: string
         default: ""
 
-      # --- Azure (secrets: azure-client-secret, plan-azure-client-secret) -----
+      # --- Azure (each client ID has its own client secret, under secrets) ----
       azure-client-id:
-        description: Client ID of the apply identity (also the integration tests', and the plan's unless plan-azure-client-id is set).
+        description: Client ID of the apply identity (also the integration tests' unless integration-test-azure-client-id is set, and the plan's unless plan-azure-client-id is set).
         type: string
         default: ""
       azure-tenant-id:
@@ -98,6 +98,10 @@ on:
         default: ""
       plan-azure-client-id:
         description: Client ID of the plan job's identity, e.g. a read-only one (with plan-azure-client-secret, or OIDC).
+        type: string
+        default: ""
+      integration-test-azure-client-id:
+        description: Client ID of the integration test job's identity, e.g. one scoped to a test subscription (with integration-test-azure-client-secret, or OIDC).
         type: string
         default: ""
       azure-use-azuread:
@@ -247,6 +251,9 @@ on:
       plan-azure-client-secret:
         description: "Client secret of plan-azure-client-id (default: OIDC)."
         required: false
+      integration-test-azure-client-secret:
+        description: "Client secret of integration-test-azure-client-id (default: OIDC)."
+        required: false
       modules-token:
         description: >-
           Token that can read private GitHub repositories used as module or
@@ -320,6 +327,8 @@ jobs:
           plan-azure-client-id: ${{ inputs.plan-azure-client-id }}
           has-azure-client-secret: ${{ secrets.azure-client-secret != '' }}
           has-plan-azure-client-secret: ${{ secrets.plan-azure-client-secret != '' }}
+          integration-test-azure-client-id: ${{ inputs.integration-test-azure-client-id }}
+          has-integration-test-azure-client-secret: ${{ secrets.integration-test-azure-client-secret != '' }}
           checks-runs-on: ${{ inputs.checks-runs-on }}
           integration-test-runs-on: ${{ inputs.integration-test-runs-on }}
           plan-runs-on: ${{ inputs.plan-runs-on }}
@@ -441,6 +450,8 @@ jobs:
           tenant-id: ${{ inputs.azure-tenant-id }}
           subscription-id: ${{ inputs.azure-subscription-id }}
           client-secret: ${{ secrets.azure-client-secret }}
+          test-client-id: ${{ inputs.integration-test-azure-client-id }}
+          test-client-secret: ${{ secrets.integration-test-azure-client-secret }}
           use-azuread: ${{ inputs.azure-use-azuread }}
 
       - name: Integration tests

@@ -253,10 +253,11 @@ Without `var-files`, the module uses its defaults (and its
 | `plan-environment`                 | none                 | The plan job's environment; none = no environment                      |
 | `integration-test-environment`     | none                 | The integration test job's environment; none = no environment          |
 | **Azure** (secrets: see below)     |                      |                                                                        |
-| `azure-client-id`                  | none                 | Identity for the apply and integration test jobs, and plan by default  |
+| `azure-client-id`                  | none                 | Apply identity; also plans and integration tests unless overridden     |
 | `azure-tenant-id`                  | none                 | Tenant ID; required with any client ID                                 |
 | `azure-subscription-id`            | none                 | Subscription ID                                                        |
 | `plan-azure-client-id`             | `azure-client-id`    | Identity for the plan job, e.g. a read-only one                        |
+| `integration-test-azure-client-id` | `azure-client-id`    | Identity for the integration test job, e.g. a test-subscription one    |
 | `azure-use-azuread`                | `true`               | Microsoft Entra ID (RBAC) auth for storage: state and data plane       |
 | **Checks**                         |                      |                                                                        |
 | `checks`                           | `true`               | Run the checks job at all; `false` skips every check below             |
@@ -309,12 +310,13 @@ spaces:
 
 <!-- markdownlint-disable MD013 -->
 
-| Secret                     | Description                                                        |
-| -------------------------- | ------------------------------------------------------------------ |
-| `azure-client-secret`      | Secret of `azure-client-id`; without it, OIDC                      |
-| `plan-azure-client-secret` | Secret of `plan-azure-client-id`; without it, OIDC                 |
-| `modules-token`            | Reads private GitHub repositories used as module or policy sources |
-| `infracost-api-key`        | For `cost-estimate`                                                |
+| Secret                                 | Description                                                        |
+| -------------------------------------- | ------------------------------------------------------------------ |
+| `azure-client-secret`                  | Secret of `azure-client-id`; without it, OIDC                      |
+| `plan-azure-client-secret`             | Secret of `plan-azure-client-id`; without it, OIDC                 |
+| `integration-test-azure-client-secret` | Secret of `integration-test-azure-client-id`; without it, OIDC     |
+| `modules-token`                        | Reads private GitHub repositories used as module or policy sources |
+| `infracost-api-key`                    | For `cost-estimate`                                                |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -352,8 +354,11 @@ what to do about each:
   `mise.toml`: `opentofu`; `tflint`, `trivy`, `terraform-docs` for their
   checks; `conftest` for `policy`; `infracost` for `cost-estimate`.
 - Azure: a client ID needs `azure-tenant-id`; `azure-client-secret` needs
-  `azure-client-id`; `plan-azure-client-id` needs `azure-client-id`;
-  `plan-azure-client-secret` needs `plan-azure-client-id`.
+  `azure-client-id`; `plan-azure-client-id` and
+  `integration-test-azure-client-id` need `azure-client-id`;
+  `plan-azure-client-secret` needs `plan-azure-client-id`;
+  `integration-test-azure-client-secret` needs
+  `integration-test-azure-client-id`.
 - `cost-estimate` needs the `infracost-api-key` secret.
 - `policy` needs `policy-source` or `policy-path`, and every `policy-path`
   directory exists (`policy-path: ""` to use only `policy-source`).
@@ -464,24 +469,26 @@ and apply jobs:
 
 <!-- markdownlint-disable MD013 -->
 
-| Variable                  | Integration test and apply jobs | Plan job                                       |
-| ------------------------- | ------------------------------- | ---------------------------------------------- |
-| `ARM_CLIENT_ID`           | `azure-client-id`               | `plan-azure-client-id`, else `azure-client-id` |
-| `ARM_CLIENT_SECRET`       | `azure-client-secret`           | the plan identity's secret (see below)         |
-| `ARM_TENANT_ID`           | `azure-tenant-id`               | `azure-tenant-id`                              |
-| `ARM_SUBSCRIPTION_ID`     | `azure-subscription-id`         | `azure-subscription-id`                        |
-| `ARM_USE_OIDC`            | `true` without a secret         | `true` without a secret                        |
-| `ARM_USE_AZUREAD`         | `azure-use-azuread`             | `azure-use-azuread`                            |
-| `ARM_STORAGE_USE_AZUREAD` | `azure-use-azuread`             | `azure-use-azuread`                            |
+| Variable                  | Apply job               | Plan job                                       | Integration test job                                       |
+| ------------------------- | ----------------------- | ---------------------------------------------- | ---------------------------------------------------------- |
+| `ARM_CLIENT_ID`           | `azure-client-id`       | `plan-azure-client-id`, else `azure-client-id` | `integration-test-azure-client-id`, else `azure-client-id` |
+| `ARM_CLIENT_SECRET`       | `azure-client-secret`   | the plan identity's secret (see below)         | the integration test identity's secret (see below)         |
+| `ARM_TENANT_ID`           | `azure-tenant-id`       | `azure-tenant-id`                              | `azure-tenant-id`                                          |
+| `ARM_SUBSCRIPTION_ID`     | `azure-subscription-id` | `azure-subscription-id`                        | `azure-subscription-id`                                    |
+| `ARM_USE_OIDC`            | `true` without a secret | `true` without a secret                        | `true` without a secret                                    |
+| `ARM_USE_AZUREAD`         | `azure-use-azuread`     | `azure-use-azuread`                            | `azure-use-azuread`                                        |
+| `ARM_STORAGE_USE_AZUREAD` | `azure-use-azuread`     | `azure-use-azuread`                            | `azure-use-azuread`                                        |
 
 <!-- markdownlint-enable MD013 -->
 
 - **`azure-client-id` is the apply identity, always**, the one that can
   write. `plan-azure-client-id` overrides it for the plan job only, the way
-  `plan-environment` adds a plan-only environment. The plan identity
-  switches as a pair: with `plan-azure-client-id`, the plan job uses
-  `plan-azure-client-secret` (or OIDC without it), never the apply
-  identity's secret.
+  `plan-environment` adds a plan-only environment, and
+  `integration-test-azure-client-id` does the same for the integration test
+  job. Each override switches as a pair: with `plan-azure-client-id`, the
+  plan job uses `plan-azure-client-secret` (or OIDC without it), never the
+  apply identity's secret; likewise the integration tests with
+  `integration-test-azure-client-secret`.
 - **OIDC or a client secret, per job.** A job with a client secret uses it;
   one without uses OIDC (`ARM_USE_OIDC=true`; the jobs already request
   `id-token: write`). Nothing else chooses the method, so a job can't end
@@ -502,9 +509,12 @@ and apply jobs:
   [Decisions](#decisions)).
 - **Approval.** A secret the caller passes reaches only the jobs that use
   it. The apply job's identity (`azure-client-id` and its secret) is also
-  the integration test job's, which runs before the plan: give
-  `integration-test-environment` reviewers if that matters, and document
-  that `azure-client-id` needs whatever the tests need. With OIDC, each
+  the integration test job's by default, and that job runs before the plan,
+  with whatever code the PR holds: give it its own
+  `integration-test-azure-client-id` (scoped to a test subscription or
+  resource group) and/or an `integration-test-environment` with required
+  reviewers; otherwise `azure-client-id` needs whatever the tests need. With
+  OIDC, each
   identity's federated credential is bound to a subject
   (`environment:prod`, `environment:prod-plan`, `pull_request`), so only
   the job running there can use it. That protects the apply identity only
@@ -516,7 +526,10 @@ and apply jobs:
   `plan-azure-client-id`: Reader on the resources plus whatever reading the
   configuration makes (*Reader and Data Access*, Key Vault reader roles),
   and Storage Blob Data Reader on the state container (plans run with
-  `-lock=false`). `validate-inputs.sh` warns when it isn't set.
+  `-lock=false`). `validate-inputs.sh` warns when it isn't set, and likewise
+  when integration tests would run as the apply identity with neither
+  `integration-test-azure-client-id` nor `integration-test-environment` (it
+  can't tell whether a named environment has reviewers).
 - **Secrets are masked** in the log, like any secret passed to a workflow.
 
 ### Private modules and policies
@@ -707,8 +720,12 @@ Settled in review, with what we gave up, so they can be revisited:
   Each is a label or JSON (from `{` or `[`), the forms `runs-on` itself
   takes, rather than separate group and label inputs per job. A plain label
   stays as before.
-- **Integration tests use the apply identity**, documented; a separate
-  `integration-test-azure-client-id` is added when a caller needs one.
+- **Integration tests use the apply identity unless told otherwise.**
+  `integration-test-azure-client-id` and its secret (added in `v0.4.0`)
+  give them an identity of their own, with the same pair semantics as the
+  plan identity. It stays optional, so existing callers are unaffected, and
+  the validation only warns when the tests would run ungated as the apply
+  identity.
 
 ## Alternatives considered
 

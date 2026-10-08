@@ -83,14 +83,16 @@ warn_if_no_lock_file() {
 #
 # The workflow's azure-* inputs and secrets, mapped to the azurerm provider's
 # and backend's ARM_* variables (see azure-env.sh). azure-client-id is the
-# apply identity (and the integration tests'); plan-azure-client-id
-# overrides it for the plan job, as a pair with plan-azure-client-secret. A
-# job with a client secret uses it, one without uses OIDC.
+# apply identity (and, by default, the integration tests'); plan-azure-client-id
+# overrides it for the plan job, and integration-test-azure-client-id for the
+# integration test job, each as a pair with its client secret. A job with a
+# client secret uses it, one without uses OIDC.
 
 # Print what's wrong with the Azure inputs, one problem per line; nothing if
 # they're consistent. Reads AZURE_CLIENT_ID, AZURE_TENANT_ID,
-# PLAN_AZURE_CLIENT_ID, and HAS_AZURE_CLIENT_SECRET /
-# HAS_PLAN_AZURE_CLIENT_SECRET ("true" if that secret was passed).
+# PLAN_AZURE_CLIENT_ID, INTEGRATION_TEST_AZURE_CLIENT_ID, and
+# HAS_AZURE_CLIENT_SECRET / HAS_PLAN_AZURE_CLIENT_SECRET /
+# HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET ("true" if that secret was passed).
 azure_input_problems() {
   if [ -z "${AZURE_CLIENT_ID:-}" ]; then
     if is_true "${HAS_AZURE_CLIENT_SECRET:-false}"; then
@@ -99,10 +101,16 @@ azure_input_problems() {
     if [ -n "${PLAN_AZURE_CLIENT_ID:-}" ]; then
       echo "plan-azure-client-id is set, but azure-client-id isn't. azure-client-id is the apply identity; plan-azure-client-id only overrides it for the plan job."
     fi
+    if [ -n "${INTEGRATION_TEST_AZURE_CLIENT_ID:-}" ]; then
+      echo "integration-test-azure-client-id is set, but azure-client-id isn't. azure-client-id is the apply identity; integration-test-azure-client-id only overrides it for the integration test job."
+    fi
   elif [ -z "${AZURE_TENANT_ID:-}" ]; then
     echo "azure-client-id is set, but azure-tenant-id isn't. Pass the tenant the identity belongs to."
   fi
   if is_true "${HAS_PLAN_AZURE_CLIENT_SECRET:-false}" && [ -z "${PLAN_AZURE_CLIENT_ID:-}" ]; then
     echo "The plan-azure-client-secret secret is set, but plan-azure-client-id isn't. Pass the plan identity's client ID, or drop the secret (the plan job then uses azure-client-id and its secret)."
+  fi
+  if is_true "${HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET:-false}" && [ -z "${INTEGRATION_TEST_AZURE_CLIENT_ID:-}" ]; then
+    echo "The integration-test-azure-client-secret secret is set, but integration-test-azure-client-id isn't. Pass the integration test identity's client ID, or drop the secret (the integration tests then use azure-client-id and its secret)."
   fi
 }

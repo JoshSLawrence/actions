@@ -11,9 +11,10 @@
 #   CHECKS, TESTS, TEST_FILTER, INTEGRATION_TESTS, INTEGRATION_TEST_FILTER
 #   POLICY, POLICY_PATH, POLICY_SOURCE, COST_ESTIMATE
 #   AZURE_CLIENT_ID, AZURE_TENANT_ID, PLAN_AZURE_CLIENT_ID, PLAN_ENVIRONMENT
+#   INTEGRATION_TEST_AZURE_CLIENT_ID, INTEGRATION_TEST_ENVIRONMENT
 #   CHECKS_RUNS_ON, INTEGRATION_TEST_RUNS_ON, PLAN_RUNS_ON, APPLY_RUNS_ON
 #   HAS_INFRACOST_API_KEY, HAS_AZURE_CLIENT_SECRET,
-#   HAS_PLAN_AZURE_CLIENT_SECRET
+#   HAS_PLAN_AZURE_CLIENT_SECRET, HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET
 #                 - "true" if that secret was passed
 #   IS_FORK_PR    - "true" on a pull request from a fork, which gets no
 #                   secrets and isn't planned: secret rules are skipped
@@ -33,7 +34,8 @@ source "$SCRIPT_DIR/common.sh"
 
 log_config WORKING_DIR VAR_FILES NAME APPLY_ENVIRONMENT EXTRA_PATHS CHECKS TESTS TEST_FILTER \
   INTEGRATION_TESTS INTEGRATION_TEST_FILTER POLICY POLICY_PATH POLICY_SOURCE COST_ESTIMATE \
-  AZURE_CLIENT_ID AZURE_TENANT_ID PLAN_AZURE_CLIENT_ID PLAN_ENVIRONMENT CHECKS_RUNS_ON INTEGRATION_TEST_RUNS_ON \
+  AZURE_CLIENT_ID AZURE_TENANT_ID PLAN_AZURE_CLIENT_ID PLAN_ENVIRONMENT \
+  INTEGRATION_TEST_AZURE_CLIENT_ID INTEGRATION_TEST_ENVIRONMENT CHECKS_RUNS_ON INTEGRATION_TEST_RUNS_ON \
   PLAN_RUNS_ON APPLY_RUNS_ON IS_FORK_PR IS_DEPENDABOT
 
 problems=()
@@ -148,7 +150,8 @@ fi
 
 if [ -n "$secrets_skipped" ]; then
   # A fork's (or Dependabot's) run gets no secrets, so only the inputs can be checked
-  azure="$(HAS_AZURE_CLIENT_SECRET=false HAS_PLAN_AZURE_CLIENT_SECRET=false azure_input_problems)"
+  azure="$(HAS_AZURE_CLIENT_SECRET=false HAS_PLAN_AZURE_CLIENT_SECRET=false \
+    HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET=false azure_input_problems)"
 else
   azure="$(azure_input_problems)"
 fi
@@ -166,6 +169,16 @@ if [ -z "$secrets_skipped" ] && [ -n "${AZURE_CLIENT_ID:-}" ] && [ -z "${PLAN_AZ
   else
     log_warn "Plans sign in with the apply identity (azure-client-id) because plan-azure-client-id isn't set, so its federated credentials must trust the plan job's subject (pull_request and main, or environment:${PLAN_ENVIRONMENT:-<plan-environment>}, which usually has no required reviewers): anyone who can open a PR could get a token that can write. Set plan-azure-client-id to a read-only identity and federate azure-client-id only to environment:${APPLY_ENVIRONMENT:-<apply-environment>}."
   fi
+fi
+
+# Likewise the integration tests, which run before the plan and any approval:
+# without their own identity (integration-test-azure-client-id) or an
+# environment to gate them, they sign in as the apply identity on every
+# non-fork pull request. Whether an environment has required reviewers isn't
+# known here (the apply job's gate is checked at run time); name one that does.
+if [ -z "$secrets_skipped" ] && is_true "${INTEGRATION_TESTS:-false}" && [ -n "${AZURE_CLIENT_ID:-}" ] &&
+  [ -z "${INTEGRATION_TEST_AZURE_CLIENT_ID:-}" ] && [ -z "${INTEGRATION_TEST_ENVIRONMENT:-}" ]; then
+  log_warn "Integration tests sign in with the apply identity (azure-client-id) and run before any approval, because neither integration-test-azure-client-id nor integration-test-environment is set: anyone who can open a PR could run code with a token that can write. Set integration-test-azure-client-id to an identity scoped to a test subscription or resource group, and/or integration-test-environment to an environment with required reviewers."
 fi
 
 # --- Runners ---------------------------------------------------------------------

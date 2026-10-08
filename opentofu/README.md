@@ -85,8 +85,8 @@ prepare ──> checks ──> integration-tests ──> plan ──> apply ─�
   the job summary and the PR comment. No cloud credentials, so PRs from
   forks can run it.
 - **integration-tests** (off by default) runs `tofu test` again with the
-  call's var files and the apply identity, in
-  `integration-test-environment`.
+  call's var files and the apply identity (or
+  `integration-test-azure-client-id`), in `integration-test-environment`.
 - **plan** plans to a saved file in `plan-environment` and renders a
   summary: counts, destroys called out, resources, the full plan as a diff,
   and optionally an Infracost estimate and a conftest policy check (a
@@ -124,10 +124,11 @@ Lists take one item per line, or items separated by spaces. Without
 | `plan-environment`                 | none                 | The plan job's environment; none = no environment                      |
 | `integration-test-environment`     | none                 | The integration test job's environment; none = no environment          |
 | **Azure** (secrets: see below)     |                      |                                                                        |
-| `azure-client-id`                  | none                 | Identity for the apply and integration test jobs, and plan by default  |
+| `azure-client-id`                  | none                 | Apply identity; also plans and integration tests unless overridden     |
 | `azure-tenant-id`                  | none                 | Tenant ID; required with any client ID                                 |
 | `azure-subscription-id`            | none                 | Subscription ID                                                        |
 | `plan-azure-client-id`             | `azure-client-id`    | Identity for the plan job, e.g. a read-only one                        |
+| `integration-test-azure-client-id` | `azure-client-id`    | Identity for the integration test job, e.g. a test-subscription one    |
 | `azure-use-azuread`                | `true`               | Microsoft Entra ID (RBAC) auth for storage: state and data plane       |
 | **Checks**                         |                      |                                                                        |
 | `checks`                           | `true`               | Run the checks job at all; `false` skips every check below             |
@@ -164,12 +165,13 @@ Lists take one item per line, or items separated by spaces. Without
 | `timeout-minutes`                  | `30`                 | Timeout for each job                                                   |
 | `mise-version`                     | the setup pin        | The mise version; the module's `mise.toml` pins its tools              |
 
-| Secret                     | Description                                                        |
-| -------------------------- | ------------------------------------------------------------------ |
-| `azure-client-secret`      | Secret of `azure-client-id`; without it, OIDC                      |
-| `plan-azure-client-secret` | Secret of `plan-azure-client-id`; without it, OIDC                 |
-| `modules-token`            | Reads private GitHub repositories used as module or policy sources |
-| `infracost-api-key`        | For `cost-estimate`                                                |
+| Secret                                 | Description                                                        |
+| -------------------------------------- | ------------------------------------------------------------------ |
+| `azure-client-secret`                  | Secret of `azure-client-id`; without it, OIDC                      |
+| `plan-azure-client-secret`             | Secret of `plan-azure-client-id`; without it, OIDC                 |
+| `integration-test-azure-client-secret` | Secret of `integration-test-azure-client-id`; without it, OIDC     |
+| `modules-token`                        | Reads private GitHub repositories used as module or policy sources |
+| `infracost-api-key`                    | For `cost-estimate`                                                |
 
 | Output        | Description                                                                   |
 | ------------- | ----------------------------------------------------------------------------- |
@@ -276,24 +278,28 @@ and apply jobs:
 
 <!-- markdownlint-disable MD013 -->
 
-| Variable                  | Integration test and apply jobs | Plan job                                       |
-| ------------------------- | ------------------------------- | ---------------------------------------------- |
-| `ARM_CLIENT_ID`           | `azure-client-id`               | `plan-azure-client-id`, else `azure-client-id` |
-| `ARM_CLIENT_SECRET`       | `azure-client-secret`           | the plan identity's secret (see below)         |
-| `ARM_TENANT_ID`           | `azure-tenant-id`               | `azure-tenant-id`                              |
-| `ARM_SUBSCRIPTION_ID`     | `azure-subscription-id`         | `azure-subscription-id`                        |
-| `ARM_USE_OIDC`            | `true` without a secret         | `true` without a secret                        |
-| `ARM_USE_AZUREAD`         | `azure-use-azuread`             | `azure-use-azuread`                            |
-| `ARM_STORAGE_USE_AZUREAD` | `azure-use-azuread`             | `azure-use-azuread`                            |
+| Variable                  | Apply job               | Plan job                                       | Integration test job                                       |
+| ------------------------- | ----------------------- | ---------------------------------------------- | ---------------------------------------------------------- |
+| `ARM_CLIENT_ID`           | `azure-client-id`       | `plan-azure-client-id`, else `azure-client-id` | `integration-test-azure-client-id`, else `azure-client-id` |
+| `ARM_CLIENT_SECRET`       | `azure-client-secret`   | the plan identity's secret (see below)         | the integration test identity's secret (see below)         |
+| `ARM_TENANT_ID`           | `azure-tenant-id`       | `azure-tenant-id`                              | `azure-tenant-id`                                          |
+| `ARM_SUBSCRIPTION_ID`     | `azure-subscription-id` | `azure-subscription-id`                        | `azure-subscription-id`                                    |
+| `ARM_USE_OIDC`            | `true` without a secret | `true` without a secret                        | `true` without a secret                                    |
+| `ARM_USE_AZUREAD`         | `azure-use-azuread`     | `azure-use-azuread`                            | `azure-use-azuread`                                        |
+| `ARM_STORAGE_USE_AZUREAD` | `azure-use-azuread`     | `azure-use-azuread`                            | `azure-use-azuread`                                        |
 
 <!-- markdownlint-enable MD013 -->
 
-- **`azure-client-id` is the apply identity**, the one that can write; the
-  integration tests use it too, so it needs whatever they need.
-  `plan-azure-client-id` overrides it for the plan job only, e.g. with a
-  read-only identity. The plan identity switches as a pair: with
-  `plan-azure-client-id`, the plan job uses `plan-azure-client-secret` (or
-  OIDC without it), never the apply identity's secret.
+- **`azure-client-id` is the apply identity**, the one that can write.
+  Without overrides, the plan and the integration tests use it too, so it
+  needs whatever they need. `plan-azure-client-id` overrides it for the plan
+  job only, e.g. with a read-only identity;
+  `integration-test-azure-client-id` overrides it for the integration test
+  job only, e.g. with an identity scoped to a test subscription or resource
+  group. Each override switches as a pair: with `plan-azure-client-id`, the
+  plan job uses `plan-azure-client-secret` (or OIDC without it), never the
+  apply identity's secret; likewise `integration-test-azure-client-secret`
+  for the integration tests.
 - **OIDC or a client secret, per job:** a job with a client secret uses it;
   one without uses OIDC.
 - **Entra ID (RBAC) for storage, by default:** the backend reaches the state
@@ -341,6 +347,14 @@ present:
   Reader on the state container (plans run with `-lock=false`). Federate
   the apply identity only to `environment:<apply-environment>`. The
   workflow warns when `plan-azure-client-id` isn't set.
+- **Protect the apply identity from the integration tests too.** They run
+  before the plan and any approval, with whatever code the PR holds, so give
+  them `integration-test-azure-client-id` (an identity that can only touch a
+  test subscription or resource group) and/or an
+  `integration-test-environment` with required reviewers. The workflow warns
+  when integration tests would run as the apply identity with neither; it
+  can't tell whether a named environment has reviewers. Federate the
+  integration test identity for the subject in the table above.
 - The workflow sets only `ARM_USE_OIDC`; the azapi, azuread and msgraph
   providers read GitHub's `ACTIONS_ID_TOKEN_REQUEST_*` themselves, so no
   extra inputs are needed.
@@ -498,7 +512,8 @@ Before any job runs, the prepare job checks:
 - `apply-environment` is set, and every environment named exists;
 - every tool the enabled options need is pinned;
 - the Azure inputs are consistent (a client ID needs a tenant ID; a secret
-  needs its client ID; `plan-azure-client-id` needs `azure-client-id`);
+  needs its client ID; `plan-azure-client-id` and
+  `integration-test-azure-client-id` need `azure-client-id`);
 - `cost-estimate` has its `infracost-api-key`; `policy` has a
   `policy-source` or a `policy-path`, and every `policy-path` directory
   exists (set `policy-path: ""` to use only `policy-source`); test filters

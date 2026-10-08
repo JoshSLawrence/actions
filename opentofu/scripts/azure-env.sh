@@ -5,9 +5,13 @@
 # role:
 #
 #   ARM_CLIENT_ID        - azure-client-id; for the plan job,
-#                          plan-azure-client-id when given
+#                          plan-azure-client-id when given; for the
+#                          integration test job,
+#                          integration-test-azure-client-id when given
 #   ARM_CLIENT_SECRET    - that identity's secret (azure-client-secret, or
-#                          plan-azure-client-secret with plan-azure-client-id)
+#                          plan-azure-client-secret with plan-azure-client-id,
+#                          or integration-test-azure-client-secret with
+#                          integration-test-azure-client-id)
 #   ARM_USE_OIDC         - "true" when that identity has no secret
 #   ARM_TENANT_ID, ARM_SUBSCRIPTION_ID
 #                        - azure-tenant-id, azure-subscription-id
@@ -17,14 +21,16 @@
 #                          storage account and the provider's storage data
 #                          plane
 #
-# Nothing else is set without azure-client-id. The plan identity switches as
-# a pair: with plan-azure-client-id, the plan job never uses the apply
-# identity's secret.
+# Nothing else is set without azure-client-id. The plan and integration test
+# identities each switch as a pair: with plan-azure-client-id, the plan job
+# never uses the apply identity's secret, and likewise the integration test
+# job with integration-test-azure-client-id.
 #
 # Environment variables:
 #   ROLE                     - plan, apply or test (required)
 #   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
-#   AZURE_CLIENT_SECRET, PLAN_AZURE_CLIENT_ID, PLAN_AZURE_CLIENT_SECRET
+#   AZURE_CLIENT_SECRET, PLAN_AZURE_CLIENT_ID, PLAN_AZURE_CLIENT_SECRET,
+#   INTEGRATION_TEST_AZURE_CLIENT_ID, INTEGRATION_TEST_AZURE_CLIENT_SECRET
 #                            - the workflow's inputs and secrets (optional)
 #   AZURE_USE_AZUREAD        - "true" (default) or "false"
 #
@@ -45,8 +51,10 @@ esac
 
 HAS_AZURE_CLIENT_SECRET="$([ -n "${AZURE_CLIENT_SECRET:-}" ] && echo true || echo false)"
 HAS_PLAN_AZURE_CLIENT_SECRET="$([ -n "${PLAN_AZURE_CLIENT_SECRET:-}" ] && echo true || echo false)"
+HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET="$([ -n "${INTEGRATION_TEST_AZURE_CLIENT_SECRET:-}" ] && echo true || echo false)"
 problems="$(HAS_AZURE_CLIENT_SECRET="$HAS_AZURE_CLIENT_SECRET" \
-  HAS_PLAN_AZURE_CLIENT_SECRET="$HAS_PLAN_AZURE_CLIENT_SECRET" azure_input_problems)"
+  HAS_PLAN_AZURE_CLIENT_SECRET="$HAS_PLAN_AZURE_CLIENT_SECRET" \
+  HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET="$HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET" azure_input_problems)"
 if [ -n "$problems" ]; then
   while IFS= read -r problem; do
     log_error "$problem"
@@ -73,6 +81,10 @@ if [ "$ROLE" = "plan" ] && [ -n "${PLAN_AZURE_CLIENT_ID:-}" ]; then
   identity="plan-azure-client-id"
   client_id="$PLAN_AZURE_CLIENT_ID"
   client_secret="${PLAN_AZURE_CLIENT_SECRET:-}"
+elif [ "$ROLE" = "test" ] && [ -n "${INTEGRATION_TEST_AZURE_CLIENT_ID:-}" ]; then
+  identity="integration-test-azure-client-id"
+  client_id="$INTEGRATION_TEST_AZURE_CLIENT_ID"
+  client_secret="${INTEGRATION_TEST_AZURE_CLIENT_SECRET:-}"
 fi
 
 export_job_env ARM_CLIENT_ID "$client_id"

@@ -55,14 +55,15 @@ catalog, layout and principles.
   stale. State keys come from a backend variable set in the var files;
   there's no `backend-config` or `.tfbackend` support.
 - **OpenTofu credentials are named provider inputs**, Azure only for now:
-  `azure-client-id` (the apply and integration test identity),
-  `plan-azure-client-id` (plan override, switching as a pair with its
-  secret), `azure-tenant-id`, `azure-subscription-id`, `azure-use-azuread`
-  (default true), and the `azure-client-secret` /
-  `plan-azure-client-secret` secrets; a secret means secret auth, none
-  means OIDC. `azure-env.sh` maps them to `ARM_*`; its rules live in
-  `azure_input_problems` (`opentofu/scripts/common.sh`), shared with input
-  validation. Add other providers as their own optional inputs.
+  `azure-client-id` (the apply identity, and the integration tests' unless
+  overridden), `plan-azure-client-id` and `integration-test-azure-client-id`
+  (overrides for their job, each switching as a pair with its secret),
+  `azure-tenant-id`, `azure-subscription-id`, `azure-use-azuread` (default
+  true), and the `azure-client-secret` / `plan-azure-client-secret` /
+  `integration-test-azure-client-secret` secrets; a secret means secret
+  auth, none means OIDC. `azure-env.sh` maps them to `ARM_*`; its rules
+  live in `azure_input_problems` (`opentofu/scripts/common.sh`), shared with
+  input validation. Add other providers as their own optional inputs.
 - **Data Factory and Synapse workflows** follow the same nested shape:
   `datafactory.yaml` (build the template once, resolve deployments) →
   `datafactory-deploy.yaml` (plan → apply one deployment); likewise

@@ -91,12 +91,20 @@ inputs:
     description: The plan-azure-client-id input.
     required: false
     default: ""
+  integration-test-azure-client-id:
+    description: The integration-test-azure-client-id input.
+    required: false
+    default: ""
   has-azure-client-secret:
     description: '"true" if the azure-client-secret secret was passed.'
     required: false
     default: "false"
   has-plan-azure-client-secret:
     description: '"true" if the plan-azure-client-secret secret was passed.'
+    required: false
+    default: "false"
+  has-integration-test-azure-client-secret:
+    description: '"true" if the integration-test-azure-client-secret secret was passed.'
     required: false
     default: "false"
   checks-runs-on:
@@ -163,8 +171,11 @@ runs:
         AZURE_TENANT_ID: ${{ inputs.azure-tenant-id }}
         PLAN_AZURE_CLIENT_ID: ${{ inputs.plan-azure-client-id }}
         PLAN_ENVIRONMENT: ${{ inputs.plan-environment }}
+        INTEGRATION_TEST_AZURE_CLIENT_ID: ${{ inputs.integration-test-azure-client-id }}
+        INTEGRATION_TEST_ENVIRONMENT: ${{ inputs.integration-test-environment }}
         HAS_AZURE_CLIENT_SECRET: ${{ inputs.has-azure-client-secret }}
         HAS_PLAN_AZURE_CLIENT_SECRET: ${{ inputs.has-plan-azure-client-secret }}
+        HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET: ${{ inputs.has-integration-test-azure-client-secret }}
         CHECKS_RUNS_ON: ${{ inputs.checks-runs-on }}
         INTEGRATION_TEST_RUNS_ON: ${{ inputs.integration-test-runs-on }}
         PLAN_RUNS_ON: ${{ inputs.plan-runs-on }}

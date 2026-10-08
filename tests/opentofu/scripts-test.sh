@@ -207,6 +207,13 @@ expect_refused "a plan identity without the apply identity" "plan-azure-client-i
 expect_refused "a plan secret without a plan client ID" "plan-azure-client-id isn't" \
   validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod AZURE_CLIENT_ID=c AZURE_TENANT_ID=t \
   HAS_PLAN_AZURE_CLIENT_SECRET=true
+expect_refused "an integration test identity without the apply identity" "integration-test-azure-client-id is set, but azure-client-id isn't" \
+  validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod INTEGRATION_TEST_AZURE_CLIENT_ID=i
+expect_refused "an integration test secret without its client ID" "integration-test-azure-client-id isn't" \
+  validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod AZURE_CLIENT_ID=c AZURE_TENANT_ID=t \
+  HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET=true
+expect "...but a consistent integration test identity passes" prod \
+  "$(valid AZURE_CLIENT_ID=c AZURE_TENANT_ID=t INTEGRATION_TEST_AZURE_CLIENT_ID=i HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET=true)"
 expect "runners: a label, an array of labels, a runner group" prod \
   "$(valid INTEGRATION_TEST_RUNS_ON=self-hosted PLAN_RUNS_ON='["self-hosted", "linux"]' \
     APPLY_RUNS_ON=$'{"group": "private-network",\n "labels": ["linux-x64"]}\n')"
@@ -246,6 +253,33 @@ expect_warned "...and still with a plan environment, which isn't protection by i
 expect_warned "...with a client secret, the risk is the secret" yes HAS_AZURE_CLIENT_SECRET=true
 expect_warned "...not on a Dependabot PR, which isn't planned" no IS_DEPENDABOT=true
 expect_warned "...not on a fork PR, which isn't planned" no IS_FORK_PR=true
+
+# Integration tests running as the apply identity, ungated, warn too
+# Usage: expect_test_warned "<case name>" <yes|no> [VAR=value ...]
+expect_test_warned() {
+  local name="$1" want="$2" got=no
+  shift 2
+  cases=$((cases + 1))
+  if ! valid AZURE_CLIENT_ID=c AZURE_TENANT_ID=t PLAN_AZURE_CLIENT_ID=p "$@" > /dev/null; then
+    log_error "${name}: the inputs were refused"
+    sed 's/^/    /' "$WORK/log" >&2
+    failures=$((failures + 1))
+    return
+  fi
+  grep -qF "Integration tests sign in with the apply identity" "$WORK/log" && got=yes
+  if [ "$got" == "$want" ]; then
+    log_success "$name"
+  else
+    log_error "${name}: expected warning=${want}, got ${got}"
+    sed 's/^/    /' "$WORK/log" >&2
+    failures=$((failures + 1))
+  fi
+}
+expect_test_warned "integration tests as the apply identity, ungated: passes, but warns" yes INTEGRATION_TESTS=true
+expect_test_warned "...not with their own identity" no INTEGRATION_TESTS=true INTEGRATION_TEST_AZURE_CLIENT_ID=i
+expect_test_warned "...not with an environment" no INTEGRATION_TESTS=true INTEGRATION_TEST_ENVIRONMENT=test
+expect_test_warned "...not with integration tests off" no
+expect_test_warned "...not on a Dependabot PR, which isn't planned" no INTEGRATION_TESTS=true IS_DEPENDABOT=true
 
 cases=$((cases + 1))
 if output_of name validate-inputs.sh WORKING_DIR=iac/app VAR_FILES=missing.tfvars \
@@ -299,6 +333,28 @@ expect "...or with its own secret" \
 expect "the apply and test jobs ignore the plan identity" \
   "ARM_CLIENT_ID=apply ARM_STORAGE_USE_AZUREAD=true ARM_TENANT_ID=t ARM_USE_AZUREAD=true ARM_USE_OIDC=true" \
   "$(azure ROLE=test AZURE_CLIENT_ID=apply AZURE_TENANT_ID=t PLAN_AZURE_CLIENT_ID=read)"
+expect "the integration test job uses the apply identity by default" \
+  "ARM_CLIENT_ID=apply ARM_CLIENT_SECRET=shh ARM_STORAGE_USE_AZUREAD=true ARM_TENANT_ID=t ARM_USE_AZUREAD=true" \
+  "$(azure ROLE=test AZURE_CLIENT_ID=apply AZURE_TENANT_ID=t AZURE_CLIENT_SECRET=shh)"
+expect "integration-test-azure-client-id switches the test job's identity, as a pair (OIDC)" \
+  "ARM_CLIENT_ID=tester ARM_STORAGE_USE_AZUREAD=true ARM_TENANT_ID=t ARM_USE_AZUREAD=true ARM_USE_OIDC=true" \
+  "$(azure ROLE=test AZURE_CLIENT_ID=apply AZURE_TENANT_ID=t AZURE_CLIENT_SECRET=shh INTEGRATION_TEST_AZURE_CLIENT_ID=tester)"
+expect "...or with its own secret" \
+  "ARM_CLIENT_ID=tester ARM_CLIENT_SECRET=tt ARM_STORAGE_USE_AZUREAD=true ARM_TENANT_ID=t ARM_USE_AZUREAD=true" \
+  "$(azure ROLE=test AZURE_CLIENT_ID=apply AZURE_TENANT_ID=t AZURE_CLIENT_SECRET=shh INTEGRATION_TEST_AZURE_CLIENT_ID=tester INTEGRATION_TEST_AZURE_CLIENT_SECRET=tt)"
+expect "the plan and apply jobs ignore the integration test identity" \
+  "ARM_CLIENT_ID=apply ARM_STORAGE_USE_AZUREAD=true ARM_TENANT_ID=t ARM_USE_AZUREAD=true ARM_USE_OIDC=true" \
+  "$(azure ROLE=apply AZURE_CLIENT_ID=apply AZURE_TENANT_ID=t INTEGRATION_TEST_AZURE_CLIENT_ID=tester)"
+expect "...the plan job too" \
+  "ARM_CLIENT_ID=apply ARM_STORAGE_USE_AZUREAD=true ARM_TENANT_ID=t ARM_USE_AZUREAD=true ARM_USE_OIDC=true" \
+  "$(azure ROLE=plan AZURE_CLIENT_ID=apply AZURE_TENANT_ID=t INTEGRATION_TEST_AZURE_CLIENT_ID=tester)"
+cases=$((cases + 1))
+if azure ROLE=test AZURE_CLIENT_ID=apply AZURE_TENANT_ID=t INTEGRATION_TEST_AZURE_CLIENT_SECRET=tt > /dev/null; then
+  log_error "an integration test secret without its client ID fails the job: it succeeded"
+  failures=$((failures + 1))
+else
+  log_success "an integration test secret without its client ID fails the job"
+fi
 cases=$((cases + 1))
 if azure ROLE=plan AZURE_CLIENT_ID=apply > /dev/null; then
   log_error "inconsistent Azure inputs fail the job: it succeeded"
