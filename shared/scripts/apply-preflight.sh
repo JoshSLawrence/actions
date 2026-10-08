@@ -11,6 +11,10 @@
 #   - none of PREFLIGHT_PATHS changed on the target branch since the plan:
 #     applying would undo whatever merged there.
 #
+# The changes come from the compare API, which lists at most 300 files; with
+# that many it lists them with git instead, which needs the job's checkout
+# (its origin remote; shallow is fine).
+#
 # Environment variables:
 #   GH_TOKEN          - token for the GitHub API (contents: read and
 #                       pull-requests: read)
@@ -75,27 +79,57 @@ while IFS= read -r entry; do
   regexes+=("$regex")
 done < <(list_items "$PREFLIGHT_PATHS")
 
+# Files changed on TARGET_BRANCH since TARGET_SHA, from git. For when the
+# compare API's list is cut off: needs the checkout's origin remote, and no
+# history beyond the two commits, so shallow checkouts work. The token goes
+# in a one-off header (never in the URL or the log) because checkout runs
+# with persist-credentials: false.
+# Usage: git_changed_files   (prints one path per line; fails if git can't)
+git_changed_files() {
+  local auth
+  auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+  git -c "http.extraheader=AUTHORIZATION: basic ${auth}" fetch --quiet --no-tags --filter=blob:none \
+    origin "$TARGET_SHA" "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}" || return 1
+  git diff --name-only --no-renames "$TARGET_SHA" "origin/${TARGET_BRANCH}"
+}
+
 log_info "Checking ${PREFLIGHT_PATHS//$'\n'/, } hasn't changed on ${TARGET_BRANCH} since ${TARGET_SHA:0:7}..."
 comparison="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${TARGET_SHA}...${TARGET_BRANCH}")"
 ahead_by="$(jq -r .ahead_by <<< "$comparison")"
 file_count="$(jq -r '.files | length' <<< "$comparison")"
+file_list="$(jq -r '.files[]?.filename' <<< "$comparison")"
+
+# The compare API lists at most 300 files: with more, a relevant change could
+# be missing from the list. Ask git for the full list instead; only if that
+# fails is it too much to be sure either way.
+if [ "$file_count" -ge 300 ]; then
+  log_info "The compare API lists at most 300 files (${file_count} here); listing the changes with git instead..."
+  set +e
+  git_stderr="$(mktemp)"
+  file_list="$(git_changed_files 2> "$git_stderr")"
+  git_exit=$?
+  set -e
+  git_error="$(cat "$git_stderr")"
+  rm -f "$git_stderr"
+  if [ "$git_exit" -ne 0 ]; then
+    [ -n "$git_error" ] && log_warn "git said: ${git_error//"$GH_TOKEN"/***}"
+    log_error "${TARGET_BRANCH} has changed too much since this plan (${ahead_by} commits, ${file_count}+ files) to check what it deploys is unaffected, and git couldn't list the changes (the job needs a checkout with an origin remote and a token that can read it). ${RERUN_HINT}"
+    exit 1
+  fi
+fi
+
 changed_files=()
 while IFS= read -r file; do
+  [ -z "$file" ] && continue
   for regex in "${regexes[@]}"; do
     if [[ "$file" =~ $regex ]]; then
       changed_files+=("$file")
       break
     fi
   done
-done < <(jq -r '.files[]?.filename' <<< "$comparison")
+done <<< "$file_list"
 changed="$(printf '%s\n' "${changed_files[@]+"${changed_files[@]}"}" | sed '/^$/d' | sort -u | paste -sd, - | sed 's/,/, /g')"
 
-# The compare API lists at most 300 files: with more, a relevant change could
-# be missing from the list. Too much has changed to be sure either way.
-if [ "$file_count" -ge 300 ]; then
-  log_error "${TARGET_BRANCH} has changed too much since this plan (${ahead_by} commits, ${file_count}+ files) to check what it deploys is unaffected. ${RERUN_HINT}"
-  exit 1
-fi
 if [ -n "$changed" ]; then
   log_error "Files this plan depends on changed on ${TARGET_BRANCH} since it was made (${changed}). Applying it would revert those changes. ${RERUN_HINT} (If those paths don't affect what this deploys, narrow the preflight-paths input.)"
   exit 1
