@@ -15,6 +15,7 @@ A library of reusable GitHub Actions workflows and composite actions.
 | [OpenTofu drift](opentofu/README.md#drift-detection) | Reusable workflow | Plans one deployment on a schedule, never applying, and reports drift as a GitHub issue per deployment (updated in place, marked resolved when it's gone) |
 | [Data Factory](datafactory/README.md) | Reusable workflows + composite actions | Validate and export a factory's Git folder to an ARM template on every PR (no Publish, no `adf_publish`), what-if plans per environment, approval-gated deploys with trigger handling; PR comments |
 | [Synapse](synapse/README.md) | Reusable workflows + composite actions | The same for a Synapse workspace's artifacts (no `workspace_publish`), deployed with GitHub OIDC; PR comments |
+| [SQL project](sqlproject/README.md) | Reusable workflows + composite actions | Build an SDK-style SQL project's dacpac once, DeployReport plans per database with the change list and script in PR comments, additive or source-of-truth deploys, possible data loss blocked by default, approval-gated SqlPackage publish; Entra ID via OIDC |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -38,7 +39,8 @@ jobs:
 ```
 
 Each entry's README has its inputs, the setup it needs, and examples. The
-Data Factory and Synapse composite actions can also be used on their own;
+Data Factory, Synapse and SQL project composite actions can also be used on
+their own;
 OpenTofu's are internals of its workflow.
 Complete caller workflows are in [`examples/`](examples/).
 
@@ -82,6 +84,8 @@ actions/
 │       ├── datafactory.yaml
 │       ├── opentofu-drift.yaml
 │       ├── opentofu.yaml
+│       ├── sqlproject-deploy.yaml
+│       ├── sqlproject.yaml
 │       ├── synapse-deploy.yaml
 │       └── synapse.yaml
 ├── arm/
@@ -106,10 +110,13 @@ actions/
 │   ├── result/
 │   ├── scripts/              # common.sh and generic steps
 │   └── setup/
+├── sqlproject/               # build, deployments, plan, apply, scripts/,
+│                             # README.md and source-of-truth.md
 ├── synapse/                  # build, deployments, plan, apply, scripts/
 └── tests/
     ├── fixtures/             # what CI runs the workflows against
-    └── opentofu/             # OpenTofu script tests
+    ├── opentofu/             # OpenTofu script tests
+    └── sqlproject/           # SQL project script and engine tests
 ```
 
 ## Development

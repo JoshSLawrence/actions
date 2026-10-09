@@ -3,7 +3,8 @@
 What the CI workflow runs the reusable workflows against, so every PR tests
 the workflows and actions end to end, the way consumers use them. None needs
 a cloud account: the OpenTofu ones only touch local state, and the Data
-Factory and Synapse ones are built (offline) and planned without what-if.
+Factory and Synapse ones are built (offline) and planned without what-if,
+and the SQL project one is built and planned against a baseline dacpac.
 
 - [`opentofu/basic`](opentofu/basic/): a root module deployed three times,
   once per var file in `deployments/` (`dev`, `prod` and `staging-eu`), each
@@ -26,3 +27,12 @@ Factory and Synapse ones are built (offline) and planned without what-if.
   factory.
 - [`synapse/basic`](synapse/basic/): the same for a Synapse workspace, with
   a SQL script too.
+- [`sqlproject/basic`](sqlproject/basic/): an SDK-style SQL project
+  (`Microsoft.Build.Sql` 2.2.0) with two tables, a view, a refactorlog that
+  renames a column, an SQLCMD variable and pre- and post-deployment
+  scripts. `deployments/dev.publish.xml` and `prod.publish.xml` name fake
+  servers that are never contacted: CI plans them offline against
+  `ci/baseline.dacpac`, the project as it was before (rebuild it with
+  `tests/sqlproject/make-baseline.sh`), in additive and truth mode.
+  `ci/engine.publish.xml` is for the engine test, which publishes it to a
+  SQL Server container.

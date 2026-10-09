@@ -77,6 +77,28 @@ catalog, layout and principles.
   `datafactory-deploy.yaml` (plan → apply one deployment); likewise
   `synapse.yaml` → `synapse-deploy.yaml`. Every area's workflows use
   `shared/setup`, `shared/pr-comment` and `shared/result`.
+- **SQL projects** (`sqlproject/`, `sqlproject*.yaml`) have the same
+  nested shape: `sqlproject.yaml` (build the dacpac once, resolve
+  deployments) → `sqlproject-deploy.yaml` (plan → apply one deployment). The
+  decisions are in `docs/design/sqlproject.md`; the user guides are
+  `sqlproject/README.md` and `sqlproject/source-of-truth.md`.
+  - `sqlproject/scripts/sqlproject.sh` is the area's library (profiles,
+    name=value lists, SqlPackage arguments, running SqlPackage, reports,
+    deployment scripts, the digest).
+  - A deployment is the dacpac × one publish profile. The plan holds
+    `deploy/` (dacpacs, profile, `deploy-report.xml`,
+    `deployment-scripts.json`, `target.json`) plus the script, the kept
+    report and `summary.md`; the digest covers `deploy/`, and the apply
+    builds every SqlPackage argument from the plan directory, never from
+    inputs.
+  - `deploy-mode` (`additive`/`truth`) and `allow-data-loss` own the
+    SqlPackage properties `DropObjectsNotInSource`, `DoNotDropObjectTypes`
+    and `BlockOnPossibleDataLoss`: profiles and `properties` may not set
+    them. Pre/post-deployment scripts never show in a report, so the build
+    compares them with the base commit's build (`deployment-scripts`).
+  - The apply plans again against the live database and refuses if the
+    report differs from the reviewed one. SqlPackage always gets the access
+    token in a mode-600 response file, never on a command line.
 - **Workflow inputs stay in sync:**
   - An input means the same thing in every workflow of a family that has
     it (the Data Factory and Synapse workflows, and the two OpenTofu
@@ -132,10 +154,13 @@ catalog, layout and principles.
   upstream release (`v<upstream>-oidc.N`): port and bump it by hand when
   upstream releases.
   Dependabot updates them in `.github/` and in every `opentofu/*`,
-  `shared/*`, `datafactory/*` and `synapse/*` action. Bump by hand:
-  `mise-version` (default in `shared/setup/action.yaml`) and the Az
+  `shared/*`, `datafactory/*`, `sqlproject/*` and `synapse/*` action. Bump by
+  hand: `mise-version` (default in `shared/setup/action.yaml`), the Az
   PowerShell modules pinned in
-  `datafactory/scripts/pre-post-deployment.ps1`.
+  `datafactory/scripts/pre-post-deployment.ps1`, and the SQL Server image
+  digest in `tests/sqlproject/engine-test.sh` (the SQL project fixture's
+  `Microsoft.Build.Sql` version and tool pins are bumped with
+  `tests/sqlproject/make-baseline.sh` re-run).
 - **Least privilege.** Workflows set `permissions: {}` and grant per job. A
   permission a reusable workflow's job requests becomes every caller's
   minimum, so adding one is a breaking change: update the README and
@@ -170,9 +195,16 @@ catalog, layout and principles.
   - the workflow input sync check and the no-inline-scripts check;
   - the OpenTofu script tests (`tests/opentofu/scripts-test.sh`: change
     detection, input validation, the Azure mapping, names);
+  - the SQL project script tests (`tests/sqlproject/scripts-test.sh`:
+    names, input validation, the build's scripts comparison, reports, plan
+    and apply with stubbed tools, secret handling);
   - the OpenTofu hooks on the fixtures.
 - The apply scripts need a real factory or workspace: CI stops the Data
-  Factory and Synapse e2e runs at the plan.
+  Factory and Synapse e2e runs at the plan. The SQL project apply is run for
+  real against a SQL Server container by the CI job "SQL project engine"
+  (`tests/sqlproject/engine-test.sh`, which needs docker; run it locally the
+  same way, with the fixture committed). Entra sign-in and private endpoints
+  need Azure and are not covered.
 - Exercise changed scripts against `tests/fixtures/` locally, e.g.
   `WORKING_DIR=tests/fixtures/opentofu/basic opentofu/scripts/check-fmt.sh`,
   or `WORKING_DIR=tests/fixtures/opentofu/basic

@@ -1,0 +1,57 @@
+# Two databases of one SQL project (database/core) -- dev and prod -- planned
+# on every PR and published after each environment's approval, before merge.
+# Each plan shows what SqlPackage would change in its database; nothing is
+# published that was not reviewed.
+#
+# Setup:
+# - database/core is the project's folder: core.sqlproj, its objects, and a
+#   mise.toml: 'mise use dotnet@10.0.401 dotnet:microsoft.sqlpackage@170.5.96
+#   yq@4.53.6 azure-cli@2.90.0 uv@0.12.19' in database/core/.
+# - database/core/deployments/dev.publish.xml and prod.publish.xml: publish
+#   profiles with the MSBuild namespace on <Project>, a TargetDatabaseName
+#   and a TargetConnectionString with only the server, e.g.
+#     <TargetConnectionString>Data Source=sql-dev.database.windows.net;Encrypt=True</TargetConnectionString>
+# - The databases exist (create them with your infrastructure code), and the
+#   Azure identity is a user of each that can deploy: e.g. the server's Entra
+#   administrator.
+# - Environments `dev` and `prod`, with required reviewers if your plan
+#   allows.
+# - Variables AZURE_CLIENT_ID, AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID
+#   (environment-scoped ones for a per-environment identity), and federated
+#   credentials for this repository's `pull_request`, `ref:refs/heads/main`,
+#   `environment:dev` and `environment:prod` subjects.
+# - Runners that reach the databases: with private endpoints, set the plan
+#   and apply runners to a runner group in the network.
+# - Optionally, a PR label `sql-allow-data-loss`, to let a PR's plans drop
+#   data (the approval still gates each apply).
+
+name: Database
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - database/core/**
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  core:
+    uses: JoshSLawrence/actions/.github/workflows/sqlproject.yaml@v0.5.0
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      working-directory: database/core
+      deployments: deployments/*.publish.xml
+      apply-environment: "{deployment}"
+      # additive never drops what is not in the project; switch to truth once
+      # the plans' "Kept" lists are empty (see sqlproject/source-of-truth.md)
+      deploy-mode: additive
+      allow-data-loss: ${{ contains(github.event.pull_request.labels.*.name, 'sql-allow-data-loss') }}
+      plan-runs-on: '{"group": "private-network"}'
+      apply-runs-on: '{"group": "private-network"}'

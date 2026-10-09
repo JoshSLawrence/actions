@@ -20,6 +20,8 @@
 #   APPLY_STATUS      - none, awaiting-approval, after-merge, blocked,
 #                       succeeded, or failed
 #   APPLY_ENVIRONMENT - GitHub environment the apply runs in (for the text)
+#   BLOCKED_REASON    - with APPLY_STATUS blocked: the text saying why.
+#                       Default: the policy check text (OpenTofu's).
 #   COMMENT_AUTHOR    - login the comment is posted as (default:
 #                       github-actions[bot]; e.g. my-app[bot] for a GitHub App
 #                       token). Only its comments are ever edited.
@@ -101,7 +103,11 @@ apply_section() {
     blocked)
       echo "### 🚫 Apply: blocked"
       echo ""
-      echo "The policy check failed, so this plan wasn't saved and can't be applied. Fix the violations above and push to plan again."
+      if [ -n "${BLOCKED_REASON:-}" ]; then
+        echo "${BLOCKED_REASON}"
+      else
+        echo "The policy check failed, so this plan wasn't saved and can't be applied. Fix the violations above and push to plan again."
+      fi
       ;;
     succeeded)
       local by

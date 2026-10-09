@@ -1,0 +1,81 @@
+name: SQL project build
+description: >-
+  Builds a SQL project (SDK-style, Microsoft.Build.Sql) into its dacpac, and
+  decides whether its pre- and post-deployment scripts count as a change
+  (a deployment report never shows them) by comparing them with a build of
+  the base commit. Runs offline, with no credentials, so it's safe on PRs
+  from forks. Run shared/setup first, with dotnet pinned in the project's
+  mise.toml. A commit SHA as scripts-base needs a checkout with that commit
+  (fetch-depth 0). Upload dacpac-dir as an artifact for sqlproject/plan.
+
+inputs:
+  working-directory:
+    description: The SQL project's folder (exactly one *.sqlproj), relative to the workspace.
+    required: false
+    default: "."
+  stack-name:
+    description: "Display name, and the dacpac artifact's name (default: the working directory)."
+    required: false
+    default: ""
+  deployments:
+    description: The call's deployments input, to key the artifact name (two calls for one folder must not share an artifact).
+    required: false
+    default: ""
+  target-dacpac:
+    description: The call's target-dacpac input, to key the artifact name.
+    required: false
+    default: ""
+  output-dir:
+    description: "Where the dacpac goes (default: $RUNNER_TEMP/sqlproject-dacpac)."
+    required: false
+    default: ""
+  deployment-scripts:
+    description: "When pre/post-deployment scripts count as a change: changed (they differ from the base build) or always."
+    required: false
+    default: changed
+  scripts-base:
+    description: "A commit SHA to build and compare the deployment scripts with, or none (then they count as changed)."
+    required: false
+    default: none
+
+outputs:
+  dacpac-dir:
+    description: 'Absolute path of the build output: the dacpac (and any it references), build.json and deployment-scripts.json.'
+    value: ${{ steps.build.outputs.dacpac-dir }}
+  dacpac-name:
+    description: Name of the project's dacpac, e.g. core.dacpac.
+    value: ${{ steps.build.outputs.dacpac-name }}
+  artifact-name:
+    description: Name to upload dacpac-dir under, unique per project.
+    value: ${{ steps.names.outputs.dacpac-artifact-name }}
+  dacpac-sha256:
+    description: SHA-256 of the dacpac.
+    value: ${{ steps.build.outputs.dacpac-sha256 }}
+  deployment-scripts-changed:
+    description: "'true' if the project has deployment scripts that count as changed."
+    value: ${{ steps.build.outputs.deployment-scripts-changed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve names
+      id: names
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/names.sh"'
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        STACK_NAME: ${{ inputs.stack-name }}
+        DEPLOYMENTS: ${{ inputs.deployments }}
+        TARGET_DACPAC: ${{ inputs.target-dacpac }}
+        REPOSITORY_NAME: ${{ github.event.repository.name }}
+
+    - name: Build
+      id: build
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/build.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        OUTPUT_DIR: ${{ inputs.output-dir || format('{0}/sqlproject-dacpac', runner.temp) }}
+        DEPLOYMENT_SCRIPTS: ${{ inputs.deployment-scripts }}
+        SCRIPTS_BASE: ${{ inputs.scripts-base }}
+        WORK_DIR: ${{ runner.temp }}/sqlproject-build-work

@@ -1,0 +1,408 @@
+# SQL project reusable workflow: plan -> apply for ONE deployment of a SQL
+# project (its dacpac with one publish profile, to one database).
+#
+# sqlproject.yaml builds the dacpac once and calls this once per deployment.
+# Call this directly only to build your own layout: upload
+# sqlproject/build's dacpac-dir as an artifact first, and pass its name as
+# dacpac-artifact.
+#
+# - plan: SqlPackage DeployReport and Script against the live database, with
+#   the exact options the apply publishes with; in additive mode also what
+#   the database has that the project doesn't. Uploads the plan (dacpacs +
+#   profile + target + report, no credentials) as an artifact, and comments
+#   the summary on the PR. A plan with possible data loss is blocked unless
+#   allow-data-loss is on. Skipped for fork PRs and Dependabot, which get no
+#   OIDC token.
+# - apply: only when the plan has changes. Waits for the apply environment's
+#   approval, checks the plan is still current (the PR is at the planned
+#   commit and the project's files haven't changed on the target branch),
+#   checks the plan's digest, plans again and refuses if the database no
+#   longer yields the reviewed report, then publishes exactly that plan. A PR
+#   run applies from the PR, before merge, so the default branch only holds
+#   what was applied; other runs apply only on the default branch.
+#
+# Runners: every runs-on input is a label, or JSON when it starts with { or
+# [ -- an array of labels or a runner group -- which each job's runs-on
+# parses. plan-runs-on and apply-runs-on override runs-on for those jobs.
+#
+# The composite actions are referenced with the self-repository syntax
+# (uses: $/...), which resolves to this repository at the exact commit being
+# run -- so a caller pinned to a tag or SHA gets matching actions and
+# scripts. It needs runner 2.336.0+ (GitHub-hosted runners always qualify).
+
+name: SQL project deploy
+
+on:
+  workflow_call:
+    inputs:
+      # --- What to deploy -------------------------------------------------------
+      working-directory:
+        description: >-
+          The SQL project's folder (exactly one *.sqlproj), relative to the
+          repository root. It pins its own tools in a mise.toml.
+        type: string
+        default: "."
+      stack-name:
+        description: >-
+          Display name in PR comments and the job summary (default: the working
+          directory).
+        type: string
+        default: ""
+      deployment:
+        description: Deployment name (the profile's, without .publish.xml), for names and titles.
+        type: string
+        default: ""
+      dacpac-artifact:
+        description: Name of the artifact holding sqlproject/build's dacpac-dir.
+        type: string
+        required: true
+      profile:
+        description: The deployment's publish profile, relative to the working directory.
+        type: string
+        required: true
+      runs-on:
+        description: >-
+          Runner of every job without its own below: a label, or JSON (from
+          { or [) for an array of labels or a runner group, e.g.
+          {"group": "my-group"} or {"group": "my-group", "labels": ["linux"]}.
+        type: string
+        default: ubuntu-latest
+      plan-runs-on:
+        description: "Runner of each deployment's plan job, in the same forms (default: runs-on). It must reach the database."
+        type: string
+        default: ""
+      apply-runs-on:
+        description: "Runner of each deployment's apply job, in the same forms (default: runs-on). It must reach the database."
+        type: string
+        default: ""
+      timeout-minutes:
+        description: Timeout for each job.
+        type: number
+        default: 30
+      mise-version:
+        description: "mise version to install (default: the setup action's pin)."
+        type: string
+        default: ""
+      # --- Deployment options ---------------------------------------------------
+      deploy-mode:
+        description: >-
+          additive: never drop what isn't in the project (the plan lists it as
+          kept). truth: the project is the source of truth; drop what isn't in it,
+          except keep-object-types.
+        type: string
+        default: additive
+      keep-object-types:
+        description: >-
+          truth mode only: object types never dropped (SqlPackage
+          DoNotDropObjectTypes), separated by ; or newlines. The project's own
+          creates and changes of them still deploy. Empty keeps nothing.
+        type: string
+        default: "Users;Logins;DatabaseRoles;ApplicationRoles;RoleMembership;ServerRoles;ServerRoleMembership;Permissions;Credentials;DatabaseScopedCredentials;MasterKeys"
+      deployment-scripts:
+        description: >-
+          When pre- and post-deployment scripts alone make a plan a change: changed
+          (they differ from what is deployed: the base commit's build on a pull
+          request, always on a dispatch) or always (every plan of a project that has
+          them).
+        type: string
+        default: changed
+      properties:
+        description: >-
+          Deploy properties every deployment uses, one Name=Value per line, after
+          the profile's. DropObjectsNotInSource, DoNotDropObjectTypes and
+          BlockOnPossibleDataLoss are set by other inputs and refused here.
+        type: string
+        default: ""
+      variables:
+        description: >-
+          SQLCMD variables every deployment uses, one Name=Value per line, after the
+          profile's. {deployment} is replaced with the deployment's name. They end
+          up in the plan and its comment, so no secrets.
+        type: string
+        default: ""
+      # --- Plan -----------------------------------------------------------------
+      plan-environment:
+        description: GitHub environment for the plan jobs (no reviewers; scopes read-only credentials). {deployment} is replaced.
+        type: string
+        default: ""
+      plan-retention-days:
+        description: Days to keep the dacpac and plan artifacts (an approval after that fails).
+        type: number
+        default: 7
+      pr-comment:
+        description: Comment the plan (and apply result) on the PR.
+        type: boolean
+        default: true
+      target-dacpac:
+        description: >-
+          Plan against this .dacpac (relative to the working directory) instead of
+          the live database: no Azure access. For tests and offline previews;
+          needs apply false.
+        type: string
+        default: ""
+      allow-data-loss:
+        description: >-
+          Let a plan with possible data loss be applied, and publish with
+          BlockOnPossibleDataLoss=False. Off: such a plan is blocked.
+        type: boolean
+        default: false
+      # --- Apply ----------------------------------------------------------------
+      apply:
+        description: Include the apply job at all. false = plan only.
+        type: boolean
+        default: true
+      apply-environment:
+        description: >-
+          GitHub environment for the apply jobs. Give it required reviewers --
+          that's the approval gate. {deployment} is replaced, e.g. "{deployment}"
+          for a dev and a prod environment. Required with apply.
+        type: string
+        default: ""
+      preflight-paths:
+        description: >-
+          Paths (or globs) every deployment's plan depends on (default: the working
+          directory; each deployment's own profile is added, and the other
+          profiles left out). A change to any on the target branch since the plan
+          makes it stale.
+        type: string
+        default: ""
+      # --- Cloud auth -----------------------------------------------------------
+      azure-client-id:
+        description: 'Azure client ID for OIDC (default: the AZURE_CLIENT_ID variable, environment-scoped if set there).'
+        type: string
+        default: ""
+      apply-azure-client-id:
+        description: "Separate (write) Azure identity for the apply job (default: azure-client-id)."
+        type: string
+        default: ""
+      azure-tenant-id:
+        description: "Azure tenant ID (default: the AZURE_TENANT_ID variable)."
+        type: string
+        default: ""
+      azure-subscription-id:
+        description: "Azure subscription ID (default: the AZURE_SUBSCRIPTION_ID variable; azure/login needs one, the token itself doesn't)."
+        type: string
+        default: ""
+
+    outputs:
+      has-changes:
+        description: "'true' if the plan has changes."
+        value: ${{ jobs.plan.outputs.has-changes }}
+      data-loss:
+        description: "'true' if the plan has possible data loss."
+        value: ${{ jobs.plan.outputs.data-loss }}
+      applied:
+        description: "'true' if the apply job published the plan."
+        value: ${{ jobs.apply.outputs.applied }}
+
+permissions: {}
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  DACFX_TELEMETRY_OPTOUT: "1"
+
+jobs:
+  plan:
+    name: Plan
+    # Fork and Dependabot PRs get no OIDC token or secrets, so they can't plan
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
+    runs-on: >-
+      ${{
+        (startsWith(inputs.plan-runs-on || inputs.runs-on, '{') || startsWith(inputs.plan-runs-on || inputs.runs-on, '['))
+        && fromJSON(inputs.plan-runs-on || inputs.runs-on)
+        || inputs.plan-runs-on || inputs.runs-on
+      }}
+    environment: ${{ inputs.plan-environment }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # A newer push supersedes a plan in progress. Safe to cancel: plans
+    # change nothing.
+    concurrency:
+      group: sqlproject-plan-${{ github.repository }}-${{ inputs.working-directory }}-${{ inputs.stack-name }}-${{ inputs.deployment }}-${{ inputs.apply-environment }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      id-token: write # Azure OIDC (the token for the database)
+      pull-requests: write # plan comment
+    outputs:
+      has-changes: ${{ steps.plan.outputs.has-changes }}
+      data-loss: ${{ steps.plan.outputs.data-loss }}
+      plan-sha256: ${{ steps.plan.outputs.plan-sha256 }}
+      artifact-name: ${{ steps.plan.outputs.artifact-name }}
+      comment-key: ${{ steps.plan.outputs.key }}
+      title: ${{ steps.plan.outputs.title }}
+      server: ${{ steps.plan.outputs.server }}
+      database: ${{ steps.plan.outputs.database }}
+    env:
+      ARM_CLIENT_ID: ${{ inputs.azure-client-id || vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ inputs.azure-tenant-id || vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ inputs.azure-subscription-id || vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download dacpac
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.dacpac-artifact }}
+          path: ${{ runner.temp }}/sqlproject-dacpac
+
+      - name: Azure login
+        if: inputs.target-dacpac == ''
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ env.ARM_CLIENT_ID }}
+          tenant-id: ${{ env.ARM_TENANT_ID }}
+          subscription-id: ${{ env.ARM_SUBSCRIPTION_ID }}
+
+      # azure-cli (the token) only when planning against a database
+      - name: Set up tools
+        uses: $/shared/setup
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          required-tools: >-
+            dotnet
+            dotnet:microsoft.sqlpackage
+            yq
+            ${{ inputs.target-dacpac == '' && 'azure-cli' || '' }}
+          mise-version: ${{ inputs.mise-version }}
+
+      - name: Plan
+        id: plan
+        uses: $/sqlproject/plan
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          dacpac-dir: ${{ runner.temp }}/sqlproject-dacpac
+          profile: ${{ inputs.profile }}
+          deployment: ${{ inputs.deployment }}
+          stack-name: ${{ inputs.stack-name }}
+          environment: ${{ inputs.apply-environment }}
+          deploy-mode: ${{ inputs.deploy-mode }}
+          keep-object-types: ${{ inputs.keep-object-types }}
+          deployment-scripts: ${{ inputs.deployment-scripts }}
+          properties: ${{ inputs.properties }}
+          variables: ${{ inputs.variables }}
+          allow-data-loss: ${{ inputs.allow-data-loss }}
+          target-dacpac: ${{ inputs.target-dacpac }}
+
+      # The plan holds the dacpacs (schema and deployment scripts), the
+      # committed profile, the target's names and the reports -- no
+      # credentials: profiles with any are refused. Keep secrets out of
+      # SQLCMD variables too.
+      - name: Upload plan
+        if: inputs.apply && steps.plan.outputs.has-changes == 'true' && steps.plan.outputs.blocked != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.plan.outputs.artifact-name }}
+          path: ${{ steps.plan.outputs.plan-dir }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.plan-retention-days }}
+          # A re-run uploads again under the same name; apply checks the
+          # digest from this attempt's plan output either way.
+          overwrite: true
+
+      - name: Comment plan on PR
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && inputs.pr-comment && steps.plan.outputs.key != '' }}
+        uses: $/shared/pr-comment
+        with:
+          comment-key: ${{ steps.plan.outputs.key }}
+          title: ${{ steps.plan.outputs.title }}
+          summary-file: ${{ steps.plan.outputs.summary-file || format('{0}/sqlproject-plan/summary.md', runner.temp) }}
+          apply-environment: ${{ inputs.apply-environment }}
+          apply-status: >-
+            ${{
+              steps.plan.outputs.has-changes != 'true' && 'none' ||
+              steps.plan.outputs.blocked == 'true' && 'blocked' ||
+              !inputs.apply && 'none' ||
+              'awaiting-approval'
+            }}
+          blocked-reason: ${{ steps.plan.outputs.blocked-reason }}
+
+  apply:
+    name: Apply
+    needs: plan
+    # PR runs apply from the PR; other runs only on the default branch -- use
+    # environment branch policies for more.
+    if: >-
+      inputs.apply &&
+      needs.plan.outputs.has-changes == 'true' &&
+      (
+        github.event_name == 'pull_request' ||
+        github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      )
+    runs-on: >-
+      ${{
+        (startsWith(inputs.apply-runs-on || inputs.runs-on, '{') || startsWith(inputs.apply-runs-on || inputs.runs-on, '['))
+        && fromJSON(inputs.apply-runs-on || inputs.runs-on)
+        || inputs.apply-runs-on || inputs.runs-on
+      }}
+    # Waits here for a reviewer's approval. Environment-scoped secrets,
+    # variables and Azure federated credentials only apply once approved.
+    environment: ${{ inputs.apply-environment }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    # One publish at a time per database, whatever workflow or PR it comes
+    # from, and never cancel one that's running: that could leave the
+    # database half-deployed. A newer run's apply queues behind.
+    concurrency:
+      group: sqlproject-apply-${{ github.repository }}-${{ needs.plan.outputs.server }}-${{ needs.plan.outputs.database }}
+      cancel-in-progress: false
+    permissions:
+      actions: read # environment protection rules; who approved, for the PR comment
+      contents: read
+      id-token: write # Azure OIDC
+      pull-requests: write # apply result comment
+    outputs:
+      applied: ${{ steps.apply.outcome == 'success' }}
+    env:
+      ARM_CLIENT_ID: ${{ inputs.apply-azure-client-id || inputs.azure-client-id || vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ inputs.azure-tenant-id || vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ inputs.azure-subscription-id || vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Before the preflight check, so a refused apply still re-posts the plan
+      # summary alongside the failure.
+      - name: Download plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.plan.outputs.artifact-name }}
+          path: ${{ runner.temp }}/sqlproject-plan
+
+      - name: Azure login
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ env.ARM_CLIENT_ID }}
+          tenant-id: ${{ env.ARM_TENANT_ID }}
+          subscription-id: ${{ env.ARM_SUBSCRIPTION_ID }}
+
+      - name: Set up tools
+        uses: $/shared/setup
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          required-tools: dotnet dotnet:microsoft.sqlpackage yq azure-cli
+          mise-version: ${{ inputs.mise-version }}
+
+      - name: Apply
+        id: apply
+        uses: $/sqlproject/apply
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          plan-dir: ${{ runner.temp }}/sqlproject-plan
+          plan-sha256: ${{ needs.plan.outputs.plan-sha256 }}
+          environment: ${{ inputs.apply-environment }}
+          preflight-paths: ${{ inputs.preflight-paths }}
+
+      - name: Comment apply result on PR
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && inputs.pr-comment }}
+        uses: $/shared/pr-comment
+        with:
+          comment-key: ${{ needs.plan.outputs.comment-key }}
+          title: ${{ needs.plan.outputs.title }}
+          summary-file: ${{ runner.temp }}/sqlproject-plan/summary.md
+          apply-environment: ${{ inputs.apply-environment }}
+          apply-status: ${{ steps.apply.outcome == 'success' && 'succeeded' || 'failed' }}

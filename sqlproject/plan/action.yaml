@@ -1,0 +1,146 @@
+name: SQL project plan
+description: >-
+  Plans one deployment of a SQL project (its dacpac x one publish profile)
+  against the live database: SqlPackage DeployReport for what would change,
+  Script for the T-SQL that would run, with exactly the options the apply
+  publishes with, and in additive mode what the database has that the
+  project doesn't. Writes a markdown summary, and fails after writing it
+  (so it can still be posted) when the plan has possible data loss that isn't
+  allowed. Upload plan-dir as an artifact for sqlproject/apply when
+  has-changes is true. Sign in with azure/login and run shared/setup (dotnet,
+  dotnet:microsoft.sqlpackage, yq and azure-cli pinned) first; with
+  target-dacpac, no sign-in or azure-cli is needed.
+
+inputs:
+  working-directory:
+    description: The SQL project's folder, relative to the workspace.
+    required: false
+    default: "."
+  dacpac-dir:
+    description: sqlproject/build's dacpac-dir (or its downloaded artifact).
+    required: true
+  profile:
+    description: The deployment's publish profile, relative to the working directory.
+    required: true
+  deployment:
+    description: Deployment name (its profile's), for the names and title.
+    required: false
+    default: ""
+  stack-name:
+    description: "Display name for the summary, comment and artifact names (default: the working directory)."
+    required: false
+    default: ""
+  environment:
+    description: >-
+      Environment the plan will be applied in, if any. Part of the names, so
+      each project/deployment/environment gets its own comment and artifact.
+    required: false
+    default: ""
+  deploy-mode:
+    description: "additive (never drop what isn't in the project; the plan lists what is kept) or truth (drop it)."
+    required: false
+    default: additive
+  keep-object-types:
+    description: "Truth mode: object types never dropped (a ;- or newline-separated list)."
+    required: false
+    default: Users;Logins;DatabaseRoles;ApplicationRoles;RoleMembership;ServerRoles;ServerRoleMembership;Permissions;Credentials;DatabaseScopedCredentials;MasterKeys
+  deployment-scripts:
+    description: "When pre/post-deployment scripts count as a change: changed or always (as given to the build)."
+    required: false
+    default: changed
+  properties:
+    description: Deploy properties, one Name=Value per line, after the profile's.
+    required: false
+    default: ""
+  variables:
+    description: SQLCMD variables, one Name=Value per line, after the profile's. They end up in the plan, so no secrets.
+    required: false
+    default: ""
+  allow-data-loss:
+    description: "'true' lets a plan with possible data loss pass, and publish with BlockOnPossibleDataLoss=False."
+    required: false
+    default: "false"
+  target-dacpac:
+    description: Plan against this dacpac, relative to the working directory, instead of the database (no Azure access).
+    required: false
+    default: ""
+  plan-dir:
+    description: "Directory for the plan (default: $RUNNER_TEMP/sqlproject-plan) -- the plan artifact."
+    required: false
+    default: ""
+
+outputs:
+  key:
+    description: Unique key for this project/deployment/environment -- the comment-key for shared/pr-comment.
+    value: ${{ steps.names.outputs.key }}
+  artifact-name:
+    description: Plan artifact name derived from key.
+    value: ${{ steps.names.outputs.artifact-name }}
+  title:
+    description: Heading for the PR comment.
+    value: ${{ steps.names.outputs.title }}
+  has-changes:
+    description: "'true' if the plan changes the schema, or the deployment scripts count as changed."
+    value: ${{ steps.plan.outputs.has-changes }}
+  data-loss:
+    description: "'true' if the plan has possible data loss."
+    value: ${{ steps.plan.outputs.data-loss }}
+  blocked:
+    description: "'true' if it has, and allow-data-loss is off (the step then fails)."
+    value: ${{ steps.plan.outputs.blocked }}
+  blocked-reason:
+    description: One line saying why the plan is blocked.
+    value: ${{ steps.plan.outputs.blocked-reason }}
+  plan-sha256:
+    description: SHA-256 of the plan; pass it to sqlproject/apply.
+    value: ${{ steps.plan.outputs.plan-sha256 }}
+  plan-dir:
+    description: Absolute path of the plan directory.
+    value: ${{ steps.plan.outputs.plan-dir }}
+  summary-file:
+    description: Absolute path of the markdown plan summary (written on failure too).
+    value: ${{ steps.plan.outputs.summary-file }}
+  server:
+    description: The target server ("" when planning against a dacpac).
+    value: ${{ steps.plan.outputs.server }}
+  database:
+    description: The target database.
+    value: ${{ steps.plan.outputs.database }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve names
+      id: names
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/names.sh"'
+      env:
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        STACK_NAME: ${{ inputs.stack-name }}
+        DEPLOYMENT: ${{ inputs.deployment }}
+        APPLY_ENVIRONMENT: ${{ inputs.environment }}
+        REPOSITORY_NAME: ${{ github.event.repository.name }}
+
+    - name: Plan
+      id: plan
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/plan.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        DACPAC_DIR: ${{ inputs.dacpac-dir }}
+        PROFILE: ${{ inputs.profile }}
+        PLAN_DIR: ${{ inputs.plan-dir || format('{0}/sqlproject-plan', runner.temp) }}
+        WORK_DIR: ${{ runner.temp }}/sqlproject-plan-work
+        DEPLOYMENT: ${{ inputs.deployment }}
+        DEPLOY_MODE: ${{ inputs.deploy-mode }}
+        KEEP_OBJECT_TYPES: ${{ inputs.keep-object-types }}
+        DEPLOYMENT_SCRIPTS: ${{ inputs.deployment-scripts }}
+        PROPERTIES: ${{ inputs.properties }}
+        VARIABLES: ${{ inputs.variables }}
+        ALLOW_DATA_LOSS: ${{ inputs.allow-data-loss }}
+        TARGET_DACPAC: ${{ inputs.target-dacpac }}
+        TITLE: ${{ steps.names.outputs.title }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        TARGET_BRANCH: ${{ github.event.pull_request.base.ref || github.ref_name }}
+        TARGET_SHA: ${{ github.event.pull_request.base.sha || github.sha }}

@@ -10,6 +10,7 @@ updates:
       - /datafactory/*
       - /opentofu/*
       - /shared/*
+      - /sqlproject/*
       - /synapse/*
     schedule:
       interval: weekly
