@@ -121,7 +121,7 @@ runs:
     # releases again, port it (a v<upstream>-oidc.N release) and bump this.
     - name: Deploy artifacts
       id: deploy
-      uses: JoshSLawrence/Synapse-workspace-deployment@5869ab629b3764310cd81820b4bb71bc48eb0025 # v1.9.2-oidc.1
+      uses: JoshSLawrence/Synapse-workspace-deployment@bc2fdca4d407ef8a6f6b05e71b507eedf5dc9877 # v1.9.2-oidc.2
       with:
         operation: deploy
         TargetWorkspaceName: ${{ steps.prepare.outputs.workspace-name }}
