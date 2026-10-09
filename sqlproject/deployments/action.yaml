@@ -1,0 +1,103 @@
+name: SQL project deployments
+description: >-
+  Checks a SQL project's inputs (every problem reported at once) and resolves
+  its deployments -- one per publish profile matching `deployments` -- into a
+  matrix, each with its profile, SQLCMD variables, environments and
+  preflight paths. Then checks the GitHub environments exist. Run
+  shared/setup first, with yq pinned in the project's mise.toml (it reads the
+  profiles).
+
+inputs:
+  working-directory:
+    description: The SQL project's folder, relative to the workspace.
+    required: false
+    default: "."
+  deployments:
+    description: Publish profiles relative to the folder, one deployment each (e.g. deployments/*.publish.xml). Must match something.
+    required: true
+  deploy-mode:
+    description: "additive (never drop what isn't in the project) or truth (drop it)."
+    required: false
+    default: additive
+  keep-object-types:
+    description: "Truth mode: object types never dropped (a ;- or newline-separated list)."
+    required: false
+    default: Users;Logins;DatabaseRoles;ApplicationRoles;RoleMembership;ServerRoles;ServerRoleMembership;Permissions;Credentials;DatabaseScopedCredentials;MasterKeys
+  deployment-scripts:
+    description: "When pre/post-deployment scripts count as a change: changed or always."
+    required: false
+    default: changed
+  properties:
+    description: Deploy properties every deployment uses, one Name=Value per line.
+    required: false
+    default: ""
+  variables:
+    description: SQLCMD variables every deployment uses, one Name=Value per line; {deployment} is replaced.
+    required: false
+    default: ""
+  plan-environment:
+    description: Plan environment name; {deployment} is replaced.
+    required: false
+    default: ""
+  apply-environment:
+    description: Apply environment name; {deployment} is replaced. Required with apply.
+    required: false
+    default: ""
+  preflight-paths:
+    description: "Paths every deployment's plan depends on (default: the working directory)."
+    required: false
+    default: ""
+  apply:
+    description: Whether the apply job runs (then apply-environment is required).
+    required: false
+    default: "true"
+  target-dacpac:
+    description: Plan against this dacpac, relative to the working directory, instead of the database (needs apply false).
+    required: false
+    default: ""
+  github-token:
+    description: 'Token to check the environments with (needs actions: read).'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  matrix:
+    description: '{"deployment": [{"name", "profile", "variables", "plan_environment", "apply_environment", "preflight_paths"}, ...]}'
+    value: ${{ steps.deployments.outputs.matrix }}
+  deployments:
+    description: JSON array of the deployment names.
+    value: ${{ steps.deployments.outputs.deployments }}
+  count:
+    description: Number of deployments.
+    value: ${{ steps.deployments.outputs.count }}
+  environments:
+    description: The plan and apply environments, unique, space-separated.
+    value: ${{ steps.deployments.outputs.environments }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve deployments
+      id: deployments
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/deployments.sh"'
+      env:
+        WORKING_DIR: ${{ inputs.working-directory }}
+        DEPLOYMENTS: ${{ inputs.deployments }}
+        DEPLOY_MODE: ${{ inputs.deploy-mode }}
+        KEEP_OBJECT_TYPES: ${{ inputs.keep-object-types }}
+        DEPLOYMENT_SCRIPTS: ${{ inputs.deployment-scripts }}
+        PROPERTIES: ${{ inputs.properties }}
+        VARIABLES: ${{ inputs.variables }}
+        PLAN_ENVIRONMENT: ${{ inputs.plan-environment }}
+        APPLY_ENVIRONMENT: ${{ inputs.apply-environment }}
+        PREFLIGHT_PATHS: ${{ inputs.preflight-paths }}
+        APPLY: ${{ inputs.apply }}
+        TARGET_DACPAC: ${{ inputs.target-dacpac }}
+
+    - name: Check the GitHub environments exist
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../../shared/scripts/require-environments.sh"'
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        ENVIRONMENTS: ${{ steps.deployments.outputs.environments }}
