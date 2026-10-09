@@ -5,6 +5,9 @@ repos:
       - id: check-added-large-files
         args: ["--maxkb=500"]
       - id: check-merge-conflict
+      # Parses every workflow and composite action: actionlint doesn't read
+      # action.yaml, and GitHub rejects one with a syntax error at run time
+      - id: check-yaml
       - id: check-xml
         files: \.(sqlproj|publish\.xml|refactorlog)$
       - id: end-of-file-fixer

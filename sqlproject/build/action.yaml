@@ -40,7 +40,7 @@ inputs:
 
 outputs:
   dacpac-dir:
-    description: Absolute path of the build output: the dacpac (and any it references), build.json and deployment-scripts.json.
+    description: 'Absolute path of the build output: the dacpac (and any it references), build.json and deployment-scripts.json.'
     value: ${{ steps.build.outputs.dacpac-dir }}
   dacpac-name:
     description: Name of the project's dacpac, e.g. core.dacpac.
