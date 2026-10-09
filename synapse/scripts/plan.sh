@@ -216,10 +216,13 @@ if is_true "$WHAT_IF"; then
   fi
   jq -c '. + {key: "\(.type | ascii_downcase)/\(.name | ascii_downcase)"}' "$WORK_DIR/live-lines.jsonl" > "$WORK_DIR/live.jsonl"
   # Files of the kinds left to infrastructure as code that exist live are
-  # reference copies, and don't warn
+  # reference copies, and don't warn. This only decides what the plan says,
+  # so a failed listing warns about each file, as without what-if, instead
+  # of failing the plan (a workspace without a managed virtual network has
+  # no endpoints to list).
   if ! arm_classify_left_to_iac "$WORK_DIR/left-to-iac.jsonl" "$endpoint" 2019-06-01-preview https://dev.azuresynapse.net 2> "$WORK_DIR/live.log"; then
     cat "$WORK_DIR/live.log" >&2
-    fail "Couldn't list the integration runtimes and managed private endpoints of workspace ${workspace}. The plan job needs network access to ${endpoint} and the Synapse Artifact User role; or set what-if to false." "$WORK_DIR/live.log"
+    log_warn "Couldn't list the integration runtimes and managed private endpoints of workspace ${workspace}, so the plan can't tell which of the folder's are reference copies of live ones and warns about each. The plan identity needs a Synapse role that reads them (Synapse Artifact User) to quiet them."
   fi
   jq -n --arg fingerprint "$(arm_synapse_fingerprint "$WORK_DIR/live-lines.jsonl")" --argjson kinds "$(printf '%s\n' "${kinds[@]}" | jq -R . | jq -sc .)" \
     '{fingerprint: $fingerprint, kinds: $kinds}' > "$PLAN_DIR/deploy/live.json"

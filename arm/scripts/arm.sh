@@ -677,12 +677,14 @@ arm_strip_resources() {
     rm -f "$result"
     return 1
   fi
-  jq '.template' "$result" > "$out_template" &&
-    jq -c '.removed[]' "$result" > "$out_list" &&
-    jq -c '.dangling[]' "$result" > "$out_dangling" || {
+  if ! {
+    jq '.template' "$result" > "$out_template" &&
+      jq -c '.removed[]' "$result" > "$out_list" &&
+      jq -c '.dangling[]' "$result" > "$out_dangling"
+  }; then
     rm -f "$result"
     return 1
-  }
+  fi
   rm -f "$result"
 }
 

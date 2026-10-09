@@ -832,11 +832,13 @@ expect_file_lacks "reference copies: ... without a warning" "$PLAN/summary.md" "
 factory_plan
 expect "reference copies: what-if off warns for each file" "2" "$(count_warnings)"
 
-# A listing that fails fails the plan
+# A listing that fails only costs the plan its quiet: it warns about each
+# file, as without what-if, and still plans
 live_list integrationRuntimes AutoResolveIntegrationRuntime:e5
 jq '.nextLink = "https://management.azure.com/x/integrationRuntimes?api-version=1&page=3"' "$STUB_LIVE/integrationRuntimes.json" > "$WORK/page.json" && mv "$WORK/page.json" "$STUB_LIVE/integrationRuntimes.json"
 factory_plan WHAT_IF=true
-expect "reference copies: a failed listing fails the plan" "1" "$status"
+expect "reference copies: a failed listing doesn't fail the plan" "0" "$status"
+expect "reference copies: ... warns about each file" "2" "$(count_warnings)"
 expect_log "reference copies: ... saying what failed" "Couldn't list the integration runtimes and managed private endpoints of factory adf-test"
 
 # Synapse: the same, with the endpoint's name under the default virtual network

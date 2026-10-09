@@ -143,7 +143,9 @@ can't replace or delete what infrastructure as code created.
   - when none of a kind's files match anything live (the folder holds
     another environment's copies: stg and prod see dev's endpoint names),
     the plan shows one note for the kind instead of a warning per file;
-  - with `what-if` off it can't tell, and every such file warns.
+  - with `what-if` off, or when that listing fails, it can't tell, and
+    every such file warns. The listing only decides what the plan says, so
+    its failure never fails the plan.
 
   The service defaults (`AutoResolveIntegrationRuntime`, the `default`
   virtual network) are never warned about. Nothing in the folder is deleted

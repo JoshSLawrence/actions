@@ -225,10 +225,12 @@ if is_true "$WHAT_IF"; then
     fail "Couldn't list the resources of factory ${factory}. The plan identity needs read access to it (e.g. Reader on ${RESOURCE_GROUP})." "$WORK_DIR/live.log"
   fi
   # Files of the kinds left to infrastructure as code that exist live are
-  # reference copies, and don't warn
+  # reference copies, and don't warn. This only decides what the plan says,
+  # so a failed listing warns about each file, as without what-if, instead
+  # of failing the plan.
   if ! arm_classify_left_to_iac "$WORK_DIR/left-to-iac.jsonl" "$factory_url" 2018-06-01 "" 2> "$WORK_DIR/live.log"; then
     cat "$WORK_DIR/live.log" >&2
-    fail "Couldn't list the integration runtimes and managed private endpoints of factory ${factory}. The plan identity needs read access to it (e.g. Reader on ${RESOURCE_GROUP})." "$WORK_DIR/live.log"
+    log_warn "Couldn't list the integration runtimes and managed private endpoints of factory ${factory}, so the plan can't tell which of the folder's are reference copies of live ones and warns about each. Give the plan identity read access to the factory (e.g. Reader on ${RESOURCE_GROUP}) to quiet them."
   fi
   jq -n --arg fingerprint "$(arm_live_fingerprint "$WORK_DIR/live.jsonl")" --argjson kinds "$(printf '%s\n' "${kinds[@]}" | jq -R . | jq -sc .)" \
     '{fingerprint: $fingerprint, kinds: $kinds}' > "$PLAN_DIR/deploy/live.json"
