@@ -133,8 +133,8 @@ runs:
         tenantId: ${{ inputs.azure-tenant-id || env.ARM_TENANT_ID }}
         subscriptionId: ${{ inputs.azure-subscription-id || env.ARM_SUBSCRIPTION_ID }}
         federatedIdentity: "true"
-        DeleteArtifactsNotInTemplate: ${{ inputs.delete-artifacts }}
-        deployManagedPrivateEndpoint: ${{ inputs.deploy-managed-private-endpoints }}
+        DeleteArtifactsNotInTemplate: ${{ steps.prepare.outputs.delete-artifacts }}
+        deployManagedPrivateEndpoint: ${{ steps.prepare.outputs.deploy-managed-private-endpoints }}
 
     # Always, once prepare has written the parameters file: it holds the
     # secrets, and triggers stopped before a failed deployment must restart

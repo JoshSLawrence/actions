@@ -28,6 +28,8 @@
 # Outputs:
 #   template-file, parameters-file - for the deployer
 #   workspace-name, resource-group - the target, from the plan
+#   deploy-managed-private-endpoints, delete-artifacts
+#                                  - the plan's values, for the deployer
 #   state-dir                      - STATE_DIR, for apply-finish.sh
 #
 
@@ -64,8 +66,8 @@ log_info "Deploying to workspace ${workspace} in resource group ${resource_group
 # deploys them, and deletes artifacts only with DELETE_ARTIFACTS, so a
 # different input from the plan's is refused rather than trusted: the apply
 # must not delete what the plan never listed
-arm_planned_setting "$PLAN_DIR" deploy_managed_private_endpoints deploy-managed-private-endpoints "${DEPLOY_MANAGED_PRIVATE_ENDPOINTS:-}" false > /dev/null || exit 1
-arm_planned_setting "$PLAN_DIR" delete_artifacts delete-artifacts "${DELETE_ARTIFACTS:-}" true > /dev/null || exit 1
+deploy_endpoints="$(arm_planned_setting "$PLAN_DIR" deploy_managed_private_endpoints deploy-managed-private-endpoints "${DEPLOY_MANAGED_PRIVATE_ENDPOINTS:-}" false)" || exit 1
+delete_artifacts="$(arm_planned_setting "$PLAN_DIR" delete_artifacts delete-artifacts "${DELETE_ARTIFACTS:-}" true)" || exit 1
 
 rm -rf "$STATE_DIR"
 (umask 077 && mkdir -p "$STATE_DIR")
@@ -77,6 +79,8 @@ set_output template-file "$TEMPLATE"
 set_output parameters-file "$STATE_DIR/parameters.json"
 set_output workspace-name "$workspace"
 set_output resource-group "$resource_group"
+set_output deploy-managed-private-endpoints "$deploy_endpoints"
+set_output delete-artifacts "$delete_artifacts"
 
 cd_working_dir
 arm_parameters_with_secrets "$TEMPLATE" "$PLAN_DIR/deploy/parameters.json" "$STATE_DIR/parameters.json"
@@ -91,7 +95,8 @@ if [ -f "$PLAN_DIR/deploy/live.json" ]; then
     arm_refuse "$PLAN_DIR" "Couldn't list the artifacts of workspace ${workspace} to check it hasn't changed since the plan. The job needs network access to ${endpoint} (a private workspace needs a runner in its network) and the Synapse Artifact User role; then re-run all jobs of the workflow."
     exit 1
   fi
-  arm_verify_live Workspace "$workspace" "$PLAN_DIR" "$(arm_synapse_fingerprint "$STATE_DIR/live-lines.jsonl")" || exit 1
+  now="$(arm_synapse_fingerprint "$STATE_DIR/live-lines.jsonl")" || exit 1
+  arm_verify_live Workspace "$workspace" "$PLAN_DIR" "$now" || exit 1
 else
   log_warn "The plan has no live.json (what-if was off), so the check that the workspace is unchanged since the plan is skipped."
 fi

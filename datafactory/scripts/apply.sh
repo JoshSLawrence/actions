@@ -87,7 +87,8 @@ if [ -f "$PLAN_DIR/deploy/live.json" ]; then
     arm_refuse "$PLAN_DIR" "Couldn't list the resources of factory ${factory} to check it hasn't changed since the plan. The apply identity needs read access to it; then re-run all jobs of the workflow."
     exit 1
   fi
-  arm_verify_live Factory "$factory" "$PLAN_DIR" "$(arm_live_fingerprint "$SECRETS_DIR/live.jsonl")" || exit 1
+  now="$(arm_live_fingerprint "$SECRETS_DIR/live.jsonl")" || exit 1
+  arm_verify_live Factory "$factory" "$PLAN_DIR" "$now" || exit 1
 else
   log_warn "The plan has no live.json (what-if was off), so the check that the factory is unchanged since the plan is skipped."
 fi
@@ -104,6 +105,7 @@ fi
 # runtimes, so any failure stops here.
 # Sets SCRIPT_TEMPLATE_DIR.
 keep_integration_runtimes() {
+  local stub_failed live_count plan_count expected
   SCRIPT_TEMPLATE_DIR="$TEMPLATE_DIR"
   is_true "$deploy_integration_runtimes" && return 0
   log_step "Keep the integration runtimes"
@@ -112,15 +114,29 @@ keep_integration_runtimes() {
     log_error "The deployment succeeded, but listing the integration runtimes of factory ${factory} failed, so the post-deployment script can't be told to keep them and wasn't run: removed resources may not be deleted, and triggers not started. The apply identity needs read access to the factory; then re-run all jobs of the workflow."
     return 1
   fi
-  rm -rf "$SECRETS_DIR/script-template"
+  # Every command here ends the function on failure: set -e is off in a
+  # function the caller tests with ||, and a template left empty would make
+  # the script delete everything, as an empty template lists nothing to keep.
+  stub_failed="The deployment succeeded, but building the template that tells the post-deployment script which integration runtimes to keep failed, so the script was not run: removed resources may not be deleted, and triggers not started. Re-run all jobs of the workflow."
+  rm -rf "$SECRETS_DIR/script-template" || return 1
   SCRIPT_TEMPLATE_DIR="$SECRETS_DIR/script-template"
-  cp -R "$TEMPLATE_DIR" "$SCRIPT_TEMPLATE_DIR"
-  jq --slurpfile live "$SECRETS_DIR/integration-runtimes.jsonl" '
+  if ! cp -R "$TEMPLATE_DIR" "$SCRIPT_TEMPLATE_DIR" ||
+    ! jq --slurpfile live "$SECRETS_DIR/integration-runtimes.jsonl" '
     .resources += [ $live[] | {
       type: "Microsoft.DataFactory/factories/integrationRuntimes",
       name: ("[concat(parameters(\u0027factoryName\u0027), \u0027/" + .name + "\u0027)]")
-    } ]' "$TEMPLATE" > "$SCRIPT_TEMPLATE_DIR/ARMTemplateForFactory.json"
-  log_info "$(jq -s length "$SECRETS_DIR/integration-runtimes.jsonl") integration runtime(s) kept"
+    } ]' "$TEMPLATE" > "$SCRIPT_TEMPLATE_DIR/ARMTemplateForFactory.json"; then
+    log_error "$stub_failed"
+    return 1
+  fi
+  live_count="$(jq -s length "$SECRETS_DIR/integration-runtimes.jsonl")" || { log_error "$stub_failed"; return 1; }
+  plan_count="$(jq '.resources | length' "$TEMPLATE")" || { log_error "$stub_failed"; return 1; }
+  expected=$((plan_count + live_count))
+  if ! arm_verify_resource_count "$SCRIPT_TEMPLATE_DIR/ARMTemplateForFactory.json" "$expected"; then
+    log_error "The template for the post-deployment script is not valid JSON with the plan's resources plus the ${live_count} live integration runtime(s) (${expected} in all), so the script was not run: it would delete every resource it does not find. Removed resources may not be deleted, and triggers not started. Re-run all jobs of the workflow."
+    return 1
+  fi
+  log_info "${live_count} integration runtime(s) kept"
 }
 
 # Run one phase of the pre/post-deployment script, signed in with a fresh

@@ -120,7 +120,17 @@ while [ $# -gt 0 ]; do
   shift
 done
 echo "pwsh $phase" >> "$STUB_LOG/pwsh.log"
-cp "$dir/ARMTemplateForFactory.json" "$STUB_LOG/pwsh-template-$phase.json"
+/bin/cp "$dir/ARMTemplateForFactory.json" "$STUB_LOG/pwsh-template-$phase.json"
+STUB
+# cp, for a test to make the copy of a template fail (STUB_CP=fail) or do
+# nothing (STUB_CP=skip)
+cat > "$STUBS/cp" << 'STUB'
+#!/usr/bin/env bash
+case "${STUB_CP:-}" in
+  fail) exit 1 ;;
+  skip) exit 0 ;;
+esac
+exec /bin/cp "$@"
 STUB
 chmod +x "$STUBS"/*
 export PATH="$STUBS:$PATH"
@@ -748,6 +758,43 @@ expect "adf apply: a list cut short stops before the script can delete" "1" "$st
 expect "adf apply: ... after only the pre phase" "pwsh pre" "$(cat "$STUB_LOG/pwsh.log")"
 expect_log "adf apply: ... saying what happened and what to do" "listing the integration runtimes of factory adf-test failed"
 
+# set -e is off inside a function the caller tests with ||: a template for the
+# post-deployment script that failed to build must stop the apply before it,
+# or the script deletes everything it does not find in an empty template
+factory_plan WHAT_IF=true
+live_list integrationRuntimes AutoResolveIntegrationRuntime:e5
+for mode in fail skip; do
+  factory_apply STUB_CP="$mode"
+  expect "adf apply: a template for the script that can't be built stops the apply (cp $mode)" "1" "$status"
+  expect "adf apply: ... before the post-deployment script" "pwsh pre" "$(cat "$STUB_LOG/pwsh.log")"
+  expect_log "adf apply: ... saying what to do (cp $mode)" "Re-run all jobs of the workflow."
+done
+printf '{"resources": [{}, {}]}' > "$WORK/count.json"
+: > "$WORK/empty.json"
+expect "template check: the expected count passes" "0" "$(arm_verify_resource_count "$WORK/count.json" 2 && echo 0 || echo 1)"
+expect "template check: another count fails" "1" "$(arm_verify_resource_count "$WORK/count.json" 3 && echo 0 || echo 1)"
+expect "template check: an empty file fails" "1" "$(arm_verify_resource_count "$WORK/empty.json" 0 && echo 0 || echo 1)"
+expect "template check: a missing file fails" "1" "$(arm_verify_resource_count "$WORK/nope.json" 0 && echo 0 || echo 1)"
+
+# A page that is not JSON ends no list
+echo '<html>gateway</html>' > "$STUB_LIVE/pipelines.json"
+echo '<html>gateway</html>' > "$STUB_LIVE/databases.json"
+set +e
+arm_rest_list https://management.azure.com/x/pipelines?api-version=1 > "$WORK/out.txt" 2> /dev/null
+list_status=$?
+arm_rest_items https://ws.dev.azuresynapse.net/databases?api-version=1 > "$WORK/out.txt" 2> /dev/null
+items_status=$?
+set -e
+expect "paging: a page that is not JSON fails the list" "1" "$list_status"
+expect "paging: ... also for {items} lists" "1" "$items_status"
+rm -f "$STUB_LIVE/databases.json"
+live_list pipelines pl_wait:e1
+live_list triggers trg_daily:e3
+echo '<html>gateway</html>' > "$STUB_LIVE/triggers.json"
+factory_plan WHAT_IF=true
+expect "paging: ... and so the plan" "1" "$status"
+live_list triggers trg_daily:e3
+
 # Synapse's delete-artifacts must be the plan's
 reset_live
 live_list pipelines pl_wait:p1
@@ -761,6 +808,7 @@ expect_log "synapse apply: ... saying why" "The apply has delete-artifacts true,
 expect_file_has "synapse apply: ... in the summary the PR comment posts" "$PLAN/summary.md" "Apply refused:**"
 workspace_prepare
 expect "synapse apply: with no input the plan's is used" "0" "$status"
+expect "synapse apply: ... and the deployer is given the plan's values" "false true" "$(output delete-artifacts) $(output deploy-managed-private-endpoints | sed 's/false/true/')"
 workspace_plan WHAT_IF=true
 live_list pipelines pl_wait:p1 pl_new:p9
 workspace_prepare

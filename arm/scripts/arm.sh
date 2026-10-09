@@ -491,8 +491,10 @@ arm_rest_list() {
       return 1
     fi
     first=false
-    jq -c '.value[]?' <<< "$page"
-    url="$(jq -r '.nextLink // empty' <<< "$page")"
+    # set -e is off in here when the caller tests the call, so a page that
+    # is not JSON must fail explicitly, or the list silently ends
+    jq -c '.value[]?' <<< "$page" || { rm -f "$err"; return 1; }
+    url="$(jq -r '.nextLink // empty' <<< "$page")" || { rm -f "$err"; return 1; }
   done
   rm -f "$err"
 }
@@ -515,11 +517,11 @@ arm_rest_items() {
       return 1
     fi
     first=false
-    jq -c '.items[]?' <<< "$page"
-    token="$(jq -r '.continuationToken // empty' <<< "$page")"
+    jq -c '.items[]?' <<< "$page" || { rm -f "$err"; return 1; }
+    token="$(jq -r '.continuationToken // empty' <<< "$page")" || { rm -f "$err"; return 1; }
     url=""
     if [ -n "$token" ]; then
-      url="${base}&continuationToken=$(jq -rn --arg t "$token" '$t | @uri')"
+      url="${base}&continuationToken=$(jq -rn --arg t "$token" '$t | @uri')" || { rm -f "$err"; return 1; }
     fi
   done
   rm -f "$err"
@@ -675,9 +677,12 @@ arm_strip_resources() {
     rm -f "$result"
     return 1
   fi
-  jq '.template' "$result" > "$out_template"
-  jq -c '.removed[]' "$result" > "$out_list"
-  jq -c '.dangling[]' "$result" > "$out_dangling"
+  jq '.template' "$result" > "$out_template" &&
+    jq -c '.removed[]' "$result" > "$out_list" &&
+    jq -c '.dangling[]' "$result" > "$out_dangling" || {
+    rm -f "$result"
+    return 1
+  }
   rm -f "$result"
 }
 
@@ -687,12 +692,13 @@ arm_strip_resources() {
 # as a dependency on a resource that isn't in the template.
 # Usage: arm_strip_problems <dangling file>
 arm_strip_problems() {
-  local resource dependency count=0
+  local resource dependency count=0 entries
+  entries="$(jq -r '[.resource, .dependency] | @tsv' "$1")" || return 1
   while IFS=$'\t' read -r resource dependency; do
     [ -n "$resource" ] || continue
     count=$((count + 1))
     log_error "${resource} depends on ${dependency}, which names something this workflow leaves to infrastructure as code, in a form the plan can't resolve. Spell the dependency as a plain path (a literal name, not a parameter), remove it, or set deploy-integration-runtimes / deploy-managed-private-endpoints to true if it is one of those."
-  done < <(jq -r '[.resource, .dependency] | @tsv' "$1")
+  done <<< "$entries"
   [ "$count" -eq 0 ]
 }
 
@@ -766,8 +772,8 @@ arm_live_lines() {
       items="$(arm_rest_items "${base}/${collection}?api-version=${version}" "${options[@]+"${options[@]}"}")" || return 1
       while IFS= read -r item; do
         [ -n "$item" ] || continue
-        name="$(jq -r '.Name // .name' <<< "$item")"
-        jq -cn --arg type "$type" --arg name "$name" --arg etag "$(text_sha256 "$(jq -cS . <<< "$item")")" '{type: $type, name: $name, etag: $etag}'
+        name="$(jq -r '.Name // .name' <<< "$item")" || return 1
+        jq -cn --arg type "$type" --arg name "$name" --arg etag "$(text_sha256 "$(jq -cS . <<< "$item")")" '{type: $type, name: $name, etag: $etag}' || return 1
       done <<< "$items"
       continue
     fi
@@ -781,7 +787,7 @@ arm_live_lines() {
 # Usage: arm_live_fingerprint <lines file>
 arm_live_fingerprint() {
   local lines
-  lines="$(jq -c '{type: .type, name: .name, etag: .etag}' "$1" | LC_ALL=C sort)"
+  lines="$(jq -c '{type: .type, name: .name, etag: .etag}' "$1" | LC_ALL=C sort)" || return 1
   text_sha256 "$lines"
 }
 
@@ -798,9 +804,19 @@ ARM_SYNAPSE_DEFAULT_NAME='test("-workspacedefault(sqlserver|storage)$|^workspace
 arm_synapse_fingerprint() {
   local lines
   lines="$(mktemp)"
-  jq -c "select(.name | ${ARM_SYNAPSE_DEFAULT_NAME} | not)" "$1" > "$lines"
-  arm_live_fingerprint "$lines"
+  jq -c "select(.name | ${ARM_SYNAPSE_DEFAULT_NAME} | not)" "$1" > "$lines" || { rm -f "$lines"; return 1; }
+  arm_live_fingerprint "$lines" || { rm -f "$lines"; return 1; }
   rm -f "$lines"
+}
+
+# Fail unless a template file is JSON with exactly the expected number of
+# resources. For a template built to be handed to something that deletes
+# whatever it does not list: an empty or short one would delete everything.
+# Usage: arm_verify_resource_count <template> <expected resources>
+arm_verify_resource_count() {
+  local template="$1" expected="$2" actual
+  actual="$(jq '.resources | length' "$template" 2> /dev/null)" || return 1
+  [ "$actual" = "$expected" ]
 }
 
 # --- Refusing an apply --------------------------------------------------------
@@ -826,8 +842,8 @@ arm_refuse() {
 # Usage: arm_verify_live "<Factory|Workspace>" "<name>" "<plan dir>" "<fingerprint now>"
 arm_verify_live() {
   local what="$1" name="$2" plan_dir="$3" now="$4" planned
-  planned="$(jq -r .fingerprint "$plan_dir/deploy/live.json")"
-  if [ "$planned" != "$now" ]; then
+  planned="$(jq -r .fingerprint "$plan_dir/deploy/live.json")" || return 1
+  if [ -z "$now" ] || [ "$planned" != "$now" ]; then
     arm_refuse "$plan_dir" "${what} ${name} changed since this plan (another deployment, a change made in the portal, or an earlier attempt of this apply). Re-run all jobs of the workflow, not just the failed one (that would reuse this plan), to plan again, then approve that run."
     return 1
   fi
@@ -842,7 +858,7 @@ arm_verify_live() {
 # Usage: arm_planned_setting <plan dir> <field> <input name, e.g. delete-artifacts> <input value> <default>
 arm_planned_setting() {
   local plan_dir="$1" field="$2" input="$3" value="$4" default="$5" planned wanted
-  planned="$(jq -r --arg f "$field" 'if has($f) then .[$f] | tostring else empty end' "$plan_dir/deploy/target.json")"
+  planned="$(jq -r --arg f "$field" 'if has($f) then .[$f] | tostring else empty end' "$plan_dir/deploy/target.json")" || return 1
   if [ -z "$value" ]; then
     echo "${planned:-$default}"
     return 0
