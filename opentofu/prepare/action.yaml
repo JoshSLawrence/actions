@@ -158,7 +158,7 @@ outputs:
     description: "'true' if this run plans."
     value: ${{ steps.changes.outputs.changed }}
   paths:
-    description: The watched paths, space-separated (for the apply preflight).
+    description: The watched paths, space-separated and in order, with ! entries (for the apply preflight).
     value: ${{ steps.changes.outputs.paths }}
 
 runs:

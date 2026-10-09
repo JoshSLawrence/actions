@@ -435,6 +435,42 @@ path_entry_regex() {
   fi
 }
 
+# Print the rule for one entry of a list of watched paths, as GitHub reads
+# on.<event>.paths: "+<regex>" for an entry, or "-<regex>" for one starting
+# with ! (it excludes what it matches). See path_rules_match for how a list
+# of rules decides. Fails if the entry climbs out of the repository.
+# Usage: path_entry_rule "<entry>"
+path_entry_rule() {
+  local entry="$1" sign="+" regex
+  if [[ "$entry" == '!'* ]]; then
+    sign="-"
+    entry="${entry#!}"
+  fi
+  regex="$(path_entry_regex "$entry")" || return 1
+  printf '%s%s' "$sign" "$regex"
+}
+
+# Succeed if a path is watched by a list of rules (path_entry_rule), read in
+# order the way GitHub reads on.<event>.paths: the last rule that matches
+# decides, so a ! entry excludes what the entries before it include, and a
+# later entry includes it again. A path no rule matches isn't watched.
+# Usage: path_rules_match "<path>" "<rule>"...
+path_rules_match() {
+  local path="$1" rule regex watched=1
+  shift
+  for rule in "$@"; do
+    regex="${rule:1}"
+    if [[ "$path" =~ $regex ]]; then
+      if [ "${rule:0:1}" = "+" ]; then
+        watched=0
+      else
+        watched=1
+      fi
+    fi
+  done
+  return "$watched"
+}
+
 # Print the absolute path of a file (which may not exist yet) in an existing
 # directory, so it stays valid after a cd. Usage: abs_path "<path>"
 abs_path() {

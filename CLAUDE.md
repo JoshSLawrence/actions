@@ -54,10 +54,14 @@ catalog, layout and principles.
   with `drift`: no apply environment, no change detection) → drift (plan,
   then `drift-report.sh`). The composite actions are internals.
 - **OpenTofu change detection is inside the run** (`changes.sh`): it watches
-  the module directory, the var files, the calling workflow file
-  (`github.workflow_ref`) and `extra-paths`; the same paths make a plan
-  stale. State keys come from a backend variable set in the var files;
-  there's no `backend-config` or `.tfbackend` support.
+  the module directory (less other deployments' var files: `.tfvars` that
+  aren't the call's and that OpenTofu doesn't auto-load), the var files,
+  the calling workflow file (`github.workflow_ref`) and `extra-paths`; the
+  same paths make a plan stale. The list is ordered and read like
+  `on.<event>.paths` (`!` excludes, the last match wins:
+  `path_entry_rule`, `path_rules_match`). State keys come from a backend
+  variable set in the var files; there's no `backend-config` or
+  `.tfbackend` support.
 - **OpenTofu credentials are named provider inputs**, Azure only for now:
   `azure-client-id` (the apply identity, and the integration tests' unless
   overridden), `plan-azure-client-id` and `integration-test-azure-client-id`

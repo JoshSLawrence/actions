@@ -39,7 +39,8 @@ inputs:
       Repository paths the plan depends on, space- or newline-separated: a
       change to any of them on the target branch since the plan makes it
       stale. Default: the working directory. Add anything else it depends
-      on (e.g. shared paths).
+      on (e.g. shared paths). An entry starting with ! excludes what it
+      matches; the last entry that matches a file decides.
     required: false
     default: ""
   github-token:

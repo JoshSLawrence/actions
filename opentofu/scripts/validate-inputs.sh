@@ -86,7 +86,9 @@ while IFS= read -r var_file; do
 done < <(list_items "${VAR_FILES:-}")
 
 while IFS= read -r entry; do
-  if ! path_entry_regex "$entry" > /dev/null; then
+  if [[ "$entry" == '!'* ]]; then
+    problem "extra-paths: '${entry}' starts with !, but extra-paths only adds paths to watch. Remove the entry."
+  elif ! path_entry_regex "$entry" > /dev/null; then
     problem "extra-paths: '${entry}' climbs out of the repository. Use paths relative to the repository root."
   fi
 done < <(list_items "${EXTRA_PATHS:-}")
