@@ -26,7 +26,9 @@
 #   PREFLIGHT_PATHS   - what the plan depends on, space- or newline-separated:
 #                       directories (the root module or factory/workspace
 #                       folder; "." means any change) and/or globs such as
-#                       "modules/**" (required)
+#                       "modules/**"; an entry starting with ! excludes what
+#                       it matches, and the last entry that matches a file
+#                       decides, as in on.<event>.paths (required)
 #   PR_NUMBER, HEAD_SHA - the PR and the head commit that was planned (PR
 #                       runs only)
 #
@@ -71,14 +73,15 @@ if [ -n "${PR_NUMBER:-}" ]; then
   log_success "PR #${PR_NUMBER} is open and unchanged"
 fi
 
-# Each entry is a directory (everything under it counts) or a glob
-regexes=()
+# Each entry is a directory (everything under it counts) or a glob, and one
+# starting with ! excludes (path_entry_rule)
+rules=()
 while IFS= read -r entry; do
-  regex="$(path_entry_regex "$entry")" || {
+  rule="$(path_entry_rule "$entry")" || {
     log_error "preflight-paths entry '${entry}' climbs out of the repository. Use repository-relative paths."
     exit 1
   }
-  regexes+=("$regex")
+  rules+=("$rule")
 done < <(list_items "$PREFLIGHT_PATHS")
 
 # Files changed on TARGET_BRANCH since TARGET_SHA, from git. For when the
@@ -107,7 +110,8 @@ log_info "Checking ${PREFLIGHT_PATHS//$'\n'/, } hasn't changed on ${TARGET_BRANC
 comparison="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${TARGET_SHA}...${TARGET_BRANCH}")"
 ahead_by="$(jq -r .ahead_by <<< "$comparison")"
 file_count="$(jq -r '.files | length' <<< "$comparison")"
-file_list="$(jq -r '.files[]?.filename' <<< "$comparison")"
+# A renamed file is listed under its new name: its old one changed too
+file_list="$(jq -r '.files[]? | .filename, (.previous_filename // empty)' <<< "$comparison")"
 
 # The compare API lists at most 300 files: with more, a relevant change could
 # be missing from the list. Ask git for the full list instead; only if that
@@ -138,12 +142,9 @@ fi
 changed_files=()
 while IFS= read -r file; do
   [ -z "$file" ] && continue
-  for regex in "${regexes[@]}"; do
-    if [[ "$file" =~ $regex ]]; then
-      changed_files+=("$file")
-      break
-    fi
-  done
+  if path_rules_match "$file" "${rules[@]+"${rules[@]}"}"; then
+    changed_files+=("$file")
+  fi
 done <<< "$file_list"
 changed="$(printf '%s\n' "${changed_files[@]+"${changed_files[@]}"}" | sed '/^$/d' | sort -u | paste -sd, - | sed 's/,/, /g')"
 

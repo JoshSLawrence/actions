@@ -5,12 +5,23 @@
 # a workflow skipped by on.*.paths leaves its required checks pending -- and
 # this tells its plan and apply jobs whether to.
 #
-# Watched, always: the root module directory (every file in it), the var
-# files (even outside the module), and the calling workflow file, so editing
-# the call runs it. EXTRA_PATHS adds directories or globs to these; it can't
-# remove them. The same paths make a plan stale at apply time
-# (apply-preflight.sh), which reads each entry the same way
-# (path_entry_regex).
+# Watched, always: the root module directory (every file in it, except other
+# deployments' var files: see below), the var files (even outside the
+# module), and the calling workflow file, so editing the call runs it.
+# EXTRA_PATHS adds directories or globs to these; it can't remove them.
+#
+# Several calls can share one module, each with its own var files
+# (deployments/dev.tfvars, deployments/prod.tfvars): a .tfvars or
+# .tfvars.json file in the module that isn't one of this call's var files
+# isn't read by its plan, so it doesn't count. The ones OpenTofu loads on its
+# own still do, wherever they are in the module (terraform.tfvars,
+# *.auto.tfvars and their .json forms: the plan loads them from the module,
+# tofu test from tests/).
+#
+# The watched paths are a list of entries read the way GitHub reads
+# on.<event>.paths (path_entry_rule, path_rules_match): directories or
+# globs, ! excludes, the last match decides. The same list makes a plan
+# stale at apply time (apply-preflight.sh), which reads it the same way.
 #
 # Environment variables:
 #   WORKING_DIR  - the root module (required)
@@ -28,7 +39,8 @@
 #
 # Outputs:
 #   changed - "true" if this call plans
-#   paths   - the watched paths, space-separated (preflight paths)
+#   paths   - the watched paths, space-separated, in order, with ! entries
+#             (the apply's preflight paths)
 #
 
 set -euo pipefail
@@ -50,11 +62,25 @@ fi
 
 # --- What's watched --------------------------------------------------------------
 
-dirs=("$module")
-files=()
+# In order: the last entry that matches a path decides (path_rules_match)
+watched=("$module")
+
+# Other deployments' var files in the module don't count; the ones OpenTofu
+# loads on its own do. Every entry is a glob under the module ("**/" also
+# matches the module itself).
+prefix="${module}/"
+[ "$module" = "." ] && prefix=""
+watched+=("!${prefix}**/*.tfvars" "!${prefix}**/*.tfvars.json")
+for auto in terraform.tfvars terraform.tfvars.json '*.auto.tfvars' '*.auto.tfvars.json'; do
+  watched+=("${prefix}**/${auto}")
+done
+
+# This call's var files count, after the exclusions above
 while IFS= read -r var_file; do
   if path="$(normalize_path "${module}/${var_file}")"; then
-    files+=("$path")
+    watched+=("$path")
+  else
+    log_warn "var-files entry '${var_file}' climbs out of the repository, so changes to it aren't watched. Use a path inside the repository."
   fi
 done < <(list_items "${VAR_FILES:-}")
 
@@ -69,39 +95,38 @@ if [ -n "$workflow" ]; then
   else
     workflow="$(cut -d/ -f3- <<< "$workflow")"
   fi
-  files+=("$workflow")
+  watched+=("$workflow")
 fi
 
-extra=()
-extra_regexes=()
+# Last, so an extra path can watch another var file again. A ! entry would
+# remove what's watched, which extra-paths can't.
 while IFS= read -r entry; do
-  if ! regex="$(path_entry_regex "$entry")"; then
+  if [[ "$entry" == '!'* ]]; then
+    log_error "extra-paths entry '${entry}' starts with !, but extra-paths only adds paths to watch. Remove the entry."
+    exit 1
+  fi
+  if ! path_entry_regex "$entry" > /dev/null; then
     log_error "extra-paths entry '${entry}' climbs out of the repository. Use paths relative to the repository root."
     exit 1
   fi
-  extra+=("$entry")
-  extra_regexes+=("$regex")
+  watched+=("$entry")
 done < <(list_items "${EXTRA_PATHS:-}")
 
-watched=("${dirs[@]}" "${files[@]+"${files[@]}"}" "${extra[@]+"${extra[@]}"}")
+rules=()
+for entry in "${watched[@]}"; do
+  if ! rule="$(path_entry_rule "$entry")"; then
+    log_error "Watched path '${entry}' climbs out of the repository. Check working-directory and var-files are relative to the repository root and the module."
+    exit 1
+  fi
+  rules+=("$rule")
+done
+
 set_output paths "${watched[*]}"
 log_info "Watched: ${watched[*]}"
 
 # Succeed if a changed file is one of the watched paths
 is_watched() {
-  local file="$1" dir path regex
-  for dir in "${dirs[@]}"; do
-    if [ "$dir" = "." ] || [[ "$file" == "$dir"/* ]]; then
-      return 0
-    fi
-  done
-  for path in "${files[@]+"${files[@]}"}"; do
-    [ "$file" = "$path" ] && return 0
-  done
-  for regex in "${extra_regexes[@]+"${extra_regexes[@]}"}"; do
-    [[ "$file" =~ $regex ]] && return 0
-  done
-  return 1
+  path_rules_match "$1" "${rules[@]+"${rules[@]}"}"
 }
 
 # --- Decide ----------------------------------------------------------------------

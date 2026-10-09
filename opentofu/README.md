@@ -197,12 +197,21 @@ filter its triggers with `on.pull_request.paths`: a workflow skipped that
 way leaves its required checks pending forever.
 
 - **What's watched:** always the module directory (every file in it: `.tf`
-  files, child modules, tests, the lock file, `mise.toml`, ...), the var
-  files (even outside the module), and the calling workflow file, so
-  editing the call runs it. `extra-paths` adds to these, e.g. a module
-  directory several root modules share: a directory (`iac/modules`, with
-  everything under it) or a glob (`iac/modules/**/*.tf`). It can't remove
-  them.
+  files, child modules, tests, the lock file, `mise.toml`, ...) except
+  other deployments' var files, the call's var files (even outside the
+  module), and the calling workflow file, so editing the call runs it.
+  `extra-paths` adds to these, e.g. a module directory several root modules
+  share: a directory (`iac/modules`, with everything under it) or a glob
+  (`iac/modules/**/*.tf`). It can't remove them.
+- **Other deployments' var files:** a `.tfvars` or `.tfvars.json` file in
+  the module that isn't one of the call's `var-files` doesn't count, since
+  the call's plan doesn't read it. So when several calls deploy one module
+  (`deployments/dev.tfvars`, `deployments/prod.tfvars`), changing one var
+  file plans only the calls that pass it. The var files OpenTofu loads on
+  its own still count, wherever they are in the module: `terraform.tfvars`,
+  `*.auto.tfvars` and their `.json` forms (plans load them from the module,
+  `tofu test` from `tests/`). To watch another var file anyway, e.g. one the
+  module reads with `file()`, add it to `extra-paths`.
 - **The calling workflow** is the run's top-level workflow file. If you call
   `opentofu.yaml` from a reusable workflow of your own, add that file to
   `extra-paths`.
@@ -211,7 +220,8 @@ way leaves its required checks pending forever.
   check passes. Checks still run. `workflow_dispatch`, `schedule`,
   `changed-only: false`, or a diff that can't be computed always plan.
 - **Stale plans:** the same watched paths decide whether a plan is stale at
-  apply time.
+  apply time, so another deployment's var file merging first doesn't make
+  this call's plan stale.
 
 ## When it applies
 

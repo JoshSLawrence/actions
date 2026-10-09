@@ -102,7 +102,8 @@ PR #8, or GitHub's documentation.
 ## Non-goals
 
 - Discovering root modules, or anything inferred from directory layout.
-- Change detection finer than "did any of these paths change".
+- Change detection finer than "did any of these paths change" (which paths
+  a call watches is fixed; see [Change detection](#change-detection)).
 - Providers other than Azure (AWS, Google Cloud, the GitHub provider, ...),
   and generic environment variables or secrets. They're added as named
   inputs when they're needed (see [Adding a provider](#adding-a-provider)).
@@ -493,12 +494,32 @@ workflow skipped that way leaves its required checks pending forever). The
 prepare job decides whether the run plans:
 
 - **What's watched:** always the module directory (every file in it: `.tf`
-  files, child modules, tests, the lock file, `mise.toml`, ...), the var
-  files (even outside the module), and the calling workflow file (from
-  `github.workflow_ref`, so editing the call runs it). `extra-paths` adds
-  to these; it can't remove them, so a call can never stop watching its
-  own module. The calling workflow is the run's top-level one: a call made
-  from a caller's own reusable workflow needs that file in `extra-paths`.
+  files, child modules, tests, the lock file, `mise.toml`, ...) except
+  other deployments' var files, the call's var files (even outside the
+  module), and the calling workflow file (from `github.workflow_ref`, so
+  editing the call runs it). `extra-paths` adds to these; it can't remove
+  them, so a call can never stop watching its own module. The calling
+  workflow is the run's top-level one: a call made from a caller's own
+  reusable workflow needs that file in `extra-paths`.
+- **Other deployments' var files** (added in `v0.4.1`): several calls of
+  one module each pass their own var file, and a call's plan doesn't read
+  the others, so a `.tfvars` or `.tfvars.json` file in the module that
+  isn't one of the call's `var-files` doesn't count. Those OpenTofu loads
+  on its own (`terraform.tfvars`, `*.auto.tfvars` and their `.json` forms)
+  still count wherever they are in the module, which covers the plan's
+  (module root) and `tofu test`'s (`tests/`) and errs towards planning.
+  An `extra-paths` entry naming another var file watches it again. Until
+  `v0.4.1`, changing `deployments/prod.tfvars` planned every call of the
+  module, and approving one of those plans could apply another PR's
+  unmerged change or revert one; a var file merging on the target branch
+  also made the other calls' plans stale.
+- **How the list reads:** the watched paths are one ordered list, read the
+  way GitHub reads `on.<event>.paths`: directories or globs, an entry
+  starting with `!` excludes, and the last entry that matches decides. For
+  `iac/app` with `deployments/prod.tfvars`: `iac/app`,
+  `!iac/app/**/*.tfvars`, `!iac/app/**/*.tfvars.json`, the four
+  auto-loaded globs, `iac/app/deployments/prod.tfvars`, the workflow file,
+  then `extra-paths` (which can't start with `!`).
 - **What `extra-paths` is for:** anything else the module depends on, such
   as a shared module directory outside it or a policy directory. Each entry
   is a directory (`iac/modules`, with everything under it) or a glob
@@ -510,7 +531,9 @@ prepare job decides whether the run plans:
   events (`workflow_dispatch`, `schedule`), `changed-only: false`, or a
   diff that can't be computed always plan.
 - **Stale plans:** the same watched paths decide whether a plan is stale
-  at apply time (something merged into them since).
+  at apply time (something merged into them since). The apply preflight
+  reads `!` entries the same way, for every area, and counts a renamed
+  file's old path as changed.
 
 ### When it applies
 
@@ -778,13 +801,14 @@ The OpenTofu README is rewritten around this design:
   (`.github/scripts/assert-equal.sh`). Opening, updating and resolving
   issues needs a real repository, so those paths are covered by script
   tests with a stubbed `gh`.
-- **Script tests:** change detection (watched paths, events, diff
-  failures) in throwaway Git repositories, like today's discovery tests;
-  input validation (each rule, all problems reported at once); and the
-  Azure mapping (OIDC or secret per job, the plan and integration test
-  overrides as pairs, Entra ID storage auth); the provider cache setup; and
-  the drift report (the exit code mapping, `fail-on-drift`, and the issue
-  create, update, resolve and re-flag paths).
+- **Script tests:** change detection (watched paths, other deployments'
+  var files, events, diff failures) in throwaway Git repositories, like
+  today's discovery tests; input validation (each rule, all problems
+  reported at once); and the Azure mapping (OIDC or secret per job, the
+  plan and integration test overrides as pairs, Entra ID storage auth); the
+  provider cache setup; and the drift report (the exit code mapping,
+  `fail-on-drift`, and the issue create, update, resolve and re-flag
+  paths).
 - **Lint:** the existing hooks; the input sync check shrinks to the ARM
   families, since OpenTofu has one workflow.
 
@@ -794,6 +818,11 @@ The OpenTofu README is rewritten around this design:
 `integration-test-azure-client-id` and its secret, and `provider-cache`
 (on by default; it changes where providers come from, not what runs). The
 examples pin `@v0.4.0` where they use them.
+
+`v0.4.1` fixes change detection for several calls of one module: other
+deployments' var files no longer plan a call or make its plan stale. No
+input, output, default or permission changes; an `extra-paths` entry
+starting with `!` (which never did anything) is now refused.
 
 `v0.2.0`, breaking relative to `v0.1.0`: `opentofu.yaml` changes from the
 discovery entry point to the per-module workflow, the inner workflows and

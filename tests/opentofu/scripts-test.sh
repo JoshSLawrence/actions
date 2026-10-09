@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Tests the OpenTofu workflows' own scripts, which run before anything is
-# planned: change detection (changes.sh), input validation
+# planned: change detection (changes.sh, with the watched-path rules from
+# shared/scripts/common.sh), input validation
 # (validate-inputs.sh, runners and the drift mode included), the Azure
 # credentials mapping (azure-env.sh), the provider cache (provider-cache.sh),
 # the plan names (names.sh), and the drift report (drift-report.sh, with a
@@ -72,7 +73,8 @@ expect_refused() {
 #
 #   .github/workflows/tofu.yaml   the calling workflow
 #   iac/app/                      the root module
-#   ├── deployments/prod.tfvars
+#   ├── deployments/stg.tfvars    another deployment's var file
+#   ├── deployments/prod.tfvars   this call's
 #   ├── main.tf
 #   ├── mise.toml
 #   └── modules/label/main.tf     a child module
@@ -92,6 +94,7 @@ make_repo() {
   echo 'module "label" { source = "./modules/label" }' > iac/app/main.tf
   echo '[tools]' > iac/app/mise.toml
   echo 'name = "x"' > iac/app/deployments/prod.tfvars
+  echo 'name = "x"' > iac/app/deployments/stg.tfvars
   echo 'name = "x"' > shared.tfvars
   for f in iac/app/modules/label iac/modules/shared iac/other; do
     echo 'output "x" { value = 1 }' > "$f/main.tf"
@@ -101,10 +104,22 @@ make_repo() {
   BASE="$(git rev-parse HEAD)"
 }
 
+# Usage: change <file>...   (creates missing files and directories)
 change() {
-  echo '# change' >> "$1"
+  local file
+  for file in "$@"; do
+    mkdir -p "$(dirname "$file")"
+    echo '# change' >> "$file"
+  done
   git add -A
   git commit -qm change
+}
+
+# Usage: rename <from> <to>   (git mv, then commit)
+rename() {
+  mkdir -p "$(dirname "$2")"
+  git mv "$1" "$2"
+  git commit -qm rename
 }
 
 # Run changes.sh as a pull_request run of the calling workflow would
@@ -134,6 +149,71 @@ make_repo
 change .github/workflows/tofu.yaml
 expect "a change to the calling workflow plans" true "$(changes)"
 
+# Several calls share a module, each with its own var files
+make_repo
+change iac/app/deployments/stg.tfvars
+expect "another deployment's var file doesn't plan" false "$(changes)"
+expect "...nor without var files of its own (OpenTofu doesn't load it)" false "$(changes VAR_FILES=)"
+expect "...unless extra-paths names it" true "$(changes EXTRA_PATHS=iac/app/deployments/stg.tfvars)"
+expect "...or a glob matches it" true "$(changes EXTRA_PATHS='iac/app/deployments/*.tfvars')"
+
+make_repo
+change iac/app/deployments/stg.tfvars.json
+expect "...nor its .tfvars.json form" false "$(changes)"
+
+make_repo
+change iac/app/modules/label/example.tfvars
+expect "...nor a var file anywhere else in the module" false "$(changes)"
+
+make_repo
+change iac/app/deployments/eastus/prod.tfvars
+expect "a var file in a subdirectory plans its own call" true "$(changes VAR_FILES=deployments/eastus/prod.tfvars)"
+expect "...but not a call with another file of the same name" false "$(changes)"
+
+make_repo
+change iac/app/deployments/stg.tfvars iac/app/main.tf
+expect "another deployment's var file with a module change plans" true "$(changes)"
+
+make_repo
+change iac/app/deployments/stg.tfvars.example
+expect "a file only named like a var file plans" true "$(changes)"
+
+for auto in terraform.tfvars terraform.tfvars.json common.auto.tfvars common.auto.tfvars.json \
+  tests/terraform.tfvars tests/unit.auto.tfvars; do
+  make_repo
+  change "iac/app/${auto}"
+  expect "${auto}, which OpenTofu loads on its own, plans" true "$(changes)"
+  expect "...also without var files" true "$(changes VAR_FILES=)"
+done
+
+make_repo
+git rm -q iac/app/deployments/stg.tfvars
+git commit -qm remove
+expect "deleting another deployment's var file doesn't plan" false "$(changes)"
+
+make_repo
+git rm -q iac/app/deployments/prod.tfvars
+git commit -qm remove
+expect "deleting the call's var file plans" true "$(changes)"
+
+make_repo
+rename iac/app/deployments/prod.tfvars iac/app/deployments/production.tfvars
+expect "renaming the call's var file plans (its old path changed)" true "$(changes)"
+
+make_repo
+rename iac/app/deployments/stg.tfvars iac/app/common.auto.tfvars
+expect "renaming another var file to one OpenTofu loads plans" true "$(changes)"
+
+make_repo
+change iac/app/deployments/stg.tfvars
+expect "a module at the repository root ignores other deployments' var files" false \
+  "$(changes WORKING_DIR=. VAR_FILES=iac/app/deployments/prod.tfvars)"
+change iac/other/main.tf
+expect "...and plans for anything else" true "$(changes WORKING_DIR=. VAR_FILES=iac/app/deployments/prod.tfvars)"
+
+expect_refused "extra-paths can't exclude" "starts with !" \
+  changes.sh WORKING_DIR=iac/app EXTRA_PATHS='!iac/app/main.tf' EVENT_NAME=pull_request BASE_SHA="$BASE"
+
 make_repo
 change iac/other/main.tf
 expect "another module's change doesn't plan" false "$(changes)"
@@ -156,11 +236,40 @@ expect "a workflow_dispatch run always plans" true "$(changes EVENT_NAME=workflo
 expect "a diff that can't be computed plans" true "$(changes BASE_SHA=0123456789abcdef0123456789abcdef01234567)"
 
 make_repo
-expect "the watched paths are the module, var files, workflow and extra paths" \
-  "iac/app iac/app/deployments/prod.tfvars .github/workflows/tofu.yaml iac/modules/**" \
+expect "the watched paths: the module, less other var files, then the var files, workflow and extra paths" \
+  "iac/app !iac/app/**/*.tfvars !iac/app/**/*.tfvars.json iac/app/**/terraform.tfvars iac/app/**/terraform.tfvars.json iac/app/**/*.auto.tfvars iac/app/**/*.auto.tfvars.json iac/app/deployments/prod.tfvars .github/workflows/tofu.yaml iac/modules/**" \
   "$(output_of paths changes.sh WORKING_DIR=iac/app VAR_FILES=deployments/prod.tfvars \
     EVENT_NAME=workflow_dispatch GITHUB_REPOSITORY=org/repo \
     WORKFLOW_REF=org/repo/.github/workflows/tofu.yaml@refs/heads/main EXTRA_PATHS='iac/modules/**')"
+
+# --- Watched path rules ----------------------------------------------------------
+
+# Usage: rules_match <path> <entry>...   (prints true or false)
+rules_match() {
+  local path="$1" entry
+  local -a rules=()
+  shift
+  for entry in "$@"; do
+    rules+=("$(path_entry_rule "$entry")")
+  done
+  path_rules_match "$path" "${rules[@]+"${rules[@]}"}" && echo true || echo false
+}
+
+expect "rules: a directory entry matches what's under it" true "$(rules_match iac/app/main.tf iac/app)"
+expect "rules: a ! entry excludes what's before it" false "$(rules_match iac/app/x.tfvars iac/app '!iac/app/**/*.tfvars')"
+expect "rules: a later entry includes it again" true \
+  "$(rules_match iac/app/x.tfvars iac/app '!iac/app/**/*.tfvars' iac/app/x.tfvars)"
+expect "rules: a ! entry first excludes nothing that comes after it" true \
+  "$(rules_match iac/app/x.tfvars '!iac/app/**/*.tfvars' iac/app)"
+expect "rules: a ! entry with ./ is read like one without" false "$(rules_match iac/app/x.tfvars iac/app '!./iac/app/*.tfvars')"
+expect "rules: nothing matched isn't watched" false "$(rules_match docs/x.md iac/app)"
+cases=$((cases + 1))
+if path_entry_rule '!../x' > /dev/null; then
+  log_error "rules: a ! entry that climbs out of the repository: accepted"
+  failures=$((failures + 1))
+else
+  log_success "rules: a ! entry that climbs out of the repository is refused"
+fi
 
 # --- Input validation ------------------------------------------------------------
 
@@ -216,6 +325,8 @@ expect_refused "an integration test secret without its client ID" "integration-t
   HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET=true
 expect "...but a consistent integration test identity passes" prod \
   "$(valid AZURE_CLIENT_ID=c AZURE_TENANT_ID=t INTEGRATION_TEST_AZURE_CLIENT_ID=i HAS_INTEGRATION_TEST_AZURE_CLIENT_SECRET=true)"
+expect_refused "extra-paths can't start with !" "extra-paths: '!iac/app' starts with !" \
+  validate-inputs.sh WORKING_DIR=iac/app APPLY_ENVIRONMENT=prod EXTRA_PATHS='!iac/app'
 expect "runners: a label, an array of labels, a runner group" prod \
   "$(valid INTEGRATION_TEST_RUNS_ON=self-hosted PLAN_RUNS_ON='["self-hosted", "linux"]' \
     APPLY_RUNS_ON=$'{"group": "private-network",\n "labels": ["linux-x64"]}\n')"
@@ -853,6 +964,32 @@ else
   sed 's/^/    /' "$WORK/log" >&2
   failures=$((failures + 1))
 fi
+
+# Usage: compare_files <file>...   (the compare API's answer listing them)
+compare_files() {
+  jq -n '{ahead_by: 1, files: [$ARGS.positional[] | {filename: .}]}' --args "$@" > "$WORK/compare.json"
+}
+OWN_VAR_FILE_ONLY='iac/app !iac/app/**/*.tfvars iac/app/deployments/prod.tfvars'
+
+compare_files iac/app/deployments/stg.tfvars
+cases=$((cases + 1))
+if preflight PREFLIGHT_PATHS="$OWN_VAR_FILE_ONLY"; then
+  log_success "an excluded file (another deployment's var file) doesn't make the plan stale"
+else
+  log_error "an excluded file (another deployment's var file) doesn't make the plan stale: refused"
+  sed 's/^/    /' "$WORK/log" >&2
+  failures=$((failures + 1))
+fi
+
+compare_files iac/app/deployments/prod.tfvars
+expect_refused "...but a file included again after the exclusion does" "(iac/app/deployments/prod.tfvars)" \
+  ../../shared/scripts/apply-preflight.sh PATH="$WORK/bin:$PATH" GH_STUB_RESPONSE="$WORK/compare.json" \
+  GH_TOKEN=secret-token GITHUB_REPOSITORY=org/repo TARGET_BRANCH=main TARGET_SHA="$BASE" PREFLIGHT_PATHS="$OWN_VAR_FILE_ONLY"
+
+jq -n '{ahead_by: 1, files: [{filename: "iac/other/main.tf", previous_filename: "iac/app/main.tf", status: "renamed"}]}' > "$WORK/compare.json"
+expect_refused "a file renamed out of a watched path makes the plan stale" "(iac/app/main.tf)" \
+  ../../shared/scripts/apply-preflight.sh PATH="$WORK/bin:$PATH" GH_STUB_RESPONSE="$WORK/compare.json" \
+  GH_TOKEN=secret-token GITHUB_REPOSITORY=org/repo TARGET_BRANCH=main TARGET_SHA="$BASE" PREFLIGHT_PATHS=iac/app
 
 compare_response 300
 expect_refused "300 files: git finds the relevant change the API list cut off" \
