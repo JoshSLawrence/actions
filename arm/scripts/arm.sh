@@ -3,8 +3,8 @@
 # their content as JSON files in a Git folder, export that folder to one
 # ARM-style template plus a parameters file, and deploy the same template to
 # every environment with different parameters. Sections: deployments,
-# parameters, export bundles, templates, and plans. Source it after
-# common.sh:
+# parameters, export bundles, templates, Azure CLI, infrastructure kinds,
+# live state, and plans. Source it after common.sh:
 #
 #   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   # shellcheck source=shared/scripts/common.sh
@@ -42,6 +42,27 @@ arm_deployment_name() {
   echo "${name%.parameters}"
 }
 
+# Print "!<path>" for every other .json file next to a deployment's
+# parameters file (in the same folder, never in the working directory
+# itself: its .json files are the exporter's, like
+# arm-template-parameters-definition.json) that the call doesn't use as a
+# shared parameters file. Prints nothing for the template on its own.
+# Usage: arm_sibling_exclusions "<folder>" "<deployment file>" "<parameter files>"
+arm_sibling_exclusions() {
+  local dir="$1" file="$2" parameter_files="$3" sub other base path
+  [ -n "$file" ] || return 0
+  sub="$(dirname "$file")"
+  [ "$sub" != "." ] || return 0
+  [ -d "${dir}/${sub}" ] || return 0
+  while IFS= read -r other; do
+    base="${sub}/$(basename "$other")"
+    [ "$base" != "$file" ] || continue
+    grep -qxF -- "$base" <<< "$parameter_files" && continue
+    path="$(normalize_path "${dir}/${base}")" || continue
+    echo "!${path}"
+  done < <(find "${dir}/${sub}" -maxdepth 1 -type f -name '*.json' | LC_ALL=C sort)
+}
+
 # Print one deployment as a compact JSON object:
 #   name              - "" for the template on its own
 #   parameter_files   - PARAMETER_FILES plus the deployment's file
@@ -50,9 +71,11 @@ arm_deployment_name() {
 #   resource_group, plan_environment, apply_environment
 #                     - RESOURCE_GROUP / PLAN_ENVIRONMENT / APPLY_ENVIRONMENT
 #                       with {deployment} replaced
-#   preflight_paths   - PREFLIGHT_PATHS plus every parameter file, as
-#                       repository paths: a change to any of them on the
-#                       target branch makes a plan stale
+#   preflight_paths   - PREFLIGHT_PATHS, less the other deployments'
+#                       parameters files, plus every parameter file of this
+#                       one, as repository paths (ordered: the last match
+#                       wins): a change to any of them on the target branch
+#                       makes a plan stale
 # Usage: arm_deployment_json "<folder>" "<name>" "<parameters file or empty>"
 arm_deployment_json() {
   local dir="$1" name="$2" file="$3"
@@ -69,13 +92,19 @@ arm_deployment_json() {
   plan_environment="$(expand_deployment_placeholder plan-environment "${PLAN_ENVIRONMENT:-}" "$name" "$dir")" || return 1
   apply_environment="$(expand_deployment_placeholder apply-environment "${APPLY_ENVIRONMENT:-}" "$name" "$dir")" || return 1
 
+  # The call's paths, then the deployment's sibling parameters files
+  # excluded, then the call's parameters files (the shared ones and this
+  # deployment's own): the last match wins, as apply-preflight.sh reads the
+  # list. So another deployment's file changing on the target branch doesn't
+  # make this plan stale, but a shared one does.
   preflight="$(list_items "${PREFLIGHT_PATHS:-}")"
+  preflight="$(printf '%s\n%s' "$preflight" "$(arm_sibling_exclusions "$dir" "$file" "$parameter_files")")"
   while IFS= read -r entry; do
     [ -n "$entry" ] || continue
     entry="$(normalize_path "${dir}/${entry}")" || continue
     preflight="$(printf '%s\n%s' "$preflight" "$entry")"
   done <<< "$parameter_files"
-  preflight="$(sed '/^$/d' <<< "$preflight" | sort -u)"
+  preflight="$(sed '/^$/d' <<< "$preflight" | awk '!seen[$0]++')"
 
   jq -cn --arg name "$name" --arg parameter_files "$parameter_files" \
     --arg parameters "$parameters" --arg resource_group "$resource_group" \
@@ -463,6 +492,236 @@ arm_rest_list() {
     url="$(jq -r '.nextLink // empty' <<< "$page")"
   done
   rm -f "$err"
+}
+
+# --- Infrastructure kinds -----------------------------------------------------
+#
+# Infrastructure as code owns the network and compute of a factory or
+# workspace; Git owns its logic. So the deployed template leaves out:
+#   - always: managed virtual networks, Spark and SQL pools (a Synapse export
+#     adds an empty stub for each pool a pipeline or notebook uses), and the
+#     Data Factory itself;
+#   - unless deployed (DEPLOY_MANAGED_PRIVATE_ENDPOINTS,
+#     DEPLOY_INTEGRATION_RUNTIMES): managed private endpoints and
+#     integration runtimes.
+# Resources of those kinds that are in the folder are still exported, because
+# Studio may write them, but they're never deployed (and so never deleted).
+
+# Print the resource types to leave out of the deployed template, one JSON
+# object per line: {type, kind, input}. "input" is the workflow input that
+# deploys the kind, or "" if nothing does.
+# Usage: arm_infrastructure_types <datafactory|synapse>
+arm_infrastructure_types() {
+  local service="$1" prefix
+  case "$service" in
+    datafactory) prefix="Microsoft.DataFactory/factories" ;;
+    synapse) prefix="Microsoft.Synapse/workspaces" ;;
+    *)
+      log_error "Unknown service '${service}'. Use datafactory or synapse."
+      return 1
+      ;;
+  esac
+  # Usage: emit <type> <kind> [input]
+  emit() {
+    jq -cn --arg type "$1" --arg kind "$2" --arg input "${3:-}" '{type: $type, kind: $kind, input: $input}'
+  }
+  case "$service" in
+    datafactory)
+      emit "$prefix" "the factory itself"
+      emit "${prefix}/managedVirtualNetworks" "managed virtual networks"
+      ;;
+    synapse)
+      emit "${prefix}/managedVirtualNetworks" "managed virtual networks"
+      emit "${prefix}/bigDataPools" "Spark pools"
+      emit "${prefix}/sqlPools" "SQL pools"
+      ;;
+  esac
+  if ! is_true "${DEPLOY_MANAGED_PRIVATE_ENDPOINTS:-false}"; then
+    emit "${prefix}/managedVirtualNetworks/managedPrivateEndpoints" "managed private endpoints" "deploy-managed-private-endpoints"
+  fi
+  if ! is_true "${DEPLOY_INTEGRATION_RUNTIMES:-false}"; then
+    emit "${prefix}/integrationRuntimes" "integration runtimes" "deploy-integration-runtimes"
+  fi
+}
+
+# Remove the resources of the given types (arm_infrastructure_types) from a
+# template, and from every remaining resource's dependsOn the entries that
+# name a removed resource (or something under it: a virtual network's
+# endpoints), so nothing is left depending on what isn't deployed. Types
+# compare case-insensitively: templates mix integrationRuntimes and
+# integrationruntimes. Writes the template to <out template> and what was
+# removed to <out list>, one JSON object per line:
+#   {type, name, path, kind, input, default}
+# where type is the part after the service's own type (integrationRuntimes),
+# path is the resource's place under the factory or workspace
+# (managedVirtualNetworks/default/managedPrivateEndpoints/x), and default is
+# true for what the service itself creates: the factory, the generated pool
+# stubs, AutoResolveIntegrationRuntime, the default managed virtual network
+# and Synapse's own synapse-ws-* endpoints.
+# Usage: arm_strip_resources <template> <types file> <out template> <out list>
+arm_strip_resources() {
+  local template="$1" types="$2" out_template="$3" out_list="$4" result
+  result="$(mktemp)"
+  jq --slurpfile types "$types" '
+    def segments: (.type | split("/")[2:]);
+    def names:
+      (.name
+        | if startswith("[") then (capture("\u0027/(?<n>[^\u0027]*)\u0027\\)\\]$").n // "") else . end
+        | split("/") | map(select(length > 0)));
+    def place($s):
+      (names) as $n
+      | [range(0; $s | length) | $s[.], ($n[.] // empty)] | join("/");
+    def kind_of: (.type | ascii_downcase) as $t
+      | $types | map(select(.type | ascii_downcase == $t)) | first;
+    def service_default:
+      (segments | join("/") | ascii_downcase) as $tail
+      | (names | last // "") as $name
+      | if $tail == "" then true
+        elif $tail == "bigdatapools" or $tail == "sqlpools" then true
+        elif $tail == "integrationruntimes" then ($name | ascii_downcase) == "autoresolveintegrationruntime"
+        elif $tail == "managedvirtualnetworks" then ($name | ascii_downcase) == "default"
+        elif $tail == "managedvirtualnetworks/managedprivateendpoints" then ($name | test("^synapse-ws-(sql|sqlondemand|kusto)"; "i"))
+        else false end;
+
+    ($types | map(.type | ascii_downcase)) as $strip
+    | (.resources // []) as $all
+    | ($all | map(select((.type | ascii_downcase) as $t | $strip | index($t)))) as $removed
+    | ($removed | map({
+        path: ("/" + place(segments) | ascii_downcase),
+        type: (.type | ascii_downcase),
+        last: ((names | last // "") | ascii_downcase)})) as $gone
+    # An entry names a removed resource when its path is that resource, or
+    # under one that is not deployed itself (a virtual network with endpoints
+    # that are deployed). The resourceId() form carries the type and name as
+    # strings.
+    | ($all | map(select((.type | ascii_downcase) as $t | $strip | index($t) | not)
+        | "/" + place(segments) | ascii_downcase)) as $kept
+    | def dangling:
+        ascii_downcase as $e
+        | if ($e | startswith("[concat(")) then
+            (($e | capture("\u0027(?<p>/[^\u0027]*)\u0027\\)\\]$").p) // null) as $p
+            | $p != null and ($kept | index($p) | not)
+              and ($gone | any(. as $g | $g.path != "/" and ($p == $g.path or ($p | startswith($g.path + "/")))))
+          elif ($e | startswith("[resourceid(")) then
+            $gone | any(. as $g | $g.last != "" and ($e | contains("\u0027" + $g.type + "\u0027")) and ($e | contains("\u0027" + $g.last + "\u0027")))
+          else false end;
+      {
+        template: (.resources = [ $all[]
+          | select((.type | ascii_downcase) as $t | $strip | index($t) | not)
+          | if (.dependsOn | type) == "array" then .dependsOn |= map(select(dangling | not)) else . end ]),
+        removed: ($removed | map(kind_of as $k | {
+          type: ($k.type | split("/")[2:] | join("/")),
+          name: (names | last // ""),
+          path: (place($k.type | split("/")[2:]) | if . == "" then "factory" else . end),
+          kind: $k.kind,
+          input: $k.input,
+          default: service_default }))
+      }' "$template" > "$result"
+  jq '.template' "$result" > "$out_template"
+  jq -c '.removed[]' "$result" > "$out_list"
+  rm -f "$result"
+}
+
+# Print the "Left to infrastructure as code" section for a list made by
+# arm_strip_resources: a warning for each file the author wrote that is left
+# out, and the whole list. Prints nothing for an empty list.
+# Usage: arm_left_to_iac_markdown <list>
+arm_left_to_iac_markdown() {
+  local list="$1" count
+  count="$(grep -c . "$list" || true)"
+  [ "$count" -gt 0 ] || return 0
+  if [ -n "$(jq -r 'select(.default | not) | .path' "$list")" ]; then
+    echo "> **Warning:** these are in the folder, but this workflow leaves them to infrastructure as code, so they aren't deployed. Define them in your infrastructure as code, or remove the files:"
+    jq -r 'select(.default | not) | "> - `\(.path)`"' "$list"
+    echo ""
+  fi
+  echo "<details><summary>Left to infrastructure as code (${count})</summary>"
+  echo ""
+  echo "| Resource | Kind | In the folder as |"
+  echo "| --- | --- | --- |"
+  jq -r '"| `\(.path)` | \(.kind) | \(if .default then "service default or generated" else "a file you wrote" end) |"' "$list"
+  echo ""
+  echo "</details>"
+}
+
+# Log a warning for each resource of the list (arm_strip_resources) that
+# isn't a service default, so it's an annotation on the run
+# Usage: arm_left_to_iac_warn <list>
+arm_left_to_iac_warn() {
+  local path kind input reason
+  while IFS=$'\t' read -r path kind input; do
+    [ -n "$path" ] || continue
+    if [ -n "$input" ]; then
+      reason="(${input} is false)"
+    else
+      reason="(this workflow never deploys them)"
+    fi
+    log_warn "${path} is in the folder, but this workflow leaves ${kind} to infrastructure as code ${reason}: it isn't deployed. Define it in your infrastructure as code, or remove the file."
+  done < <(jq -r 'select(.default | not) | [.path, .kind, .input] | @tsv' "$1")
+}
+
+# --- Live state ---------------------------------------------------------------
+#
+# A plan records a fingerprint of the live factory or workspace's logic
+# (and of the infrastructure kinds the call deploys), and the apply lists the
+# same kinds again: a different fingerprint means something else changed it
+# since the plan (another deployment, or the portal), and applying would
+# undo that or delete it.
+
+# Print the resources of some collections of a factory or workspace, one
+# compact JSON object {type, name, etag} per line, listing each collection
+# under <base url> (a virtual network's endpoints, managedVirtualNetworks/
+# default/managedPrivateEndpoints, are typed managedVirtualNetworks/
+# managedPrivateEndpoints). Fails if a collection can't be listed; az's
+# error goes to stderr.
+# Usage: arm_live_lines <base url> <api version> <audience or ""> <collection>...
+arm_live_lines() {
+  local base="$1" version="$2" audience="$3" collection type
+  local -a options=()
+  shift 3
+  if [ -n "$audience" ]; then
+    options=(--resource "$audience")
+  fi
+  for collection in "$@"; do
+    type="${collection/\/default\//\/}"
+    arm_rest_list "${base}/${collection}?api-version=${version}" "${options[@]+"${options[@]}"}" |
+      jq -c --arg type "$type" '{type: $type, name: .name, etag: (.etag // "")}' || return 1
+  done
+}
+
+# Print the fingerprint of a file of arm_live_lines: the SHA-256 of its
+# lines, sorted, so the order of listing doesn't matter.
+# Usage: arm_live_fingerprint <lines file>
+arm_live_fingerprint() {
+  local lines
+  lines="$(jq -c '{type: .type, name: .name, etag: .etag}' "$1" | LC_ALL=C sort)"
+  text_sha256 "$lines"
+}
+
+# The same for a Synapse workspace's listing, less what the service creates
+# itself (the default linked services and credential, and the synapse-ws-*
+# endpoints): deployments skip them, so they say nothing about a change.
+# Usage: arm_synapse_fingerprint <lines file>
+arm_synapse_fingerprint() {
+  local lines
+  lines="$(mktemp)"
+  jq -c 'select(.name | test("workspacedefaultsqlserver|workspacedefaultstorage|workspacesystemidentity|^synapse-ws-(sql|sqlondemand|kusto)"; "i") | not)' "$1" > "$lines"
+  arm_live_fingerprint "$lines"
+  rm -f "$lines"
+}
+
+# Fail unless a fresh fingerprint (arm_live_fingerprint, or
+# arm_synapse_fingerprint) is the one the plan recorded in its
+# deploy/live.json.
+# Usage: arm_verify_live "<Factory|Workspace>" "<name>" "<plan dir>" "<fingerprint now>"
+arm_verify_live() {
+  local what="$1" name="$2" plan_dir="$3" now="$4" planned
+  planned="$(jq -r .fingerprint "$plan_dir/deploy/live.json")"
+  if [ "$planned" != "$now" ]; then
+    log_error "${what} ${name} changed since this plan (another deployment, or a change made in the portal). Re-run the workflow to plan again, then approve that run."
+    return 1
+  fi
+  log_success "${what} ${name} is as it was when planned"
 }
 
 # --- Plans --------------------------------------------------------------------

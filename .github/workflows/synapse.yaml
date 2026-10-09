@@ -16,6 +16,13 @@
 # apply-runs-on and plan-runs-on (for what-if), or runs-on, to be a runner in
 # its network.
 #
+# Infrastructure as code owns the workspace's network and compute (managed
+# virtual network, managed private endpoints, integration runtimes, pools); Git
+# owns its logic. deploy-managed-private-endpoints and
+# deploy-integration-runtimes (default false) opt the folder's into the
+# deployment; the rest is never deployed. See
+# docs/design/arm-infrastructure-boundary.md.
+#
 # Tools: every job that runs one installs exactly what the folder's own
 # mise.toml pins (node to build; azure-cli for triggers and what-if) --
 # nothing from the repository root.
@@ -176,7 +183,21 @@ on:
         type: boolean
         default: true
       deploy-managed-private-endpoints:
-        description: Also deploy the template's managed private endpoints (the apply identity then needs Synapse Administrator).
+        description: >-
+          Deploy the folder's managed private endpoints. false leaves them to
+          infrastructure as code: they're left out of every deployment and
+          never deleted. true deploys them; Synapse then also deletes those
+          that aren't in the folder (its apply identity needs Synapse
+          Administrator), Data Factory never deletes them.
+        type: boolean
+        default: false
+      deploy-integration-runtimes:
+        description: >-
+          Deploy the folder's integration runtimes. false leaves them to
+          infrastructure as code: they're left out of every deployment and
+          never deleted. true deploys them; Data Factory's post-deployment
+          script then also deletes those that aren't in the folder (Synapse
+          never deletes them).
         type: boolean
         default: false
       manage-triggers:
@@ -249,6 +270,8 @@ jobs:
           working-directory: ${{ inputs.working-directory }}
           stack-name: ${{ inputs.stack-name }}
           workspace-name: ${{ inputs.workspace-name }}
+          deployments: ${{ inputs.deployments }}
+          parameter-files: ${{ inputs.parameter-files }}
 
       - name: Upload template
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -283,6 +306,7 @@ jobs:
           parameters: ${{ inputs.parameters }}
           resource-group: ${{ inputs.resource-group }}
           plan-environment: ${{ inputs.plan-environment }}
+          apply: ${{ inputs.apply }}
           apply-environment: ${{ inputs.apply-environment }}
           preflight-paths: ${{ inputs.preflight-paths }}
 
@@ -324,6 +348,7 @@ jobs:
       apply-from-pr: ${{ inputs.apply-from-pr }}
       delete-artifacts: ${{ inputs.delete-artifacts }}
       deploy-managed-private-endpoints: ${{ inputs.deploy-managed-private-endpoints }}
+      deploy-integration-runtimes: ${{ inputs.deploy-integration-runtimes }}
       manage-triggers: ${{ inputs.manage-triggers }}
       azure-client-id: ${{ inputs.azure-client-id }}
       apply-azure-client-id: ${{ inputs.apply-azure-client-id }}

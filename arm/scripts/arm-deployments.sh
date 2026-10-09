@@ -18,7 +18,10 @@
 #   PLAN_ENVIRONMENT, APPLY_ENVIRONMENT
 #                     - GitHub environment names; "{deployment}" is replaced
 #   PREFLIGHT_PATHS   - paths every deployment's plan depends on (default:
-#                       WORKING_DIR)
+#                       WORKING_DIR); each deployment's list leaves out the
+#                       other deployments' parameters files
+#   APPLY             - "true" (default): the apply job runs, so it needs an
+#                       APPLY_ENVIRONMENT
 #
 # Outputs:
 #   matrix      - {"deployment": [<deployment JSON>, ...]}
@@ -38,7 +41,15 @@ require_tool jq
 require_env WORKING_DIR "Set the working-directory input to the factory or workspace folder."
 require_env RESOURCE_GROUP "Set the resource-group input to the target resource group, e.g. rg-{deployment} for one per deployment."
 export PREFLIGHT_PATHS="${PREFLIGHT_PATHS:-$WORKING_DIR}"
-log_config WORKING_DIR DEPLOYMENTS PARAMETER_FILES RESOURCE_GROUP PLAN_ENVIRONMENT APPLY_ENVIRONMENT PREFLIGHT_PATHS
+APPLY="${APPLY:-true}"
+log_config WORKING_DIR DEPLOYMENTS PARAMETER_FILES RESOURCE_GROUP PLAN_ENVIRONMENT APPLY_ENVIRONMENT PREFLIGHT_PATHS APPLY
+
+# Without an environment the apply has no approval gate, so a plan from a PR
+# would deploy unreviewed
+if is_true "$APPLY" && [ -z "${APPLY_ENVIRONMENT:-}" ]; then
+  log_error "apply is true, but apply-environment is empty. Set apply-environment to a GitHub environment with required reviewers (e.g. \"{deployment}\"), or set apply to false to only plan."
+  exit 1
+fi
 
 dir="$(normalize_path "$WORKING_DIR")" || {
   log_error "working-directory '${WORKING_DIR}' climbs out of the repository. Use a path relative to the repository root."

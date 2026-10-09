@@ -13,6 +13,11 @@
 #   STACK_NAME        - display name (default: the working directory, or the
 #                       repository name when that's the root)
 #   DEPLOYMENT        - deployment name (its parameters file's), if any
+#   DEPLOYMENTS, PARAMETER_FILES
+#                     - the call's deployments and shared parameters files:
+#                       they key the template artifact, so two calls for one
+#                       folder and stack name in one run don't overwrite
+#                       each other's
 #   APPLY_ENVIRONMENT - environment the plan is for, if any
 #   REPOSITORY_NAME   - repository name, for a root-level folder
 #
@@ -21,7 +26,8 @@
 #                            ":<environment>" when set
 #   artifact-name          - plan artifact name derived from key (see
 #                            artifact_name)
-#   template-artifact-name - build artifact name (per folder, not deployment)
+#   template-artifact-name - build artifact name (per call: stack,
+#                            deployments and parameter files)
 #   title                  - e.g. Data Factory: `adf` · `prod` → `production`
 #
 
@@ -57,7 +63,11 @@ environment="${APPLY_ENVIRONMENT:-}"
 key="${SERVICE}:${stack}${deployment:+:${deployment}}${environment:+:${environment}}"
 
 artifact="$(artifact_name "${SERVICE}-plan" "${stack}${deployment:+:${deployment}}${environment:+:${environment}}")"
-template_artifact="$(artifact_name "${SERVICE}-template" "$stack")"
+# A short digest of the call's inputs keeps the name within artifact limits
+# (the readable part of the stack name is cut; the digest covers all of it)
+call_key="${stack}|$(list_items "${DEPLOYMENTS:-}" | paste -sd, -)|$(list_items "${PARAMETER_FILES:-}" | paste -sd, -)"
+call_digest="$(text_sha256 "$call_key")"
+template_artifact="$(artifact_name "${SERVICE}-template" "${stack:0:80}")-${call_digest:0:8}"
 
 title="${label}: \`${stack}\`"
 if [ -n "$deployment" ]; then

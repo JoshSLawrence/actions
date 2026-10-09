@@ -1,0 +1,115 @@
+{
+  "$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspaceName": {
+      "type": "string",
+      "defaultValue": "syn-dev"
+    }
+  },
+  "variables": {
+    "workspaceId": "[concat('Microsoft.Synapse/workspaces/', parameters('workspaceName'))]"
+  },
+  "resources": [
+    {
+      "name": "[concat(parameters('workspaceName'), '/AutoResolveIntegrationRuntime')]",
+      "type": "Microsoft.Synapse/workspaces/integrationruntimes",
+      "apiVersion": "2019-06-01-preview",
+      "properties": { "type": "Managed" },
+      "dependsOn": []
+    },
+    {
+      "name": "[concat(parameters('workspaceName'), '/default')]",
+      "type": "Microsoft.Synapse/workspaces/managedVirtualNetworks",
+      "apiVersion": "2019-06-01-preview",
+      "properties": {},
+      "dependsOn": []
+    },
+    {
+      "name": "[concat(parameters('workspaceName'), '/default/synapse-ws-sql--syn-dev')]",
+      "type": "Microsoft.Synapse/workspaces/managedVirtualNetworks/managedPrivateEndpoints",
+      "apiVersion": "2019-06-01-preview",
+      "properties": {},
+      "dependsOn": []
+    },
+    {
+      "name": "[concat(parameters('workspaceName'), '/default/mpe_bronze')]",
+      "type": "Microsoft.Synapse/workspaces/managedVirtualNetworks/managedPrivateEndpoints",
+      "apiVersion": "2019-06-01-preview",
+      "properties": {},
+      "dependsOn": []
+    },
+    {
+      "name": "[concat(parameters('workspaceName'), '/spark')]",
+      "type": "Microsoft.Synapse/workspaces/bigDataPools",
+      "apiVersion": "2019-06-01-preview",
+      "properties": {},
+      "dependsOn": []
+    },
+    {
+      "name": "[concat(parameters('workspaceName'), '/spark_big')]",
+      "type": "Microsoft.Synapse/workspaces/bigDataPools",
+      "apiVersion": "2019-06-01-preview",
+      "properties": {},
+      "dependsOn": []
+    },
+    {
+      "name": "[concat(parameters('workspaceName'), '/dw')]",
+      "type": "Microsoft.Synapse/workspaces/sqlPools",
+      "apiVersion": "2019-06-01-preview",
+      "properties": {},
+      "dependsOn": []
+    },
+    {
+      "name": "[concat(parameters('workspaceName'), '/ls_storage')]",
+      "type": "Microsoft.Synapse/workspaces/linkedServices",
+      "apiVersion": "2019-06-01-preview",
+      "properties": {
+        "type": "AzureBlobFS",
+        "connectVia": {
+          "referenceName": "AutoResolveIntegrationRuntime",
+          "type": "IntegrationRuntimeReference"
+        }
+      },
+      "dependsOn": [
+        "[concat(variables('workspaceId'), '/integrationRuntimes/AutoResolveIntegrationRuntime')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('workspaceName'), '/nb_load')]",
+      "type": "Microsoft.Synapse/workspaces/notebooks",
+      "apiVersion": "2019-06-01-preview",
+      "properties": {
+        "bigDataPool": { "referenceName": "spark", "type": "BigDataPoolReference" }
+      },
+      "dependsOn": [
+        "[concat(variables('workspaceId'), '/bigDataPools/spark')]",
+        "[concat(variables('workspaceId'), '/linkedServices/ls_storage')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('workspaceName'), '/sjd_run')]",
+      "type": "Microsoft.Synapse/workspaces/sparkJobDefinitions",
+      "apiVersion": "2019-06-01-preview",
+      "properties": {
+        "targetBigDataPool": { "referenceName": "spark_big", "type": "BigDataPoolReference" }
+      },
+      "dependsOn": [
+        "[concat(variables('workspaceId'), '/bigDataPools/spark_big')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('workspaceName'), '/pl_wait')]",
+      "type": "Microsoft.Synapse/workspaces/pipelines",
+      "apiVersion": "2019-06-01-preview",
+      "properties": {
+        "activities": [
+          { "name": "q", "type": "SqlPoolStoredProcedure", "sqlPool": { "referenceName": "dw", "type": "SqlPoolReference" } }
+        ]
+      },
+      "dependsOn": [
+        "[concat(variables('workspaceId'), '/sqlPools/dw')]"
+      ]
+    }
+  ]
+}

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #
-# Plans one deployment of a Data Factory template: renders its parameters,
-# optionally previews the deployment against the live factory, and writes
-# the plan -- the template, the parameters and the target, which the apply
-# deploys exactly -- with a markdown summary. Never changes anything, so
-# it's safe to run locally:
+# Plans one deployment of a Data Factory template: leaves out what
+# infrastructure as code owns (see "Infrastructure kinds" in arm.sh), renders
+# its parameters, optionally previews the deployment against the live
+# factory, and writes the plan -- the template, the parameters and the
+# target, which the apply deploys exactly -- with a markdown summary. Never
+# changes anything, so it's safe to run locally:
 #
 #   WORKING_DIR=adf TEMPLATE_DIR=/tmp/datafactory-template \
 #     PARAMETER_FILES=deployments/dev.json RESOURCE_GROUP=rg-dev \
@@ -17,8 +18,9 @@
 #                       template-dir) (required)
 #   PLAN_DIR          - where the plan goes (default:
 #                       $RUNNER_TEMP/datafactory-plan): deploy/ (template,
-#                       parameters.json, target.json) and summary.md. The plan
-#                       artifact; it never holds secrets.
+#                       parameters.json, target.json and, with a what-if,
+#                       live.json) and summary.md. The plan artifact; it
+#                       never holds secrets.
 #   WORK_DIR          - scratch directory, deleted at the end (default:
 #                       $RUNNER_TEMP/datafactory-plan-work)
 #   DEPLOYMENT        - the deployment's name, for the summary
@@ -28,9 +30,16 @@
 #   PARAMETER_SECRETS - name=value lines for secure parameters; only used for
 #                       the what-if, never written to the plan
 #   RESOURCE_GROUP    - the target factory's resource group (required)
-#   WHAT_IF           - "true": preview with az deployment group what-if and
-#                       list what the post-deployment script would delete
-#                       (needs az signed in). Default false.
+#   WHAT_IF           - "true": preview with az deployment group what-if,
+#                       list what the post-deployment script would delete and
+#                       record the live factory's fingerprint, which the
+#                       apply checks (needs az signed in). Default false.
+#   DEPLOY_MANAGED_PRIVATE_ENDPOINTS, DEPLOY_INTEGRATION_RUNTIMES
+#                     - "true" deploys the folder's managed private
+#                       endpoints / integration runtimes; the default false
+#                       leaves them to infrastructure as code: they're taken
+#                       out of the template, and the integration runtimes
+#                       are left out of the deletions.
 #   PRE_POST_SCRIPT   - "true" (default) if the apply runs the
 #                       pre/post-deployment script, which deletes resources
 #                       that are no longer in the folder
@@ -64,8 +73,10 @@ PLAN_DIR="${PLAN_DIR:-$TMP_ROOT/datafactory-plan}"
 WORK_DIR="${WORK_DIR:-$TMP_ROOT/datafactory-plan-work}"
 WHAT_IF="${WHAT_IF:-false}"
 PRE_POST_SCRIPT="${PRE_POST_SCRIPT:-true}"
+export DEPLOY_MANAGED_PRIVATE_ENDPOINTS="${DEPLOY_MANAGED_PRIVATE_ENDPOINTS:-false}"
+export DEPLOY_INTEGRATION_RUNTIMES="${DEPLOY_INTEGRATION_RUNTIMES:-false}"
 
-log_config WORKING_DIR TEMPLATE_DIR PLAN_DIR DEPLOYMENT PARAMETER_FILES RESOURCE_GROUP WHAT_IF PRE_POST_SCRIPT
+log_config WORKING_DIR TEMPLATE_DIR PLAN_DIR DEPLOYMENT PARAMETER_FILES RESOURCE_GROUP WHAT_IF PRE_POST_SCRIPT DEPLOY_MANAGED_PRIVATE_ENDPOINTS DEPLOY_INTEGRATION_RUNTIMES
 
 rm -rf "$PLAN_DIR" "$WORK_DIR"
 mkdir -p "$PLAN_DIR/deploy" "$WORK_DIR"
@@ -109,6 +120,17 @@ cp -R "$TEMPLATE_DIR" "$PLAN_DIR/deploy/template"
 TEMPLATE="$PLAN_DIR/deploy/template/ARMTemplateForFactory.json"
 PARAMETERS_FILE="$PLAN_DIR/deploy/parameters.json"
 
+log_step "Infrastructure left to infrastructure as code"
+# The plan, the what-if, the digest and the apply all use the stripped
+# template, so the plan holds one template. The export's linked templates
+# are the unstripped one in pieces, and nothing deploys them.
+rm -rf "$PLAN_DIR/deploy/template/linkedTemplates"
+arm_infrastructure_types datafactory > "$WORK_DIR/infrastructure-types.jsonl"
+arm_strip_resources "$TEMPLATE" "$WORK_DIR/infrastructure-types.jsonl" "$WORK_DIR/stripped.json" "$WORK_DIR/left-to-iac.jsonl"
+mv "$WORK_DIR/stripped.json" "$TEMPLATE"
+log_info "$(grep -c . "$WORK_DIR/left-to-iac.jsonl" || true) resource(s) left out of the deployment"
+arm_left_to_iac_warn "$WORK_DIR/left-to-iac.jsonl"
+
 cd_working_dir
 
 log_step "Parameters"
@@ -129,8 +151,13 @@ arm_write_parameters_file "$merged" "$PARAMETERS_FILE"
 
 factory="$(jq -r '.parameters.factoryName.value // empty' "$PARAMETERS_FILE")"
 [ -n "$factory" ] || fail "factoryName must be a plain value, not a Key Vault reference."
+# What the plan left out is recorded so the apply can check its own inputs
+# against it
 jq -n --arg service datafactory --arg deployment "${DEPLOYMENT:-}" --arg resource_group "$RESOURCE_GROUP" --arg name "$factory" \
-  '{service: $service, deployment: $deployment, resource_group: $resource_group, name: $name}' > "$PLAN_DIR/deploy/target.json"
+  --argjson mpes "$(is_true "$DEPLOY_MANAGED_PRIVATE_ENDPOINTS" && echo true || echo false)" \
+  --argjson irs "$(is_true "$DEPLOY_INTEGRATION_RUNTIMES" && echo true || echo false)" \
+  '{service: $service, deployment: $deployment, resource_group: $resource_group, name: $name,
+    deploy_managed_private_endpoints: $mpes, deploy_integration_runtimes: $irs}' > "$PLAN_DIR/deploy/target.json"
 set_output factory-name "$factory"
 set_output resource-group "$RESOURCE_GROUP"
 log_success "Parameters rendered for factory ${factory} in ${RESOURCE_GROUP}"
@@ -174,23 +201,34 @@ if is_true "$WHAT_IF"; then
     ]' "$WORK_DIR/what-if.json" 2> "$WORK_DIR/what-if-parse.log")" ||
     fail "Couldn't read the what-if result (see the output below). Please report it, with the az version, at https://github.com/JoshSLawrence/actions/issues." "$WORK_DIR/what-if-parse.log"
 
+  log_step "Live factory"
+  subscription="$(arm_az account show --query id --output tsv)"
+  factory_url="https://management.azure.com/subscriptions/${subscription}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.DataFactory/factories/${factory}"
+  # The kinds the post-deployment script deletes when they're not in the
+  # template, plus the infrastructure kinds the call deploys. The apply lists
+  # the same kinds again (live.json) to be sure nothing else changed them.
+  kinds=(triggers pipelines dataflows datasets linkedservices)
+  if is_true "$DEPLOY_INTEGRATION_RUNTIMES"; then
+    kinds+=(integrationRuntimes)
+  fi
+  if is_true "$DEPLOY_MANAGED_PRIVATE_ENDPOINTS"; then
+    kinds+=(managedVirtualNetworks/default/managedPrivateEndpoints)
+  fi
+  if ! arm_live_lines "$factory_url" 2018-06-01 "" "${kinds[@]}" > "$WORK_DIR/live.jsonl" 2> "$WORK_DIR/live.log"; then
+    cat "$WORK_DIR/live.log" >&2
+    fail "Couldn't list the resources of factory ${factory}. The plan identity needs read access to it (e.g. Reader on ${RESOURCE_GROUP})." "$WORK_DIR/live.log"
+  fi
+  jq -n --arg fingerprint "$(arm_live_fingerprint "$WORK_DIR/live.jsonl")" --argjson kinds "$(printf '%s\n' "${kinds[@]}" | jq -R . | jq -sc .)" \
+    '{fingerprint: $fingerprint, kinds: $kinds}' > "$PLAN_DIR/deploy/live.json"
+
+  # Names are compared without regard to case, as the script does
   if is_true "$PRE_POST_SCRIPT"; then
     log_step "Resources the post-deployment script would delete"
-    subscription="$(arm_az account show --query id --output tsv)"
-    factory_url="https://management.azure.com/subscriptions/${subscription}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.DataFactory/factories/${factory}"
-    : > "$WORK_DIR/live.jsonl"
-    # The kinds the post-deployment script deletes when they're not in the
-    # template
-    for collection in triggers pipelines dataflows datasets linkedservices integrationRuntimes; do
-      if ! arm_rest_list "${factory_url}/${collection}?api-version=2018-06-01" 2> "$WORK_DIR/live.log" |
-        jq -c --arg type "$collection" '{type: $type, name}' >> "$WORK_DIR/live.jsonl"; then
-        cat "$WORK_DIR/live.log" >&2
-        fail "Couldn't list the ${collection} of factory ${factory}. The plan identity needs read access to it (e.g. Reader on ${RESOURCE_GROUP})." "$WORK_DIR/live.log"
-      fi
-    done
     deletions="$(jq -cs --slurpfile template <(arm_template_resources "$TEMPLATE" | jq -s .) '
-      ($template[0] | map("\(.type | ascii_downcase)/\(.name)")) as $keep
-      | map(select(("\(.type | ascii_downcase)/\(.name)") as $k | $keep | index($k) | not))' "$WORK_DIR/live.jsonl")"
+      ($template[0] | map("\(.type | ascii_downcase)/\(.name | ascii_downcase)")) as $keep
+      | map(select(.type != "managedVirtualNetworks/managedPrivateEndpoints"))
+      | map(select(("\(.type | ascii_downcase)/\(.name | ascii_downcase)") as $k | $keep | index($k) | not))
+      | map({type, name})' "$WORK_DIR/live.jsonl")"
     log_info "$(jq length <<< "$deletions") resource(s) to delete"
   fi
 fi
@@ -249,6 +287,8 @@ deleted="$(jq length <<< "$deletions")"
     echo ""
     echo "Factory \`${factory}\` in resource group \`${RESOURCE_GROUP}\`. What-if is off, so this doesn't show what would change$(is_true "$PRE_POST_SCRIPT" && echo ", or which resources the post-deployment script would delete")."
   fi
+  echo ""
+  arm_left_to_iac_markdown "$WORK_DIR/left-to-iac.jsonl"
   echo ""
   echo "<details><summary>Parameters</summary>"
   echo ""

@@ -22,6 +22,14 @@ inputs:
       its own workspaceName.
     required: false
     default: ""
+  deployments:
+    description: "The workflow's deployments input, only to keep the template artifact's name unique per call."
+    required: false
+    default: ""
+  parameter-files:
+    description: "The workflow's parameter-files input, only to keep the template artifact's name unique per call."
+    required: false
+    default: ""
   output-dir:
     description: "Where the template goes (default: $RUNNER_TEMP/synapse-template)."
     required: false
@@ -52,6 +60,8 @@ runs:
         SERVICE: synapse
         WORKING_DIRECTORY: ${{ inputs.working-directory }}
         STACK_NAME: ${{ inputs.stack-name }}
+        DEPLOYMENTS: ${{ inputs.deployments }}
+        PARAMETER_FILES: ${{ inputs.parameter-files }}
         REPOSITORY_NAME: ${{ github.event.repository.name }}
 
     - name: Validate and export

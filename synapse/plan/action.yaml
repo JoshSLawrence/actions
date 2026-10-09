@@ -1,9 +1,13 @@
 name: Synapse plan
 description: >-
-  Plans one deployment of an exported Synapse workspace template: renders its
-  parameters (every name checked against the template), optionally compares
-  it with the live workspace (new artifacts, and those the deployment
-  deletes), and writes a markdown summary. Fails after writing the summary,
+  Plans one deployment of an exported Synapse workspace template: leaves out
+  what infrastructure as code owns (the managed virtual network, pools, and
+  unless deployed the managed private endpoints and integration runtimes),
+  renders its parameters (every name checked against the template),
+  optionally compares it with the live workspace (new artifacts, those the
+  deployment deletes, that the pools its artifacts use exist, and the
+  workspace's fingerprint for the apply to check), and writes a markdown
+  summary. Fails after writing the summary,
   so it can still be posted. Upload plan-dir as an artifact for
   synapse/apply. With what-if, sign in with azure/login and run
   shared/setup (azure-cli pinned) first, on a runner that can reach the
@@ -46,6 +50,21 @@ inputs:
     description: Whether the apply deletes artifacts that aren't in the template; the comparison then lists them.
     required: false
     default: "true"
+  deploy-managed-private-endpoints:
+    description: >-
+      Deploy the folder's managed private endpoints. "false" leaves them to
+      infrastructure as code: they're left out of the deployment and never
+      deleted. With "true", Synapse also deletes endpoints that aren't in the
+      folder.
+    required: false
+    default: "false"
+  deploy-integration-runtimes:
+    description: >-
+      Deploy the folder's integration runtimes. "false" leaves them to
+      infrastructure as code: they're left out of the deployment and never
+      deleted. With "true", Synapse never deletes them.
+    required: false
+    default: "false"
   plan-dir:
     description: "Directory for the plan (default: $RUNNER_TEMP/synapse-plan) -- the plan artifact."
     required: false
@@ -86,6 +105,9 @@ outputs:
   workspace-name:
     description: The target workspace.
     value: ${{ steps.plan.outputs.workspace-name }}
+  resource-group:
+    description: The target's resource group.
+    value: ${{ steps.plan.outputs.resource-group }}
 
 runs:
   using: composite
@@ -118,6 +140,8 @@ runs:
         RESOURCE_GROUP: ${{ inputs.resource-group }}
         WHAT_IF: ${{ inputs.what-if }}
         DELETE_ARTIFACTS: ${{ inputs.delete-artifacts }}
+        DEPLOY_MANAGED_PRIVATE_ENDPOINTS: ${{ inputs.deploy-managed-private-endpoints }}
+        DEPLOY_INTEGRATION_RUNTIMES: ${{ inputs.deploy-integration-runtimes }}
         TITLE: ${{ steps.names.outputs.title }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

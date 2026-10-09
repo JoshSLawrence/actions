@@ -1,9 +1,12 @@
 name: Data Factory plan
 description: >-
-  Plans one deployment of an exported Data Factory template: renders its
-  parameters (every name checked against the template), optionally previews
-  it with az deployment group what-if and lists what the post-deployment
-  script would delete, and writes a markdown summary. Fails after writing the
+  Plans one deployment of an exported Data Factory template: leaves out what
+  infrastructure as code owns (the managed virtual network, and unless
+  deployed the managed private endpoints and integration runtimes), renders
+  its parameters (every name checked against the template), optionally
+  previews it with az deployment group what-if, lists what the
+  post-deployment script would delete and records the live factory's
+  fingerprint for the apply to check, and writes a markdown summary. Fails after writing the
   summary, so it can still be posted. Upload plan-dir as an artifact for
   datafactory/apply when has-changes is true. With what-if, sign in with
   azure/login and run shared/setup (azure-cli pinned) first.
@@ -45,6 +48,21 @@ inputs:
     description: Whether the apply runs the pre/post-deployment script (which deletes resources removed from the folder); the preview then lists them.
     required: false
     default: "true"
+  deploy-managed-private-endpoints:
+    description: >-
+      Deploy the folder's managed private endpoints. "false" leaves them to
+      infrastructure as code: they're left out of the deployment and never
+      deleted. With "true", Data Factory never deletes endpoints.
+    required: false
+    default: "false"
+  deploy-integration-runtimes:
+    description: >-
+      Deploy the folder's integration runtimes. "false" leaves them to
+      infrastructure as code: they're left out of the deployment and never
+      deleted. With "true", Data Factory's post-deployment script also
+      deletes those that aren't in the folder.
+    required: false
+    default: "false"
   plan-dir:
     description: "Directory for the plan (default: $RUNNER_TEMP/datafactory-plan) -- the plan artifact."
     required: false
@@ -85,6 +103,9 @@ outputs:
   factory-name:
     description: The target factory.
     value: ${{ steps.plan.outputs.factory-name }}
+  resource-group:
+    description: The target's resource group.
+    value: ${{ steps.plan.outputs.resource-group }}
 
 runs:
   using: composite
@@ -117,6 +138,8 @@ runs:
         RESOURCE_GROUP: ${{ inputs.resource-group }}
         WHAT_IF: ${{ inputs.what-if }}
         PRE_POST_SCRIPT: ${{ inputs.pre-post-script }}
+        DEPLOY_MANAGED_PRIVATE_ENDPOINTS: ${{ inputs.deploy-managed-private-endpoints }}
+        DEPLOY_INTEGRATION_RUNTIMES: ${{ inputs.deploy-integration-runtimes }}
         TITLE: ${{ steps.names.outputs.title }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

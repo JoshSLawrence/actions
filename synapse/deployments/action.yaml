@@ -33,6 +33,10 @@ inputs:
     description: Apply environment name; {deployment} is replaced.
     required: false
     default: ""
+  apply:
+    description: Whether the apply job runs. If so, apply-environment is required.
+    required: false
+    default: "true"
   preflight-paths:
     description: "Paths every deployment's plan depends on (default: the working directory)."
     required: false
@@ -65,3 +69,4 @@ runs:
         PLAN_ENVIRONMENT: ${{ inputs.plan-environment }}
         APPLY_ENVIRONMENT: ${{ inputs.apply-environment }}
         PREFLIGHT_PATHS: ${{ inputs.preflight-paths }}
+        APPLY: ${{ inputs.apply }}
