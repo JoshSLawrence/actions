@@ -151,7 +151,9 @@ catalog, layout and principles.
     factory itself are always left out. `arm_strip_resources` takes the
     kinds out of the template (and the `dependsOn` naming them) at plan
     time; the plan, what-if, digest and apply all use the stripped template.
-    A file of those kinds in the folder warns, never fails.
+    A file of those kinds in the folder never fails the plan; with what-if
+    it is a reference copy (no warning) when it exists live, and warns only
+    if it doesn't while others of its kind do (`arm_classify_left_to_iac`).
   - Data Factory's generated post-deployment script deletes every
     integration runtime not in the template. Don't edit the script: the
     apply gives it a copy of the template with a name-only stub per live

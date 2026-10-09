@@ -795,6 +795,68 @@ factory_plan WHAT_IF=true
 expect "paging: ... and so the plan" "1" "$status"
 live_list triggers trg_daily:e3
 
+# Reference copies: files of the kinds left to infrastructure as code that
+# exist live don't warn
+count_warnings() {
+  grep -c "is in the folder, but this workflow leaves" "$WORK/log" || true
+}
+reset_live
+live_list pipelines pl_wait:e1
+live_list triggers trg_daily:e3
+live_list linkedservices ls_storage:e4
+live_list integrationRuntimes AutoResolveIntegrationRuntime:e5 IR_CUSTOM:e6
+live_list managedPrivateEndpoints MPE_Bronze:e7
+factory_plan WHAT_IF=true
+expect "reference copies: files that exist live, in any case, don't warn" "0" "$(count_warnings)"
+expect_file_has "reference copies: ... and are listed as such" "$PLAN/summary.md" "| \`integrationRuntimes/ir_custom\` | integration runtimes | reference copy of a live resource |"
+expect_file_lacks "reference copies: ... with no warning in the comment" "$PLAN/summary.md" "**Warning:**"
+
+# One that doesn't, among others that do, is new
+mkdir -p "$WORK/two-irs"
+cp -R "$FACTORY_TEMPLATE"/. "$WORK/two-irs/"
+jq '.resources += [(.resources[] | select(.name | endswith("/ir_custom\u0027)]")) | .name |= sub("ir_custom"; "ir_new"))]' "$ADF" > "$WORK/two-irs/ARMTemplateForFactory.json"
+factory_plan WHAT_IF=true TEMPLATE_DIR="$WORK/two-irs"
+expect "reference copies: a file with no live counterpart warns, when its kind has copies that match" "1" "$(count_warnings)"
+expect_log "reference copies: ... naming it" "integrationRuntimes/ir_new is in the folder"
+
+# Another environment's copies (stg and prod see dev's names): one note, no warning per file
+live_list integrationRuntimes AutoResolveIntegrationRuntime:e5
+live_list managedPrivateEndpoints stbronze28jaa1-dfs:e7
+factory_plan WHAT_IF=true
+expect "reference copies: files matching nothing live warn nowhere" "0" "$(count_warnings)"
+expect_log "reference copies: ... and are noted once per kind" "of the folder's managed private endpoints match nothing live in this target"
+expect_file_has "reference copies: ... in the plan too" "$PLAN/summary.md" "**Note:** 1 of the folder's integration runtimes match nothing live in this target"
+expect_file_lacks "reference copies: ... without a warning" "$PLAN/summary.md" "**Warning:**"
+
+# Without what-if there is no way to tell
+factory_plan
+expect "reference copies: what-if off warns for each file" "2" "$(count_warnings)"
+
+# A listing that fails fails the plan
+live_list integrationRuntimes AutoResolveIntegrationRuntime:e5
+jq '.nextLink = "https://management.azure.com/x/integrationRuntimes?api-version=1&page=3"' "$STUB_LIVE/integrationRuntimes.json" > "$WORK/page.json" && mv "$WORK/page.json" "$STUB_LIVE/integrationRuntimes.json"
+factory_plan WHAT_IF=true
+expect "reference copies: a failed listing fails the plan" "1" "$status"
+expect_log "reference copies: ... saying what failed" "Couldn't list the integration runtimes and managed private endpoints of factory adf-test"
+
+# Synapse: the same, with the endpoint's name under the default virtual network
+reset_live
+live_list pipelines pl_wait:p1
+live_list linkedServices ls_storage:l1
+live_list bigDataPools spark:b1 spark_big:b2
+live_list sqlPools dw:q1
+live_list managedPrivateEndpoints synapse-ws-sql--syn-test:m1 MPE_BRONZE:m2
+live_list integrationRuntimes AutoResolveIntegrationRuntime:i1
+workspace_plan WHAT_IF=true
+expect "reference copies (synapse): an endpoint that exists live doesn't warn" "0" "$(count_warnings)"
+expect_file_has "reference copies (synapse): ... and is listed as a reference copy" "$PLAN/summary.md" "| \`managedVirtualNetworks/default/managedPrivateEndpoints/mpe_bronze\` | managed private endpoints | reference copy of a live resource |"
+live_list managedPrivateEndpoints synapse-ws-sql--syn-test:m1 stbronze28jaa1-dfs:m2
+workspace_plan WHAT_IF=true
+expect "reference copies (synapse): dev's endpoint names in another environment warn nowhere" "0" "$(count_warnings)"
+expect_log "reference copies (synapse): ... they are noted once" "of the folder's managed private endpoints match nothing live in this target"
+workspace_plan
+expect "reference copies (synapse): what-if off warns" "1" "$(count_warnings)"
+
 # Synapse's delete-artifacts must be the plan's
 reset_live
 live_list pipelines pl_wait:p1

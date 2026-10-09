@@ -703,32 +703,52 @@ arm_strip_problems() {
 }
 
 # Print the "Left to infrastructure as code" section for a list made by
-# arm_strip_resources: a warning for each file the author wrote that is left
-# out, and the whole list. Prints nothing for an empty list.
+# arm_strip_resources (and, with live access, arm_classify_left_to_iac): a
+# warning for each file the author wrote that is left out, a note for each
+# kind whose files match nothing live, and the whole list. Prints nothing
+# for an empty list. A resource's "reference" field says what the live
+# check made of it: "live" (a reference copy of a live resource), "elsewhere"
+# (nothing of its kind matches here: a copy from another environment), "new"
+# (a file with no live counterpart, among those that have one); empty or
+# missing means it wasn't checked, and counts as a file the author wrote.
 # Usage: arm_left_to_iac_markdown <list>
 arm_left_to_iac_markdown() {
   local list="$1" count
   count="$(grep -c . "$list" || true)"
   [ "$count" -gt 0 ] || return 0
-  if [ -n "$(jq -r 'select(.default | not) | .path' "$list")" ]; then
+  if [ -n "$(jq -r "$ARM_LEFT_TO_IAC_WARNED | .path" "$list")" ]; then
     echo "> **Warning:** these are in the folder, but this workflow leaves them to infrastructure as code, so they aren't deployed. Define them in your infrastructure as code, or remove the files:"
-    jq -r 'select(.default | not) | "> - `\(.path)`"' "$list"
+    jq -r "$ARM_LEFT_TO_IAC_WARNED | \"> - \`\\(.path)\`\"" "$list"
     echo ""
   fi
+  jq -rs '
+    map(select((.default | not) and .reference == "elsewhere")) | group_by(.kind)[]
+    | "> **Note:** \(length) of the folder\u0027s \(.[0].kind) match nothing live in this target, so they are most likely copies from another environment. They are left to infrastructure as code and not deployed."' "$list"
+  echo ""
   echo "<details><summary>Left to infrastructure as code (${count})</summary>"
   echo ""
   echo "| Resource | Kind | In the folder as |"
   echo "| --- | --- | --- |"
-  jq -r '"| `\(.path)` | \(.kind) | \(if .default then "service default or generated" else "a file you wrote" end) |"' "$list"
+  jq -r '"| `\(.path)` | \(.kind) | \(
+    if .default then "service default or generated"
+    elif .reference == "live" then "reference copy of a live resource"
+    elif .reference == "elsewhere" then "no live counterpart here (a copy from another environment?)"
+    else "a file you wrote" end) |"' "$list"
   echo ""
   echo "</details>"
 }
 
-# Log a warning for each resource of the list (arm_strip_resources) that
-# isn't a service default, so it's an annotation on the run
+# The files to warn about: not a service default, and not a reference copy
+# of something live or of another environment's
+ARM_LEFT_TO_IAC_WARNED='select((.default | not) and ((.reference // "") | IN("", "new", "unknown")))'
+
+# Log a warning for each resource of the list that is a file the author wrote
+# (see arm_left_to_iac_markdown), so it is an annotation on the run, and
+# note each kind whose files match nothing live
 # Usage: arm_left_to_iac_warn <list>
 arm_left_to_iac_warn() {
-  local path kind input reason
+  local path kind input reason entries
+  entries="$(jq -r "${ARM_LEFT_TO_IAC_WARNED} | [.path, .kind, .input] | @tsv" "$1")" || return 1
   while IFS=$'\t' read -r path kind input; do
     [ -n "$path" ] || continue
     if [ -n "$input" ]; then
@@ -737,7 +757,12 @@ arm_left_to_iac_warn() {
       reason="(this workflow never deploys them)"
     fi
     log_warn "${path} is in the folder, but this workflow leaves ${kind} to infrastructure as code ${reason}: it isn't deployed. Define it in your infrastructure as code, or remove the file."
-  done < <(jq -r 'select(.default | not) | [.path, .kind, .input] | @tsv' "$1")
+  done <<< "$entries"
+  entries="$(jq -rs 'map(select((.default | not) and .reference == "elsewhere")) | group_by(.kind)[] | "\(length)\t\(.[0].kind)"' "$1")" || return 1
+  while IFS=$'\t' read -r path kind; do
+    [ -n "$path" ] || continue
+    log_info "${path} of the folder's ${kind} match nothing live in this target: most likely copies from another environment, left to infrastructure as code."
+  done <<< "$entries"
 }
 
 # --- Live state ---------------------------------------------------------------
@@ -789,6 +814,38 @@ arm_live_fingerprint() {
   local lines
   lines="$(jq -c '{type: .type, name: .name, etag: .etag}' "$1" | LC_ALL=C sort)" || return 1
   text_sha256 "$lines"
+}
+
+# Mark which files of the left-to-infrastructure list (arm_strip_resources)
+# are reference copies, by listing the live integration runtimes and managed
+# private endpoints under <base url> (only for this check: they join the
+# fingerprint only when deployed). A file of those kinds whose type and name
+# (compared without regard to case) exist live is a reference copy
+# ("live"). One that doesn't is "new" when other files of its kind do match
+# (it stands out: someone added it in Studio), and "elsewhere" when none do
+# (the folder describes another environment: stg and prod see dev's
+# endpoint names). Fails if a listing fails; az's error goes to stderr.
+# Rewrites <list> in place; without candidates it lists nothing.
+# Usage: arm_classify_left_to_iac <list> <base url> <api version> <audience or "">
+arm_classify_left_to_iac() {
+  local list="$1" live result
+  [ -n "$(jq -r 'select((.default | not) and .input != "") | .path' "$list")" ] || return 0
+  live="$(mktemp)"
+  result="$(mktemp)"
+  if ! arm_live_lines "$2" "$3" "$4" integrationRuntimes managedVirtualNetworks/default/managedPrivateEndpoints > "$live" ||
+    ! jq -cs --slurpfile live "$live" '
+      ($live | map("\(.type | ascii_downcase)/\(.name | ascii_downcase)")) as $keys
+      | map(if .default or .input == "" then . + {reference: ""}
+          elif ("\(.type | ascii_downcase)/\(.name | ascii_downcase)" | IN($keys[])) then . + {reference: "live"}
+          else . + {reference: "none"} end)
+      | (map(select(.reference == "live") | .type | ascii_downcase) | unique) as $matched
+      | map(if .reference == "none" then .reference = (if (.type | ascii_downcase) | IN($matched[]) then "new" else "elsewhere" end) else . end)
+      | .[]' "$list" > "$result"; then
+    rm -f "$live" "$result"
+    return 1
+  fi
+  mv "$result" "$list" || { rm -f "$live" "$result"; return 1; }
+  rm -f "$live"
 }
 
 # The names the Synapse service creates itself: the workspace's default

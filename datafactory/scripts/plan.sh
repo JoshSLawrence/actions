@@ -133,7 +133,7 @@ if ! arm_strip_problems "$WORK_DIR/dangling.jsonl" 2> "$WORK_DIR/strip.log"; the
   fail "The template has dependencies on resources this workflow leaves to infrastructure as code that the plan can't resolve, so ARM would reject it." "$WORK_DIR/strip.log"
 fi
 log_info "$(grep -c . "$WORK_DIR/left-to-iac.jsonl" || true) resource(s) left out of the deployment"
-arm_left_to_iac_warn "$WORK_DIR/left-to-iac.jsonl"
+# Warned about below, once the live factory says which are reference copies
 
 cd_working_dir
 
@@ -224,6 +224,12 @@ if is_true "$WHAT_IF"; then
     cat "$WORK_DIR/live.log" >&2
     fail "Couldn't list the resources of factory ${factory}. The plan identity needs read access to it (e.g. Reader on ${RESOURCE_GROUP})." "$WORK_DIR/live.log"
   fi
+  # Files of the kinds left to infrastructure as code that exist live are
+  # reference copies, and don't warn
+  if ! arm_classify_left_to_iac "$WORK_DIR/left-to-iac.jsonl" "$factory_url" 2018-06-01 "" 2> "$WORK_DIR/live.log"; then
+    cat "$WORK_DIR/live.log" >&2
+    fail "Couldn't list the integration runtimes and managed private endpoints of factory ${factory}. The plan identity needs read access to it (e.g. Reader on ${RESOURCE_GROUP})." "$WORK_DIR/live.log"
+  fi
   jq -n --arg fingerprint "$(arm_live_fingerprint "$WORK_DIR/live.jsonl")" --argjson kinds "$(printf '%s\n' "${kinds[@]}" | jq -R . | jq -sc .)" \
     '{fingerprint: $fingerprint, kinds: $kinds}' > "$PLAN_DIR/deploy/live.json"
 
@@ -238,6 +244,8 @@ if is_true "$WHAT_IF"; then
     log_info "$(jq length <<< "$deletions") resource(s) to delete"
   fi
 fi
+
+arm_left_to_iac_warn "$WORK_DIR/left-to-iac.jsonl"
 
 log_step "Summary"
 count() {

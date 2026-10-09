@@ -115,13 +115,27 @@ infrastructure as code created.
 
 <!-- markdownlint-enable MD013 -->
 
-- **Reference files are fine.** Studio may write an integration runtime,
-  endpoint or virtual network file into the folder, and that does no harm:
-  the plan leaves it out of the deployed template, and lists it under "Left
-  to infrastructure as code". A file that isn't a service default (not
-  `AutoResolveIntegrationRuntime`, the `default` virtual network or a
-  `synapse-ws-*` endpoint) also gets a warning, telling you to define it in
-  infrastructure as code or remove the file.
+- **Reference files are fine.** Studio's Git mode only shows the network
+  and compute that are in the folder, so the folder may hold copies of the
+  workspace's integration runtimes, managed private endpoints and virtual
+  network. The plan leaves them out of the deployed template and lists them
+  under "Left to infrastructure as code". With `what-if` it also lists the
+  workspace's live integration runtimes and endpoints (for this check only),
+  and:
+  - a file whose type and name (without regard to case) exist live is a
+    **reference copy**: listed as such, no warning;
+  - a file with no live counterpart, when other files of its kind do have
+    one, is new: someone added it in Studio and infrastructure as code
+    doesn't have it. It warns: define it in your infrastructure as code, or
+    remove the file;
+  - when none of a kind's files match anything live (the folder holds
+    another environment's copies: stg and prod see dev's endpoint names),
+    the plan shows one note for the kind instead of a warning per file;
+  - with `what-if` off it can't tell, and every such file warns.
+
+  The service defaults (`AutoResolveIntegrationRuntime`, the `default`
+  virtual network, `synapse-ws-*` endpoints) are never warned about, nor
+  are pool stubs.
 - **Pools are infrastructure.** Create each pool with infrastructure as
   code, with the same name in every workspace: a notebook attached to a pool
   its target workspace doesn't have fails half-way through the deployment.

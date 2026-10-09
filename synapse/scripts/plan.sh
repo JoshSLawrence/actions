@@ -150,7 +150,7 @@ if ! arm_strip_problems "$WORK_DIR/dangling.jsonl" 2> "$WORK_DIR/strip.log"; the
   fail "The template has dependencies on resources this workflow leaves to infrastructure as code that the plan can't resolve, so the deployer would stop on them." "$WORK_DIR/strip.log"
 fi
 log_info "$(grep -c . "$WORK_DIR/left-to-iac.jsonl" || true) resource(s) left out of the deployment"
-arm_left_to_iac_warn "$WORK_DIR/left-to-iac.jsonl"
+# Warned about below, once the live workspace says which are reference copies
 
 cd_working_dir
 
@@ -215,6 +215,12 @@ if is_true "$WHAT_IF"; then
     fail "Couldn't list the artifacts of workspace ${workspace}. The plan job needs network access to ${endpoint} (a private workspace needs a runner in its network) and the Synapse Artifact User role; or set what-if to false." "$WORK_DIR/live.log"
   fi
   jq -c '. + {key: "\(.type | ascii_downcase)/\(.name | ascii_downcase)"}' "$WORK_DIR/live-lines.jsonl" > "$WORK_DIR/live.jsonl"
+  # Files of the kinds left to infrastructure as code that exist live are
+  # reference copies, and don't warn
+  if ! arm_classify_left_to_iac "$WORK_DIR/left-to-iac.jsonl" "$endpoint" 2019-06-01-preview https://dev.azuresynapse.net 2> "$WORK_DIR/live.log"; then
+    cat "$WORK_DIR/live.log" >&2
+    fail "Couldn't list the integration runtimes and managed private endpoints of workspace ${workspace}. The plan job needs network access to ${endpoint} and the Synapse Artifact User role; or set what-if to false." "$WORK_DIR/live.log"
+  fi
   jq -n --arg fingerprint "$(arm_synapse_fingerprint "$WORK_DIR/live-lines.jsonl")" --argjson kinds "$(printf '%s\n' "${kinds[@]}" | jq -R . | jq -sc .)" \
     '{fingerprint: $fingerprint, kinds: $kinds}' > "$PLAN_DIR/deploy/live.json"
 
@@ -258,6 +264,8 @@ if is_true "$WHAT_IF"; then
   fi
   log_success "Every pool the artifacts use exists"
 fi
+
+arm_left_to_iac_warn "$WORK_DIR/left-to-iac.jsonl"
 
 log_step "Summary"
 deleted="$(jq length <<< "$deletions")"
