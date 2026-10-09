@@ -5,6 +5,8 @@ repos:
       - id: check-added-large-files
         args: ["--maxkb=500"]
       - id: check-merge-conflict
+      - id: check-xml
+        files: \.(sqlproj|publish\.xml|refactorlog)$
       - id: end-of-file-fixer
       - id: trailing-whitespace
   - repo: https://github.com/shellcheck-py/shellcheck-py
@@ -28,13 +30,19 @@ repos:
         name: Reusable workflows' shared inputs in sync
         entry: .github/scripts/check-workflow-inputs.sh
         language: system
-        files: ^\.github/(workflows/(datafactory|synapse|opentofu).*\.yaml|scripts/check-workflow-inputs\.sh)$
+        files: ^\.github/(workflows/(datafactory|synapse|sqlproject|opentofu).*\.yaml|scripts/check-workflow-inputs\.sh)$
         pass_filenames: false
       - id: opentofu-script-tests
         name: OpenTofu script tests
         entry: tests/opentofu/scripts-test.sh
         language: system
         files: ^(opentofu/scripts/.*\.sh|shared/scripts/(common|apply-preflight)\.sh|tests/opentofu/.*)$
+        pass_filenames: false
+      - id: sqlproject-script-tests
+        name: SQL project script tests
+        entry: tests/sqlproject/scripts-test.sh
+        language: system
+        files: ^(sqlproject/scripts/.*\.sh|shared/scripts/(common|apply-preflight|pr-comment)\.sh|tests/sqlproject/.*)$
         pass_filenames: false
       - id: check-no-inline-scripts
         name: No inline scripts in run steps
