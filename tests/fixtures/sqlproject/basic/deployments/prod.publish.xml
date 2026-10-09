@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Fixture deployment: prod. The server is fake and never contacted (CI plans
+  against ci/baseline.dacpac). No credentials: CI signs in with Entra ID.
+-->
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <TargetDatabaseName>sqldb-fixture-prod</TargetDatabaseName>
+    <TargetConnectionString>Data Source=sql-fixture-prod.database.windows.net;Encrypt=True</TargetConnectionString>
+    <IncludeTransactionalScripts>True</IncludeTransactionalScripts>
+    <ScriptDatabaseOptions>False</ScriptDatabaseOptions>
+  </PropertyGroup>
+  <ItemGroup>
+    <SqlCmdVariable Include="Environment">
+      <Value>prod</Value>
+    </SqlCmdVariable>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,13 @@
+# Tools for this SQL project, and only these: dotnet builds the dacpac,
+# SqlPackage plans and publishes it, yq reads its reports, and azure-cli
+# (installed with uv) gets the Entra token for online plans.
+#
+# ci/baseline.dacpac is the project as it was before this change (Widget with
+# Id and Title, no view, no Status, plus an Extra table). CI plans against it
+# offline. Regenerate it with tests/sqlproject/make-baseline.sh.
+[tools]
+azure-cli = "2.90.0"
+dotnet = "10.0.401"
+"dotnet:microsoft.sqlpackage" = "170.5.96"
+uv = "0.12.19"
+yq = "4.53.6"

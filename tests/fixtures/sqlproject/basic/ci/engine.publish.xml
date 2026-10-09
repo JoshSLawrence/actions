@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The engine test's profile (tests/sqlproject/engine-test.sh): a throwaway
+  SQL Server container, with SQL authentication supplied by the test's own
+  SQL_AUTH mode. AllowIncompatiblePlatform lets an Azure SQL project publish
+  to a local SQL Server.
+-->
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <TargetDatabaseName>fixture</TargetDatabaseName>
+    <TargetConnectionString>Data Source=localhost,14330;Encrypt=True</TargetConnectionString>
+    <AllowIncompatiblePlatform>True</AllowIncompatiblePlatform>
+    <ScriptDatabaseOptions>False</ScriptDatabaseOptions>
+  </PropertyGroup>
+</Project>

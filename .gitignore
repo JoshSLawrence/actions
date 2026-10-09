@@ -9,5 +9,9 @@ tfplan
 *.tfplan
 plan.json
 
+# SQL project fixtures' build output
+tests/fixtures/sqlproject/**/bin/
+tests/fixtures/sqlproject/**/obj/
+
 # Local scratch
 .DS_Store
