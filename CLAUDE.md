@@ -159,7 +159,7 @@ catalog, layout and principles.
     apply gives it a copy of the template with a name-only stub per live
     runtime (`[concat(parameters('factoryName'), '/<name>')]`: it reads the
     name by position, 37 characters before and 3 after).
-  - The Synapse deployer fork (`v1.9.2-oidc.2` in `synapse/apply`) never
+  - The Synapse deployer fork (`v1.0.0` in `synapse/apply`) never
     deletes managed private endpoints unless it deploys them.
   - A what-if plan records `deploy/live.json` (a fingerprint of the live
     `{type, name, etag}` lines and the kinds listed); the apply lists the
@@ -177,9 +177,8 @@ catalog, layout and principles.
 ## Conventions
 
 - **Pin third-party actions to a full commit SHA** with a `# vX.Y.Z` comment.
-  The Synapse deployer in `synapse/apply` is a fork adding GitHub OIDC to an
-  upstream release (`v<upstream>-oidc.N`): port and bump it by hand when
-  upstream releases.
+  The Synapse deployer in `synapse/apply` is our fork of upstream's
+  deployer, with its own semver releases: bump it by hand when it releases.
   Dependabot updates them in `.github/` and in every `opentofu/*`,
   `shared/*`, `datafactory/*`, `sqlproject/*` and `synapse/*` action. Bump by
   hand: `mise-version` (default in `shared/setup/action.yaml`), the Az

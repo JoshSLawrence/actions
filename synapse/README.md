@@ -92,7 +92,7 @@ A complete caller is in [`examples/synapse.yaml`](../examples/synapse.yaml).
 - **Each deployment sets `workspaceName`** instead of `factoryName`.
 
 [upstream]: https://github.com/Azure/Synapse-workspace-deployment
-[fork]: https://github.com/JoshSLawrence/Synapse-workspace-deployment/releases/tag/v1.9.2-oidc.2
+[fork]: https://github.com/JoshSLawrence/Synapse-workspace-deployment/releases/tag/v1.0.0
 
 ## What's deployed: logic and infrastructure
 

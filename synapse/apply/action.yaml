@@ -117,11 +117,11 @@ runs:
 
     # Upstream Azure/Synapse-workspace-deployment only signs in with a client
     # secret or an Azure VM's managed identity. This fork adds GitHub OIDC
-    # (federatedIdentity) on top of an upstream release: when upstream
-    # releases again, port it (a v<upstream>-oidc.N release) and bump this.
+    # (federatedIdentity) and keeps managed private endpoints it doesn't
+    # deploy; it has its own semver releases: bump this when it releases.
     - name: Deploy artifacts
       id: deploy
-      uses: JoshSLawrence/Synapse-workspace-deployment@bc2fdca4d407ef8a6f6b05e71b507eedf5dc9877 # v1.9.2-oidc.2
+      uses: JoshSLawrence/Synapse-workspace-deployment@bc2fdca4d407ef8a6f6b05e71b507eedf5dc9877 # v1.0.0
       with:
         operation: deploy
         TargetWorkspaceName: ${{ steps.prepare.outputs.workspace-name }}
