@@ -1,14 +1,15 @@
 name: Synapse apply
 description: >-
   Deploys a plan from synapse/plan -- exactly that plan, to the workspace and
-  resource group it names. First refuses a stale plan (the PR moved on, or
-  the folder changed on the target branch since it was planned) and checks
-  the plan's digest; then stops started triggers, publishes the artifacts
-  with the Synapse workspace deployer (signed in with the job's GitHub OIDC
-  token), and starts triggers again. Download the plan artifact into
-  plan-dir, sign in with azure/login, and run shared/setup (azure-cli
-  pinned) first, on a runner that can reach the workspace. Needs id-token:
-  write. Gate the job with an environment that requires reviewers.
+  resource group it names. First refuses a stale plan (the PR moved on, or the
+  folder changed on the target branch since it was planned) and checks the
+  plan's digest and that the workspace is as it was when planned; then stops
+  started triggers, publishes the artifacts with the Synapse workspace
+  deployer (signed in with the job's GitHub OIDC token), and starts triggers
+  again. Download the plan artifact into plan-dir, sign in with azure/login,
+  and run shared/setup (azure-cli pinned) first, on a runner that can reach
+  the workspace. Needs id-token: write. Gate the job with an environment that
+  requires reviewers.
 
 inputs:
   working-directory:
@@ -31,7 +32,12 @@ inputs:
     required: false
     default: "true"
   deploy-managed-private-endpoints:
-    description: Also deploy the template's managed private endpoints (the deployer's identity then needs Synapse Administrator).
+    description: >-
+      Deploy the folder's managed private endpoints. "false" leaves them to
+      infrastructure as code: they're left out of the deployment and never
+      deleted. With "true", Synapse also deletes endpoints that aren't in the
+      folder (the deployer's identity then needs Synapse Administrator). Must
+      be what the plan was made with.
     required: false
     default: "false"
   manage-triggers:
@@ -105,15 +111,17 @@ runs:
         PLAN_SHA256: ${{ inputs.plan-sha256 }}
         PARAMETER_SECRETS: ${{ inputs.parameter-secrets }}
         MANAGE_TRIGGERS: ${{ inputs.manage-triggers }}
+        DEPLOY_MANAGED_PRIVATE_ENDPOINTS: ${{ inputs.deploy-managed-private-endpoints }}
+        DELETE_ARTIFACTS: ${{ inputs.delete-artifacts }}
         STATE_DIR: ${{ runner.temp }}/synapse-apply
 
     # Upstream Azure/Synapse-workspace-deployment only signs in with a client
     # secret or an Azure VM's managed identity. This fork adds GitHub OIDC
-    # (federatedIdentity) on top of an upstream release: when upstream
-    # releases again, port it (a v<upstream>-oidc.N release) and bump this.
+    # (federatedIdentity) and keeps managed private endpoints it doesn't
+    # deploy; it has its own semver releases: bump this when it releases.
     - name: Deploy artifacts
       id: deploy
-      uses: JoshSLawrence/Synapse-workspace-deployment@5869ab629b3764310cd81820b4bb71bc48eb0025 # v1.9.2-oidc.1
+      uses: JoshSLawrence/Synapse-workspace-deployment@bc2fdca4d407ef8a6f6b05e71b507eedf5dc9877 # v1.0.0
       with:
         operation: deploy
         TargetWorkspaceName: ${{ steps.prepare.outputs.workspace-name }}
@@ -125,8 +133,8 @@ runs:
         tenantId: ${{ inputs.azure-tenant-id || env.ARM_TENANT_ID }}
         subscriptionId: ${{ inputs.azure-subscription-id || env.ARM_SUBSCRIPTION_ID }}
         federatedIdentity: "true"
-        DeleteArtifactsNotInTemplate: ${{ inputs.delete-artifacts }}
-        deployManagedPrivateEndpoint: ${{ inputs.deploy-managed-private-endpoints }}
+        DeleteArtifactsNotInTemplate: ${{ steps.prepare.outputs.delete-artifacts }}
+        deployManagedPrivateEndpoint: ${{ steps.prepare.outputs.deploy-managed-private-endpoints }}
 
     # Always, once prepare has written the parameters file: it holds the
     # secrets, and triggers stopped before a failed deployment must restart

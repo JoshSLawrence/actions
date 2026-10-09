@@ -16,6 +16,10 @@
 #   credentials for this repository's `pull_request`, `ref:refs/heads/main`,
 #   `environment:dev` and `environment:prod` subjects. The identity needs
 #   Data Factory Contributor on rg-dev / rg-prod.
+# - The factory's managed virtual network, managed private endpoints and
+#   integration runtimes come from infrastructure as code: by default the
+#   workflow leaves them alone (deploy-managed-private-endpoints and
+#   deploy-integration-runtimes are false), so it never deletes them.
 # - Optionally, a secret DATAFACTORY_PARAMETER_SECRETS with name=value lines
 #   for secure parameters that aren't in Key Vault.
 
@@ -38,7 +42,7 @@ permissions: {}
 
 jobs:
   datafactory:
-    uses: JoshSLawrence/actions/.github/workflows/datafactory.yaml@v0.3.0
+    uses: JoshSLawrence/actions/.github/workflows/datafactory.yaml@v0.6.0
     permissions:
       actions: read
       contents: read

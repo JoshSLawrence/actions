@@ -48,7 +48,7 @@ cd_working_dir
 require_mise_tool azure-cli
 
 if ! triggers="$(arm_az synapse trigger list --workspace-name "$WORKSPACE_NAME" --output json)"; then
-  log_error "Couldn't list the triggers of workspace ${WORKSPACE_NAME}, so none were started. Start them in Synapse Studio, or re-run the deploy."
+  log_error "Couldn't list the triggers of workspace ${WORKSPACE_NAME}, so none were started. Start them in Synapse Studio, or re-run all jobs of the workflow."
   exit 1
 fi
 

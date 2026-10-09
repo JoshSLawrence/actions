@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
-# Plans one deployment of a Synapse workspace template: renders its
-# parameters, optionally compares the template with the live workspace
-# (which artifacts are new, and which the deployment deletes), and writes
-# the plan -- the template, the parameters and the target, which the apply
-# deploys exactly -- with a markdown summary. Never changes anything, so
-# it's safe to run locally:
+# Plans one deployment of a Synapse workspace template: leaves out what
+# infrastructure as code owns (see "Infrastructure kinds" in arm.sh), renders
+# its parameters, optionally compares the template with the live workspace
+# (which artifacts are new, which the deployment deletes, that the Spark and
+# SQL pools the artifacts use exist), and writes the plan -- the template,
+# the parameters and the target, which the apply deploys exactly -- with a
+# markdown summary. Never changes anything, so it's safe to run locally:
 #
 #   WORKING_DIR=synapse TEMPLATE_DIR=/tmp/synapse-template \
 #     PARAMETER_FILES=deployments/dev.json RESOURCE_GROUP=rg-dev \
@@ -18,8 +19,9 @@
 #                       (required)
 #   PLAN_DIR          - where the plan goes (default:
 #                       $RUNNER_TEMP/synapse-plan): deploy/ (template,
-#                       parameters.json, target.json) and summary.md. The plan
-#                       artifact; it never holds secrets.
+#                       parameters.json, target.json and, with what-if,
+#                       live.json) and summary.md. The plan artifact; it
+#                       never holds secrets.
 #   WORK_DIR          - scratch directory, deleted at the end (default:
 #                       $RUNNER_TEMP/synapse-plan-work)
 #   DEPLOYMENT        - the deployment's name, for the summary
@@ -29,11 +31,20 @@
 #   PARAMETER_SECRETS - name=value lines for secure parameters; only their
 #                       names are used here
 #   RESOURCE_GROUP    - the target workspace's resource group (required)
-#   WHAT_IF           - "true": list the live workspace's artifacts (needs az
-#                       signed in, and network access to the workspace's
-#                       development endpoint). Default false.
+#   WHAT_IF           - "true": list the live workspace's artifacts, check its
+#                       pools exist, and record its fingerprint, which the
+#                       apply checks (needs az signed in, and network access
+#                       to the workspace's development endpoint). Default
+#                       false.
 #   DELETE_ARTIFACTS  - "true" (default) if the apply deletes artifacts that
 #                       aren't in the template
+#   DEPLOY_MANAGED_PRIVATE_ENDPOINTS, DEPLOY_INTEGRATION_RUNTIMES
+#                     - "true" deploys the folder's managed private
+#                       endpoints / integration runtimes; the default false
+#                       leaves them to infrastructure as code: they're taken
+#                       out of the template. With endpoints deployed and
+#                       DELETE_ARTIFACTS, those not in the template are
+#                       deleted (integration runtimes never are).
 #   TITLE             - heading for the job summary
 #   HEAD_SHA, TARGET_BRANCH, TARGET_SHA, PR_NUMBER
 #                     - describe what's being planned, for the summary
@@ -63,8 +74,10 @@ PLAN_DIR="${PLAN_DIR:-$TMP_ROOT/synapse-plan}"
 WORK_DIR="${WORK_DIR:-$TMP_ROOT/synapse-plan-work}"
 WHAT_IF="${WHAT_IF:-false}"
 DELETE_ARTIFACTS="${DELETE_ARTIFACTS:-true}"
+export DEPLOY_MANAGED_PRIVATE_ENDPOINTS="${DEPLOY_MANAGED_PRIVATE_ENDPOINTS:-false}"
+export DEPLOY_INTEGRATION_RUNTIMES="${DEPLOY_INTEGRATION_RUNTIMES:-false}"
 
-log_config WORKING_DIR TEMPLATE_DIR PLAN_DIR DEPLOYMENT PARAMETER_FILES RESOURCE_GROUP WHAT_IF DELETE_ARTIFACTS
+log_config WORKING_DIR TEMPLATE_DIR PLAN_DIR DEPLOYMENT PARAMETER_FILES RESOURCE_GROUP WHAT_IF DELETE_ARTIFACTS DEPLOY_MANAGED_PRIVATE_ENDPOINTS DEPLOY_INTEGRATION_RUNTIMES
 
 rm -rf "$PLAN_DIR" "$WORK_DIR"
 mkdir -p "$PLAN_DIR/deploy" "$WORK_DIR"
@@ -108,6 +121,37 @@ cp -R "$TEMPLATE_DIR" "$PLAN_DIR/deploy/template"
 TEMPLATE="$PLAN_DIR/deploy/template/TemplateForWorkspace.json"
 PARAMETERS_FILE="$PLAN_DIR/deploy/parameters.json"
 
+# The pools the artifacts use, before the pool stubs the export generates are
+# left out of the template: {artifact, kind, pool}. A notebook or Spark job
+# definition names its pool; a stub stands for a pool some pipeline activity
+# or dataset uses, and is only listed when no artifact above names it.
+jq -c '
+  def last_name: (.name | (capture("\u0027/(?<n>[^\u0027]*)\u0027\\)\\]$").n // .) | split("/") | last);
+  def tail: (.type | split("/")[2:] | join("/") | ascii_downcase);
+  [ .resources[]?
+    | if tail == "notebooks" then {artifact: "notebooks/\(last_name)", kind: "Spark", pool: .properties.bigDataPool.referenceName}
+      elif tail == "sparkjobdefinitions" then {artifact: "sparkJobDefinitions/\(last_name)", kind: "Spark", pool: .properties.targetBigDataPool.referenceName}
+      else empty end
+    | select(.pool != null and (.pool | startswith("[") | not)) ] as $named
+  | $named[],
+    ( .resources[]?
+      | if tail == "bigdatapools" then {artifact: "The template", kind: "Spark", pool: last_name}
+        elif tail == "sqlpools" then {artifact: "The template", kind: "SQL", pool: last_name}
+        else empty end
+      | select(. as $stub | $named | any(.kind == $stub.kind and (.pool | ascii_downcase) == ($stub.pool | ascii_downcase)) | not) )' \
+  "$TEMPLATE" > "$WORK_DIR/pools.jsonl"
+
+log_step "Infrastructure left to infrastructure as code"
+arm_infrastructure_types synapse > "$WORK_DIR/infrastructure-types.jsonl"
+arm_strip_resources "$TEMPLATE" "$WORK_DIR/infrastructure-types.jsonl" "$WORK_DIR/stripped.json" "$WORK_DIR/left-to-iac.jsonl" "$WORK_DIR/dangling.jsonl"
+mv "$WORK_DIR/stripped.json" "$TEMPLATE"
+if ! arm_strip_problems "$WORK_DIR/dangling.jsonl" 2> "$WORK_DIR/strip.log"; then
+  cat "$WORK_DIR/strip.log" >&2
+  fail "The template has dependencies on resources this workflow leaves to infrastructure as code that the plan can't resolve, so the deployer would stop on them." "$WORK_DIR/strip.log"
+fi
+log_info "$(grep -c . "$WORK_DIR/left-to-iac.jsonl" || true) resource(s) left out of the deployment"
+# Warned about below, once the live workspace says which are reference copies
+
 cd_working_dir
 
 log_step "Parameters"
@@ -132,19 +176,29 @@ arm_write_parameters_file "$merged" "$PARAMETERS_FILE"
 
 workspace="$(jq -r '.parameters.workspaceName.value // empty' "$PARAMETERS_FILE")"
 [ -n "$workspace" ] || fail "workspaceName is empty. Set it to the target workspace's name."
+# What the plan left out, and whether it listed deletions, is recorded so the
+# apply can check its own inputs against it
 jq -n --arg service synapse --arg deployment "${DEPLOYMENT:-}" --arg resource_group "$RESOURCE_GROUP" --arg name "$workspace" \
-  '{service: $service, deployment: $deployment, resource_group: $resource_group, name: $name}' > "$PLAN_DIR/deploy/target.json"
+  --argjson mpes "$(is_true "$DEPLOY_MANAGED_PRIVATE_ENDPOINTS" && echo true || echo false)" \
+  --argjson delete "$(is_true "$DELETE_ARTIFACTS" && echo true || echo false)" \
+  '{service: $service, deployment: $deployment, resource_group: $resource_group, name: $name,
+    deploy_managed_private_endpoints: $mpes, delete_artifacts: $delete}' > "$PLAN_DIR/deploy/target.json"
 set_output workspace-name "$workspace"
 set_output resource-group "$RESOURCE_GROUP"
 log_success "Parameters rendered for workspace ${workspace} in ${RESOURCE_GROUP}"
 
-# The template's artifacts, keyed like the live ones below. Pools and the
-# managed virtual network aren't deployed by the Synapse deployer (they're
-# infrastructure), so they're left out.
+# The template's artifacts, keyed like the live ones below. The deployer
+# skips the workspace's own defaults (its default linked services and
+# credential, and its synapse-ws-* endpoints), whatever the folder holds
+# for them: a folder exported from another workspace carries that
+# workspace's names. They are marked, and not counted as deployed.
 arm_template_resources "$TEMPLATE" |
-  jq -c 'select(.type != "bigDataPools" and .type != "sqlPools" and .type != "managedVirtualNetworks")
-    | . + {key: "\(.type | ascii_downcase)/\(.name | ascii_downcase)"}' > "$WORK_DIR/template.jsonl"
-artifacts="$(wc -l < "$WORK_DIR/template.jsonl" | tr -d ' ')"
+  jq -c "(.type | ascii_downcase) as \$t
+    | . + {key: \"\(\$t)/\(.name | ascii_downcase)\",
+           default: ((\$t | IN(\"linkedservices\", \"credentials\", \"managedvirtualnetworks/managedprivateendpoints\")) and (.name | ${ARM_SYNAPSE_DEFAULT_NAME}))}" > "$WORK_DIR/template.jsonl"
+total="$(wc -l < "$WORK_DIR/template.jsonl" | tr -d ' ')"
+defaults="$(jq -s 'map(select(.default)) | length' "$WORK_DIR/template.jsonl")"
+artifacts=$((total - defaults))
 
 new="[]"
 deletions="[]"
@@ -152,39 +206,89 @@ if is_true "$WHAT_IF"; then
   ensure_mise
   require_mise_tool azure-cli
   log_step "Compare with the live workspace"
-  : > "$WORK_DIR/live.jsonl"
   endpoint="https://${workspace}.dev.azuresynapse.net"
-  # What the deployer lists (and may delete); integration runtimes are never
-  # deleted, and the workspace's own default linked services, credential and
-  # managed private endpoints are skipped.
-  for collection in credentials dataflows datasets linkedServices notebooks pipelines sparkJobDefinitions \
-    sqlScripts triggers kqlScripts sparkConfigurations databases managedVirtualNetworks/default/managedPrivateEndpoints integrationRuntimes; do
-    type="${collection/\/default\//\/}"
-    if ! arm_rest_list "${endpoint}/${collection}?api-version=2019-06-01-preview" --resource https://dev.azuresynapse.net 2> "$WORK_DIR/live.log" |
-      jq -c --arg type "$type" '{type: $type, name, key: "\($type | ascii_downcase)/\(.name | ascii_downcase)"}' >> "$WORK_DIR/live.jsonl"; then
-      cat "$WORK_DIR/live.log" >&2
-      fail "Couldn't list the ${collection} of workspace ${workspace}. The plan job needs network access to ${endpoint} (a private workspace needs a runner in its network) and the Synapse Artifact User role; or set what-if to false." "$WORK_DIR/live.log"
-    fi
-  done
-  default_artifact='test("workspacedefaultsqlserver|workspacedefaultstorage|workspacesystemidentity|^synapse-ws-(sql|sqlondemand|kusto)"; "i")'
+  # What the deployer lists (and may delete), and the infrastructure kinds
+  # the call deploys. The apply lists the same kinds again (live.json) to be
+  # sure nothing else changed them.
+  kinds=(credentials dataflows datasets linkedServices notebooks pipelines sparkJobDefinitions
+    sqlScripts triggers kqlScripts sparkConfigurations databases)
+  if is_true "$DEPLOY_MANAGED_PRIVATE_ENDPOINTS"; then
+    kinds+=(managedVirtualNetworks/default/managedPrivateEndpoints)
+  fi
+  if is_true "$DEPLOY_INTEGRATION_RUNTIMES"; then
+    kinds+=(integrationRuntimes)
+  fi
+  if ! arm_live_lines "$endpoint" 2019-06-01-preview https://dev.azuresynapse.net "${kinds[@]}" > "$WORK_DIR/live-lines.jsonl" 2> "$WORK_DIR/live.log"; then
+    cat "$WORK_DIR/live.log" >&2
+    fail "Couldn't list the artifacts of workspace ${workspace}. The plan job needs network access to ${endpoint} (a private workspace needs a runner in its network) and the Synapse Artifact User role; or set what-if to false." "$WORK_DIR/live.log"
+  fi
+  jq -c '. + {key: "\(.type | ascii_downcase)/\(.name | ascii_downcase)"}' "$WORK_DIR/live-lines.jsonl" > "$WORK_DIR/live.jsonl"
+  # Files of the kinds left to infrastructure as code that exist live are
+  # reference copies, and don't warn. This only decides what the plan says,
+  # so a failed listing warns about each file, as without what-if, instead
+  # of failing the plan (a workspace without a managed virtual network has
+  # no endpoints to list).
+  if ! arm_classify_left_to_iac "$WORK_DIR/left-to-iac.jsonl" "$endpoint" 2019-06-01-preview https://dev.azuresynapse.net 2> "$WORK_DIR/live.log"; then
+    cat "$WORK_DIR/live.log" >&2
+    log_warn "Couldn't list the integration runtimes and managed private endpoints of workspace ${workspace}, so the plan can't tell which of the folder's are reference copies of live ones and warns about each. The plan identity needs a Synapse role that reads them (Synapse Artifact User) to quiet them."
+  fi
+  jq -n --arg fingerprint "$(arm_synapse_fingerprint "$WORK_DIR/live-lines.jsonl")" --argjson kinds "$(printf '%s\n' "${kinds[@]}" | jq -R . | jq -sc .)" \
+    '{fingerprint: $fingerprint, kinds: $kinds}' > "$PLAN_DIR/deploy/live.json"
+
+  default_artifact="$ARM_SYNAPSE_DEFAULT_NAME"
   new="$(jq -cs --slurpfile live <(jq -s . "$WORK_DIR/live.jsonl") '
-    ($live[0] | map(.key)) as $existing | map(select(.key as $k | $existing | index($k) | not))' "$WORK_DIR/template.jsonl")"
+    ($live[0] | map(.key)) as $existing | map(select((.default | not) and (.key as $k | $existing | index($k) | not)))' "$WORK_DIR/template.jsonl")"
   if is_true "$DELETE_ARTIFACTS"; then
+    # The deployer never deletes integration runtimes; endpoints are only
+    # listed when they're deployed, and then it deletes those not in the template
     deletions="$(jq -cs --slurpfile template <(jq -s . "$WORK_DIR/template.jsonl") "
       (\$template[0] | map(.key)) as \$keep
       | map(select(.type != \"integrationRuntimes\" and (.name | ${default_artifact} | not)))
-      | map(select(.key as \$k | \$keep | index(\$k) | not))" "$WORK_DIR/live.jsonl")"
+      | map(select(.key as \$k | \$keep | index(\$k) | not))
+      | map({type, name, key})" "$WORK_DIR/live.jsonl")"
   fi
   log_info "$(jq length <<< "$new") new artifact(s), $(jq length <<< "$deletions") to delete"
+
+  # A pool is infrastructure the deployer neither creates nor checks: an
+  # artifact for a missing one fails half-way through the apply
+  log_step "Check the pools exist"
+  subscription="$(arm_az account show --query id --output tsv)"
+  workspace_url="https://management.azure.com/subscriptions/${subscription}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.Synapse/workspaces/${workspace}"
+  : > "$WORK_DIR/live-pools.jsonl"
+  for collection in bigDataPools sqlPools; do
+    if ! arm_rest_list "${workspace_url}/${collection}?api-version=2021-06-01" 2> "$WORK_DIR/live.log" |
+      jq -c --arg kind "$([ "$collection" = bigDataPools ] && echo Spark || echo SQL)" '{kind: $kind, pool: (.name | ascii_downcase)}' >> "$WORK_DIR/live-pools.jsonl"; then
+      cat "$WORK_DIR/live.log" >&2
+      fail "Couldn't list the ${collection} of workspace ${workspace}. The plan identity needs read access to it (e.g. Reader on ${RESOURCE_GROUP}); or set what-if to false." "$WORK_DIR/live.log"
+    fi
+  done
+  missing_pools="$(jq -rs --slurpfile pools "$WORK_DIR/live-pools.jsonl" --arg workspace "$workspace" '
+    ($pools | map("\(.kind)/\(.pool)")) as $live
+    | .[] | select("\(.kind)/\(.pool | ascii_downcase)" as $k | $live | index($k) | not)
+    | "\(.artifact) uses \(.kind) pool \u0027\(.pool)\u0027, which workspace \($workspace) doesn\u0027t have. Pools are infrastructure: create it with your infrastructure as code (same name in every environment) and apply that first."' "$WORK_DIR/pools.jsonl")"
+  if [ -n "$missing_pools" ]; then
+    while IFS= read -r message; do
+      log_error "$message"
+    done <<< "$missing_pools"
+    FAILED="$(paste -sd' ' - <<< "$missing_pools")"
+    exit 1
+  fi
+  log_success "Every pool the artifacts use exists"
 fi
+
+arm_left_to_iac_warn "$WORK_DIR/left-to-iac.jsonl"
 
 log_step "Summary"
 deleted="$(jq length <<< "$deletions")"
 {
+  skipped_note=""
+  if [ "$defaults" -gt 0 ]; then
+    skipped_note="${defaults} service default(s) skipped"
+  fi
   if is_true "$WHAT_IF"; then
-    echo "### 📋 Plan: deploy ${artifacts} artifact(s) ($(jq length <<< "$new") new), delete ${deleted}"
+    echo "### 📋 Plan: deploy ${artifacts} artifact(s) ($(jq length <<< "$new") new${skipped_note:+, $skipped_note}), delete ${deleted}"
   else
-    echo "### 📋 Plan: deploy ${artifacts} artifact(s)"
+    echo "### 📋 Plan: deploy ${artifacts} artifact(s)${skipped_note:+ ($skipped_note)}"
   fi
   echo ""
   context_line
@@ -199,7 +303,7 @@ deleted="$(jq length <<< "$deletions")"
     jq -r '.[] | "> - `\(.type)/\(.name)`"' <<< "$deletions"
     echo ""
   fi
-  echo "<details><summary>Artifacts (${artifacts})</summary>"
+  echo "<details><summary>Artifacts (${total})</summary>"
   echo ""
   echo "| Action | Artifact |"
   echo "| --- | --- |"
@@ -207,12 +311,15 @@ deleted="$(jq length <<< "$deletions")"
     ($new | map(.key)) as $new_keys
     | sort_by(.type, .name)[]
     | .key as $key
-    | (if $what_if != "true" then "🔵 publish"
+    | (if .default then "⚪ skipped (service default)"
+       elif $what_if != "true" then "🔵 publish"
        elif ($new_keys | index($key)) != null then "🟢 create"
        else "🟡 update" end) as $action
     | "| \($action) | `\(.type)/\(.name)` |"' "$WORK_DIR/template.jsonl"
   echo ""
   echo "</details>"
+  echo ""
+  arm_left_to_iac_markdown "$WORK_DIR/left-to-iac.jsonl"
   echo ""
   echo "<details><summary>Parameters</summary>"
   echo ""

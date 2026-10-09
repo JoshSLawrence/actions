@@ -13,8 +13,8 @@ A library of reusable GitHub Actions workflows and composite actions.
 | --- | --- | --- |
 | [OpenTofu](opentofu/README.md) | Reusable workflow | Checks, tests, plans and applies one root module per call, with its var files, in its environment, when a PR touches it; Azure OIDC or secrets; PR comments; approval-gated apply; providers cached across jobs |
 | [OpenTofu drift](opentofu/README.md#drift-detection) | Reusable workflow | Plans one deployment on a schedule, never applying, and reports drift as a GitHub issue per deployment (updated in place, marked resolved when it's gone) |
-| [Data Factory](datafactory/README.md) | Reusable workflows + composite actions | Validate and export a factory's Git folder to an ARM template on every PR (no Publish, no `adf_publish`), what-if plans per environment, approval-gated deploys with trigger handling; PR comments |
-| [Synapse](synapse/README.md) | Reusable workflows + composite actions | The same for a Synapse workspace's artifacts (no `workspace_publish`), deployed with GitHub OIDC; PR comments |
+| [Data Factory](datafactory/README.md) | Reusable workflows + composite actions | Validate and export a factory's Git folder to an ARM template on every PR (no Publish, no `adf_publish`), what-if plans per environment, approval-gated deploys with trigger handling; network and compute (runtimes, endpoints) left to IaC; PR comments |
+| [Synapse](synapse/README.md) | Reusable workflows + composite actions | The same for a Synapse workspace's artifacts (no `workspace_publish`), deployed with GitHub OIDC; network and compute (pools, runtimes, endpoints) left to IaC; PR comments |
 | [SQL project](sqlproject/README.md) | Reusable workflows + composite actions | Build an SDK-style SQL project's dacpac once, DeployReport plans per database with the change list and script in PR comments, additive or source-of-truth deploys, possible data loss blocked by default, approval-gated SqlPackage publish; Entra ID via OIDC |
 
 <!-- markdownlint-enable MD013 -->
@@ -114,6 +114,7 @@ actions/
 │                             # README.md and source-of-truth.md
 ├── synapse/                  # build, deployments, plan, apply, scripts/
 └── tests/
+    ├── arm/                  # Data Factory and Synapse script tests
     ├── fixtures/             # what CI runs the workflows against
     ├── opentofu/             # OpenTofu script tests
     └── sqlproject/           # SQL project script and engine tests

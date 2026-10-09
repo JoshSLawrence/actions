@@ -1,0 +1,92 @@
+{
+  "$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "factoryName": {
+      "type": "string",
+      "defaultValue": "adf-dev"
+    },
+    "ls_storage_properties_typeProperties_url": {
+      "type": "string",
+      "defaultValue": "https://stdev.dfs.core.windows.net/"
+    }
+  },
+  "variables": {
+    "factoryId": "[concat('Microsoft.DataFactory/factories/', parameters('factoryName'))]"
+  },
+  "resources": [
+    {
+      "name": "[parameters('factoryName')]",
+      "type": "Microsoft.DataFactory/factories",
+      "apiVersion": "2018-06-01",
+      "location": "eastus",
+      "properties": {}
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/AutoResolveIntegrationRuntime')]",
+      "type": "Microsoft.DataFactory/factories/integrationRuntimes",
+      "apiVersion": "2018-06-01",
+      "properties": { "type": "Managed" },
+      "dependsOn": []
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/ir_custom')]",
+      "type": "Microsoft.DataFactory/factories/integrationruntimes",
+      "apiVersion": "2018-06-01",
+      "properties": { "type": "Managed" },
+      "dependsOn": []
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/default')]",
+      "type": "Microsoft.DataFactory/factories/managedVirtualNetworks",
+      "apiVersion": "2018-06-01",
+      "properties": {},
+      "dependsOn": []
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/default/mpe_bronze')]",
+      "type": "Microsoft.DataFactory/factories/managedVirtualNetworks/managedPrivateEndpoints",
+      "apiVersion": "2018-06-01",
+      "properties": {},
+      "dependsOn": [
+        "[concat(variables('factoryId'), '/managedVirtualNetworks/default')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/ls_storage')]",
+      "type": "Microsoft.DataFactory/factories/linkedServices",
+      "apiVersion": "2018-06-01",
+      "properties": {
+        "type": "AzureBlobFS",
+        "connectVia": {
+          "referenceName": "ir_custom",
+          "type": "IntegrationRuntimeReference"
+        }
+      },
+      "dependsOn": [
+        "[concat(variables('factoryId'), '/integrationRuntimes/ir_custom')]",
+        "[concat(variables('factoryId'), '/integrationRuntimes/AutoResolveIntegrationRuntime')]",
+        "[resourceId('Microsoft.DataFactory/factories/integrationRuntimes', parameters('factoryName'), 'ir_custom')]",
+        "[concat(variables('factoryId'), '/managedVirtualNetworks/default/managedPrivateEndpoints/mpe_bronze')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/pl_wait')]",
+      "type": "Microsoft.DataFactory/factories/pipelines",
+      "apiVersion": "2018-06-01",
+      "properties": {},
+      "dependsOn": [
+        "[concat(variables('factoryId'), '/linkedServices/ls_storage')]"
+      ]
+    },
+    {
+      "name": "[concat(parameters('factoryName'), '/trg_daily')]",
+      "type": "Microsoft.DataFactory/factories/triggers",
+      "apiVersion": "2018-06-01",
+      "properties": { "runtimeState": "Stopped" },
+      "dependsOn": [
+        "[concat(variables('factoryId'), '/pipelines/pl_wait')]"
+      ]
+    }
+  ]
+}

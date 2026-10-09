@@ -143,6 +143,24 @@ on:
           folder and start triggers after. Needs powershell pinned too.
         type: boolean
         default: true
+      deploy-managed-private-endpoints:
+        description: >-
+          Deploy the folder's managed private endpoints. false leaves them to
+          infrastructure as code: they're left out of every deployment and
+          never deleted. true deploys them; Synapse then also deletes those
+          that aren't in the folder (its apply identity needs Synapse
+          Administrator), Data Factory never deletes them.
+        type: boolean
+        default: false
+      deploy-integration-runtimes:
+        description: >-
+          Deploy the folder's integration runtimes. false leaves them to
+          infrastructure as code: they're left out of every deployment and
+          never deleted. true deploys them; Data Factory's post-deployment
+          script then also deletes those that aren't in the folder (Synapse
+          never deletes them).
+        type: boolean
+        default: false
 
       # --- Cloud auth -------------------------------------------------------
       azure-client-id:
@@ -209,6 +227,8 @@ jobs:
       artifact-name: ${{ steps.plan.outputs.artifact-name }}
       comment-key: ${{ steps.plan.outputs.key }}
       title: ${{ steps.plan.outputs.title }}
+      factory-name: ${{ steps.plan.outputs.factory-name }}
+      resource-group: ${{ steps.plan.outputs.resource-group }}
     env:
       ARM_CLIENT_ID: ${{ inputs.azure-client-id || vars.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ inputs.azure-tenant-id || vars.AZURE_TENANT_ID }}
@@ -256,6 +276,8 @@ jobs:
           resource-group: ${{ inputs.resource-group }}
           what-if: ${{ inputs.what-if }}
           pre-post-script: ${{ inputs.pre-post-script }}
+          deploy-managed-private-endpoints: ${{ inputs.deploy-managed-private-endpoints }}
+          deploy-integration-runtimes: ${{ inputs.deploy-integration-runtimes }}
 
       # The plan holds the template and the rendered parameters -- never the
       # parameter-secrets. Artifacts of a public repository can be downloaded
@@ -311,11 +333,12 @@ jobs:
     # variables and Azure federated credentials only apply once approved.
     environment: ${{ inputs.apply-environment }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
-    # One deployment at a time per factory deployment, and never cancel one
-    # that's running: that could leave triggers stopped and the factory
-    # half-deployed. A newer run's apply queues behind.
+    # One deployment at a time per factory, whichever workflow or deployment
+    # targets it, and never cancel one that's running: that could leave
+    # triggers stopped and the factory half-deployed. A newer run's apply
+    # queues behind.
     concurrency:
-      group: datafactory-apply-${{ github.repository }}-${{ inputs.working-directory }}-${{ inputs.stack-name }}-${{ inputs.deployment }}-${{ inputs.apply-environment }}
+      group: datafactory-apply-${{ github.repository }}-${{ needs.plan.outputs.resource-group }}-${{ needs.plan.outputs.factory-name }}
       cancel-in-progress: false
     permissions:
       actions: read # environment protection rules; who approved, for the PR comment
@@ -366,6 +389,8 @@ jobs:
           plan-sha256: ${{ needs.plan.outputs.plan-sha256 }}
           parameter-secrets: ${{ secrets.parameter-secrets }}
           pre-post-script: ${{ inputs.pre-post-script }}
+          deploy-managed-private-endpoints: ${{ inputs.deploy-managed-private-endpoints }}
+          deploy-integration-runtimes: ${{ inputs.deploy-integration-runtimes }}
           environment: ${{ inputs.apply-environment }}
           preflight-paths: ${{ inputs.preflight-paths }}
 
