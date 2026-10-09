@@ -24,7 +24,9 @@ source "$REPO_ROOT/shared/scripts/common.sh"
 
 # Never inherit a repository from a caller (a pre-commit hook sets GIT_DIR and
 # friends): every git command below must act on a throwaway repository
-unset $(git rev-parse --local-env-vars)
+while IFS= read -r git_var; do
+  unset "$git_var"
+done < <(git rev-parse --local-env-vars)
 
 require_tool git
 require_tool jq
