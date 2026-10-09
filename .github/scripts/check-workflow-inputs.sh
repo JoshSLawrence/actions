@@ -6,6 +6,7 @@
 #
 #   datafactory.yaml      --calls-->  datafactory-deploy.yaml  (job: deploy)
 #   synapse.yaml          --calls-->  synapse-deploy.yaml      (job: deploy)
+#   sqlproject.yaml       --calls-->  sqlproject-deploy.yaml   (job: deploy)
 #
 # Data Factory and Synapse deploy the same kind of ARM template with the same
 # scripts, so the inputs they share (runs-on, apply-environment, ...) must
@@ -105,6 +106,11 @@ check_pair synapse.yaml synapse-deploy.yaml deploy \
   '["deployment", "template-artifact"]' \
   '["deployments", "max-parallel", "workspace-name", "build-runs-on"]' \
   '["parameter-files", "parameters", "resource-group", "plan-environment", "apply-environment", "preflight-paths"]'
+
+check_pair sqlproject.yaml sqlproject-deploy.yaml deploy \
+  '["deployment", "dacpac-artifact", "profile"]' \
+  '["deployments", "max-parallel", "build-runs-on"]' \
+  '["variables", "plan-environment", "apply-environment", "preflight-paths"]'
 
 # Across the ARM services: what each describes its own way is COMPUTED
 check_pair datafactory.yaml synapse.yaml "" '[]' '[]' '["working-directory", "deployments", "what-if"]'
