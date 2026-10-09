@@ -821,7 +821,7 @@ expect_log "reference copies: ... naming it" "integrationRuntimes/ir_new is in t
 
 # Another environment's copies (stg and prod see dev's names): one note, no warning per file
 live_list integrationRuntimes AutoResolveIntegrationRuntime:e5
-live_list managedPrivateEndpoints stbronze28jaa1-dfs:e7
+live_list managedPrivateEndpoints stexample-dfs:e7
 factory_plan WHAT_IF=true
 expect "reference copies: files matching nothing live warn nowhere" "0" "$(count_warnings)"
 expect_log "reference copies: ... and are noted once per kind" "of the folder's managed private endpoints match nothing live in this target"
@@ -852,7 +852,7 @@ live_list integrationRuntimes AutoResolveIntegrationRuntime:i1
 workspace_plan WHAT_IF=true
 expect "reference copies (synapse): an endpoint that exists live doesn't warn" "0" "$(count_warnings)"
 expect_file_has "reference copies (synapse): ... and is listed as a reference copy" "$PLAN/summary.md" "| \`managedVirtualNetworks/default/managedPrivateEndpoints/mpe_bronze\` | managed private endpoints | reference copy of a live resource |"
-live_list managedPrivateEndpoints synapse-ws-sql--syn-test:m1 stbronze28jaa1-dfs:m2
+live_list managedPrivateEndpoints synapse-ws-sql--syn-test:m1 stexample-dfs:m2
 workspace_plan WHAT_IF=true
 expect "reference copies (synapse): dev's endpoint names in another environment warn nowhere" "0" "$(count_warnings)"
 expect_log "reference copies (synapse): ... they are noted once" "of the folder's managed private endpoints match nothing live in this target"
