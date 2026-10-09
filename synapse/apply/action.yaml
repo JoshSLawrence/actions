@@ -1,15 +1,15 @@
 name: Synapse apply
 description: >-
   Deploys a plan from synapse/plan -- exactly that plan, to the workspace and
-  resource group it names. First refuses a stale plan (the PR moved on, or
-  the folder changed on the target branch since it was planned) and checks
-  the plan's digest and that the workspace is as it was when planned; then
-  stops started triggers, publishes the artifacts
-  with the Synapse workspace deployer (signed in with the job's GitHub OIDC
-  token), and starts triggers again. Download the plan artifact into
-  plan-dir, sign in with azure/login, and run shared/setup (azure-cli
-  pinned) first, on a runner that can reach the workspace. Needs id-token:
-  write. Gate the job with an environment that requires reviewers.
+  resource group it names. First refuses a stale plan (the PR moved on, or the
+  folder changed on the target branch since it was planned) and checks the
+  plan's digest and that the workspace is as it was when planned; then stops
+  started triggers, publishes the artifacts with the Synapse workspace
+  deployer (signed in with the job's GitHub OIDC token), and starts triggers
+  again. Download the plan artifact into plan-dir, sign in with azure/login,
+  and run shared/setup (azure-cli pinned) first, on a runner that can reach
+  the workspace. Needs id-token: write. Gate the job with an environment that
+  requires reviewers.
 
 inputs:
   working-directory:
@@ -112,6 +112,7 @@ runs:
         PARAMETER_SECRETS: ${{ inputs.parameter-secrets }}
         MANAGE_TRIGGERS: ${{ inputs.manage-triggers }}
         DEPLOY_MANAGED_PRIVATE_ENDPOINTS: ${{ inputs.deploy-managed-private-endpoints }}
+        DELETE_ARTIFACTS: ${{ inputs.delete-artifacts }}
         STATE_DIR: ${{ runner.temp }}/synapse-apply
 
     # Upstream Azure/Synapse-workspace-deployment only signs in with a client

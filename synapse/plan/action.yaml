@@ -3,13 +3,12 @@ description: >-
   Plans one deployment of an exported Synapse workspace template: leaves out
   what infrastructure as code owns (the managed virtual network, pools, and
   unless deployed the managed private endpoints and integration runtimes),
-  renders its parameters (every name checked against the template),
-  optionally compares it with the live workspace (new artifacts, those the
-  deployment deletes, that the pools its artifacts use exist, and the
-  workspace's fingerprint for the apply to check), and writes a markdown
-  summary. Fails after writing the summary,
-  so it can still be posted. Upload plan-dir as an artifact for
-  synapse/apply. With what-if, sign in with azure/login and run
+  renders its parameters (every name checked against the template), optionally
+  compares it with the live workspace (new artifacts, those the deployment
+  deletes, that the pools its artifacts use exist, and the workspace's
+  fingerprint for the apply to check), and writes a markdown summary. Fails
+  after writing the summary, so it can still be posted. Upload plan-dir as an
+  artifact for synapse/apply. With what-if, sign in with azure/login and run
   shared/setup (azure-cli pinned) first, on a runner that can reach the
   workspace.
 

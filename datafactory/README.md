@@ -123,7 +123,7 @@ can't replace or delete what infrastructure as code created.
 | Managed private endpoints | only with `deploy-managed-private-endpoints` | never |
 | Managed virtual network | never | never |
 | The factory itself (identity, network access, Git settings) | never | never |
-| Global parameters | never (see [Limitations](#limitations)) | never |
+| Global parameters | only if the export includes them (see [Limitations](#limitations)) | never |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -178,7 +178,8 @@ datafactory-deploy.yaml                   plan ──> apply (after approval)
   3. lists the factory again and refuses if it differs from the plan's
      fingerprint: something else changed it since (another PR's apply, or a
      change in the portal), and deploying this plan would undo or delete it.
-     Re-run the workflow to plan again;
+     Re-run all jobs of the workflow to plan again (re-running only the
+     failed job reuses the old plan, which is refused);
   4. runs the export's `PrePostDeploymentScript.ps1` to stop the triggers the
      deployment changes;
   5. deploys the template (incremental);
@@ -358,10 +359,16 @@ WORKING_DIR=adf TEMPLATE_DIR=/tmp/datafactory-template PARAMETER_FILES=deploymen
   deploy; the build fails with that message.
 - **The export bundle isn't versioned:** every run downloads Microsoft's
   latest, as the npm package does. Its SHA-256 is in the build summary.
-- **Global parameters aren't deployed.** The export writes
+- **Global parameters are deployed only if the export puts them in the
+  template.** With `"includeGlobalParamsTemplate": true` in the folder's
+  `publish_config.json` (Manage → ARM template → Include global parameters
+  in ARM template), the export adds a
+  `Microsoft.DataFactory/factories/globalparameters` resource, with one
+  parameter per global parameter (`default_properties_<name>_value`), and it
+  is deployed like the rest: the factory's global parameters become exactly
+  the folder's. Without the setting the export only writes
   `<factory>_GlobalParameters.json` and `GlobalParametersUpdateScript.ps1`
-  next to the template, and nothing runs the script. Don't use global
-  parameters yet.
+  next to the template, and nothing runs the script.
 - **The factory itself** (identity, networking, Git configuration), its
   managed virtual network, endpoints and integration runtimes belong to
   infrastructure as code (see
@@ -372,7 +379,17 @@ WORKING_DIR=adf TEMPLATE_DIR=/tmp/datafactory-template PARAMETER_FILES=deploymen
   check compares etags, so a change made in the portal (or a trigger
   started there) also makes the next apply ask for a new plan.
 - **A failed deployment leaves stopped triggers stopped**, as Microsoft's
-  script does; a successful re-run starts them again.
+  script does; a successful new apply starts them again. Re-run all jobs of
+  the workflow, not just the failed one: the factory has changed since the
+  plan, so the live check refuses that plan.
+- **The apply's inputs must be the plan's.** An apply given a different
+  `pre-post-script`, `deploy-integration-runtimes` or
+  `deploy-managed-private-endpoints` is refused, with the reason in the PR
+  comment, so it can't delete what the plan never previewed.
+- **Endpoints have no etag.** Managed private endpoint listings carry none,
+  so with `deploy-managed-private-endpoints: true` the fingerprint covers
+  their names only: a change to an endpoint that keeps its name goes
+  unnoticed.
 
 ## Coming from adf\_publish
 

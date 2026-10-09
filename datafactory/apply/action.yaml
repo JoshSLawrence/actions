@@ -1,15 +1,15 @@
 name: Data Factory apply
 description: >-
   Deploys a plan from datafactory/plan -- exactly that plan, to the factory
-  and resource group it names. First refuses a stale plan (the PR moved on,
-  or the folder changed on the target branch since it was planned), checks
-  the plan's digest and that the factory is as it was when planned; then runs
-  the exported pre-deployment script (stop triggers), an incremental ARM
+  and resource group it names. First refuses a stale plan (the PR moved on, or
+  the folder changed on the target branch since it was planned), checks the
+  plan's digest and that the factory is as it was when planned; then runs the
+  exported pre-deployment script (stop triggers), an incremental ARM
   deployment, and the post-deployment script (delete removed resources, start
-  triggers; integration runtimes left to infrastructure as code are kept). Download the plan artifact into
-  plan-dir, sign in with azure/login, and run shared/setup (azure-cli, plus
-  powershell for the script) first. Gate the job with an environment that
-  requires reviewers.
+  triggers; integration runtimes left to infrastructure as code are kept).
+  Download the plan artifact into plan-dir, sign in with azure/login, and run
+  shared/setup (azure-cli, plus powershell for the script) first. Gate the job
+  with an environment that requires reviewers.
 
 inputs:
   working-directory:

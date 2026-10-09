@@ -106,8 +106,13 @@ artifacts or overwrite A's edits. SQL and OpenTofu already prevent that (a
 fresh report, a stale saved plan).
 
 - **Fingerprint.** The kinds are the logic (Data Factory: triggers,
-  pipelines, data flows, datasets, linked services; Synapse: its twelve
-  artifact collections) plus runtimes and endpoints only when deployed. The
+  pipelines, data flows, datasets, linked services; Synapse: credentials,
+  data flows, datasets, linked services, notebooks, pipelines, Spark job
+  definitions, SQL and KQL scripts, triggers, Spark configurations and lake
+  databases) plus runtimes and endpoints only when deployed. Endpoint
+  listings have a null etag, so they are fingerprinted by name only; lake
+  databases (a different API: `{items, continuationToken}`, no etag) by a
+  digest of each item. The
   service's own artifacts (Synapse's default linked services, credential and
   `synapse-ws-*` endpoints) are left out: deployments skip them, so they say
   nothing about a change.
@@ -118,10 +123,22 @@ fresh report, a stale saved plan).
 - **False refusals.** An etag can change for reasons other than a
   deployment, such as a trigger started in the portal. The refusal says to
   plan again. Watch for churn, and narrow the kinds if needed.
-- **The apply's own inputs.** The plan records which kinds it left out in
-  `target.json`. An apply given a different
-  `deploy-integration-runtimes` or `deploy-managed-private-endpoints` is
-  refused, so the shield above cannot be turned off by a mismatch.
+- **The apply's own inputs.** The plan records which kinds it left out, and
+  whether it previewed deletions (`pre-post-script` for Data Factory,
+  `delete-artifacts` for Synapse), in `target.json`. An apply given a
+  different `deploy-integration-runtimes`,
+  `deploy-managed-private-endpoints`, `pre-post-script` or
+  `delete-artifacts` is refused, so the shield above cannot be turned off by
+  a mismatch and nothing is deleted that the plan never showed. The reason
+  is added to the summary the PR comment posts.
+- **Recovery.** A partial apply changes the target, so "re-run failed jobs"
+  reuses a plan the live check then refuses. Every message says to re-run all
+  jobs, which plans again.
+- **Lists are never cut short.** A 404 ends a list only on its first page (a
+  factory that does not exist yet); on a later page it is an error, because
+  a truncated list of integration runtimes would let the script delete the
+  rest. The shield also lists right before the post-deployment script, not
+  before the deployment.
 
 ## Alternatives considered
 
@@ -150,9 +167,19 @@ fresh report, a stale saved plan).
 
 ## Limitations
 
-- Global parameters are not deployed. The export writes
-  `<factory>_GlobalParameters.json` and `GlobalParametersUpdateScript.ps1`
-  next to the template; nothing runs the script.
+- Global parameters are deployed only when the export puts them in the
+  template. Checked against the current export bundle (sha256 `74782a53`): a
+  folder with `publish_config.json` holding `"includeGlobalParamsTemplate":
+  true` gets a `Microsoft.DataFactory/factories/globalparameters` resource
+  (named `default`, one `default_properties_<name>_value` parameter each);
+  without it the export writes only `<factory>_GlobalParameters.json` and
+  `GlobalParametersUpdateScript.ps1`, which nothing runs. The resource is
+  not stripped as part of the factory (it is logic, parameterized per
+  deployment), so it is deployed and the factory's global parameters become
+  exactly the folder's.
+- A dependency the plan cannot resolve statically (a computed name in a
+  `resourceId()` of a removed kind) fails the plan with the resource and the
+  dependency named. One built entirely from variables is not detected.
 - With `deploy-managed-private-endpoints: true`, Data Factory never deletes
   endpoints: its script has no section for them.
 - Synapse Studio's **Publish** publishes the collaboration branch to the

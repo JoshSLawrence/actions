@@ -472,24 +472,55 @@ arm_az() {
 }
 
 # Print every item of a paged Azure REST list (ARM or a data plane), one
-# compact JSON object per line, following nextLink. Prints nothing for a 404
-# (e.g. a factory that doesn't exist yet); fails on other errors.
+# compact JSON object per line, following nextLink. Prints nothing when the
+# first page is a 404 (e.g. a factory that doesn't exist yet); fails on any
+# other error, including a 404 on a later page, so a list is never silently
+# cut short.
 # Usage: arm_rest_list "<url>" [az rest options, e.g. --resource <audience>]
 arm_rest_list() {
-  local url="$1" page err
+  local url="$1" page err first=true
   shift
   err="$(mktemp)"
   while [ -n "$url" ]; do
     if ! page="$(arm_az rest --method get --url "$url" "$@" 2> "$err")"; then
-      if grep -q -e 'Not Found' -e 'ResourceNotFound' -e 'NotFound' "$err"; then
+      if [ "$first" = true ] && grep -q -e 'Not Found' -e 'ResourceNotFound' -e 'NotFound' "$err"; then
         break
       fi
       cat "$err" >&2
       rm -f "$err"
       return 1
     fi
+    first=false
     jq -c '.value[]?' <<< "$page"
     url="$(jq -r '.nextLink // empty' <<< "$page")"
+  done
+  rm -f "$err"
+}
+
+# Like arm_rest_list, for the data plane lists that answer {items,
+# continuationToken} (Synapse's lake databases): the next page is the same
+# URL with continuationToken=<token>.
+# Usage: arm_rest_items "<url>" [az rest options]
+arm_rest_items() {
+  local base="$1" url="$1" page err first=true token
+  shift
+  err="$(mktemp)"
+  while [ -n "$url" ]; do
+    if ! page="$(arm_az rest --method get --url "$url" "$@" 2> "$err")"; then
+      if [ "$first" = true ] && grep -q -e 'Not Found' -e 'ResourceNotFound' -e 'NotFound' "$err"; then
+        break
+      fi
+      cat "$err" >&2
+      rm -f "$err"
+      return 1
+    fi
+    first=false
+    jq -c '.items[]?' <<< "$page"
+    token="$(jq -r '.continuationToken // empty' <<< "$page")"
+    url=""
+    if [ -n "$token" ]; then
+      url="${base}&continuationToken=$(jq -rn --arg t "$token" '$t | @uri')"
+    fi
   done
   rm -f "$err"
 }
@@ -512,44 +543,43 @@ arm_rest_list() {
 # deploys the kind, or "" if nothing does.
 # Usage: arm_infrastructure_types <datafactory|synapse>
 arm_infrastructure_types() {
-  local service="$1" prefix
+  local service="$1" prefix row type kind input
+  local -a rows=()
   case "$service" in
-    datafactory) prefix="Microsoft.DataFactory/factories" ;;
-    synapse) prefix="Microsoft.Synapse/workspaces" ;;
+    datafactory)
+      prefix="Microsoft.DataFactory/factories"
+      rows+=("${prefix}|the factory itself|" "${prefix}/managedVirtualNetworks|managed virtual networks|")
+      ;;
+    synapse)
+      prefix="Microsoft.Synapse/workspaces"
+      rows+=("${prefix}/managedVirtualNetworks|managed virtual networks|" "${prefix}/bigDataPools|Spark pools|" "${prefix}/sqlPools|SQL pools|")
+      ;;
     *)
       log_error "Unknown service '${service}'. Use datafactory or synapse."
       return 1
       ;;
   esac
-  # Usage: emit <type> <kind> [input]
-  emit() {
-    jq -cn --arg type "$1" --arg kind "$2" --arg input "${3:-}" '{type: $type, kind: $kind, input: $input}'
-  }
-  case "$service" in
-    datafactory)
-      emit "$prefix" "the factory itself"
-      emit "${prefix}/managedVirtualNetworks" "managed virtual networks"
-      ;;
-    synapse)
-      emit "${prefix}/managedVirtualNetworks" "managed virtual networks"
-      emit "${prefix}/bigDataPools" "Spark pools"
-      emit "${prefix}/sqlPools" "SQL pools"
-      ;;
-  esac
   if ! is_true "${DEPLOY_MANAGED_PRIVATE_ENDPOINTS:-false}"; then
-    emit "${prefix}/managedVirtualNetworks/managedPrivateEndpoints" "managed private endpoints" "deploy-managed-private-endpoints"
+    rows+=("${prefix}/managedVirtualNetworks/managedPrivateEndpoints|managed private endpoints|deploy-managed-private-endpoints")
   fi
   if ! is_true "${DEPLOY_INTEGRATION_RUNTIMES:-false}"; then
-    emit "${prefix}/integrationRuntimes" "integration runtimes" "deploy-integration-runtimes"
+    rows+=("${prefix}/integrationRuntimes|integration runtimes|deploy-integration-runtimes")
   fi
+  for row in "${rows[@]}"; do
+    IFS='|' read -r type kind input <<< "$row"
+    jq -cn --arg type "$type" --arg kind "$kind" --arg input "$input" '{type: $type, kind: $kind, input: $input}'
+  done
 }
 
 # Remove the resources of the given types (arm_infrastructure_types) from a
 # template, and from every remaining resource's dependsOn the entries that
 # name a removed resource (or something under it: a virtual network's
-# endpoints), so nothing is left depending on what isn't deployed. Types
-# compare case-insensitively: templates mix integrationRuntimes and
-# integrationruntimes. Writes the template to <out template> and what was
+# endpoints), so nothing is left depending on what isn't deployed. That
+# covers the concat() path form, a dependency on the factory or workspace
+# itself, and a path ending in a removed leaf type with a computed name
+# (/integrationRuntimes/ + parameters('ir')). Types compare
+# case-insensitively: templates mix integrationRuntimes and
+# integrationruntimes. Writes the template to <out template>, what was
 # removed to <out list>, one JSON object per line:
 #   {type, name, path, kind, input, default}
 # where type is the part after the service's own type (integrationRuntimes),
@@ -557,12 +587,15 @@ arm_infrastructure_types() {
 # (managedVirtualNetworks/default/managedPrivateEndpoints/x), and default is
 # true for what the service itself creates: the factory, the generated pool
 # stubs, AutoResolveIntegrationRuntime, the default managed virtual network
-# and Synapse's own synapse-ws-* endpoints.
-# Usage: arm_strip_resources <template> <types file> <out template> <out list>
+# and Synapse's own synapse-ws-* endpoints, and optionally to <out
+# dangling>, the dependsOn entries of the written template that still name
+# a removed kind in a form that can't be resolved here, one JSON object per
+# line: {resource, dependency}. See arm_strip_problems.
+# Usage: arm_strip_resources <template> <types file> <out template> <out list> [<out dangling>]
 arm_strip_resources() {
-  local template="$1" types="$2" out_template="$3" out_list="$4" result
+  local template="$1" types="$2" out_template="$3" out_list="$4" out_dangling="${5:-/dev/null}" result
   result="$(mktemp)"
-  jq --slurpfile types "$types" '
+  if ! jq --slurpfile types "$types" '
     def segments: (.type | split("/")[2:]);
     def names:
       (.name
@@ -580,46 +613,87 @@ arm_strip_resources() {
         elif $tail == "bigdatapools" or $tail == "sqlpools" then true
         elif $tail == "integrationruntimes" then ($name | ascii_downcase) == "autoresolveintegrationruntime"
         elif $tail == "managedvirtualnetworks" then ($name | ascii_downcase) == "default"
-        elif $tail == "managedvirtualnetworks/managedprivateendpoints" then ($name | test("^synapse-ws-(sql|sqlondemand|kusto)"; "i"))
+        elif $tail == "managedvirtualnetworks/managedprivateendpoints" then ($name | test("^synapse-ws-(sql|sqlondemand|kusto)--"; "i"))
         else false end;
 
     ($types | map(.type | ascii_downcase)) as $strip
+    # The last segment of each removed type with a name of its own to
+    # recognise: the leaf kinds, and the virtual network
+    | ($types | map(.type | split("/")) | map(select(length > 2) | last | ascii_downcase)) as $words
+    | ($types | map(.type | split("/")[2:]) | map(select(length == 1) | first | ascii_downcase)
+        | map(select(. != "managedvirtualnetworks"))) as $leaf_tails
     | (.resources // []) as $all
     | ($all | map(select((.type | ascii_downcase) as $t | $strip | index($t)))) as $removed
     | ($removed | map({
         path: ("/" + place(segments) | ascii_downcase),
         type: (.type | ascii_downcase),
         last: ((names | last // "") | ascii_downcase)})) as $gone
-    # An entry names a removed resource when its path is that resource, or
-    # under one that is not deployed itself (a virtual network with endpoints
-    # that are deployed). The resourceId() form carries the type and name as
-    # strings.
+    # Paths of what stays, so a dependency on it is never dropped
     | ($all | map(select((.type | ascii_downcase) as $t | $strip | index($t) | not)
         | "/" + place(segments) | ascii_downcase)) as $kept
-    | def dangling:
+    # The literal path of a concat() entry, if it ends in one
+    | def entry_path: ascii_downcase | (capture("\u0027(?<p>/[^\u0027]*)\u0027\\)\\]$").p // null);
+    # An entry to drop: it names a removed resource, or something under one
+    # that is not deployed itself (a virtual network with endpoints that are
+    # deployed), the factory or workspace itself, or a computed name of a
+    # removed leaf kind. The resourceId() form carries the type and name as
+    # strings.
+    def dangling:
         ascii_downcase as $e
-        | if ($e | startswith("[concat(")) then
-            (($e | capture("\u0027(?<p>/[^\u0027]*)\u0027\\)\\]$").p) // null) as $p
-            | $p != null and ($kept | index($p) | not)
-              and ($gone | any(. as $g | $g.path != "/" and ($p == $g.path or ($p | startswith($g.path + "/")))))
+        | if ($e | test("^\\[variables\\(\u0027(factoryid|workspaceid)\u0027\\)\\]$")) then true
+          elif ($e | test("^\\[resourceid\\(\u0027microsoft\\.(datafactory/factories|synapse/workspaces)\u0027\\s*,\\s*parameters\\(\u0027(factoryname|workspacename)\u0027\\)\\)\\]$")) then true
+          elif ($e | startswith("[concat(")) then
+            ($e | entry_path) as $p
+            | ($p != null and ($kept | index($p) | not)
+                and ($gone | any(. as $g | $g.path != "/" and ($p == $g.path or ($p | startswith($g.path + "/"))))))
+              or ($leaf_tails | any(. as $t | $e | contains("/" + $t + "/")))
           elif ($e | startswith("[resourceid(")) then
             $gone | any(. as $g | $g.last != "" and ($e | contains("\u0027" + $g.type + "\u0027")) and ($e | contains("\u0027" + $g.last + "\u0027")))
           else false end;
-      {
-        template: (.resources = [ $all[]
-          | select((.type | ascii_downcase) as $t | $strip | index($t) | not)
-          | if (.dependsOn | type) == "array" then .dependsOn |= map(select(dangling | not)) else . end ]),
+    # What is left naming a removed kind after dropping those: a form that
+    # can not be resolved without evaluating the template
+    def unresolved:
+        ascii_downcase as $e
+        | ($e | entry_path) as $p
+        | if $p != null and ($kept | index($p)) then false
+          else $words | any(. as $w | $e | contains($w)) end;
+      ($all | map(select((.type | ascii_downcase) as $t | $strip | index($t) | not)
+          | if (.dependsOn | type) == "array" then .dependsOn |= map(select(dangling | not)) else . end)) as $deployed
+      | {
+        template: (.resources = $deployed),
         removed: ($removed | map(kind_of as $k | {
           type: ($k.type | split("/")[2:] | join("/")),
           name: (names | last // ""),
           path: (place($k.type | split("/")[2:]) | if . == "" then "factory" else . end),
           kind: $k.kind,
           input: $k.input,
-          default: service_default }))
-      }' "$template" > "$result"
+          default: service_default })),
+        dangling: [ $deployed[] | . as $r
+          | ($r.dependsOn // [])[] | select(type == "string" and unresolved)
+          | {resource: "\($r | segments | join("/"))/\($r | names | join("/"))", dependency: .} ]
+      }' "$template" > "$result"; then
+    rm -f "$result"
+    return 1
+  fi
   jq '.template' "$result" > "$out_template"
   jq -c '.removed[]' "$result" > "$out_list"
+  jq -c '.dangling[]' "$result" > "$out_dangling"
   rm -f "$result"
+}
+
+# Log what a list made by arm_strip_resources (<out dangling>) says is wrong,
+# and fail if there is anything: a dependency the plan can't tell is on
+# something left to infrastructure as code would reach ARM or the deployer
+# as a dependency on a resource that isn't in the template.
+# Usage: arm_strip_problems <dangling file>
+arm_strip_problems() {
+  local resource dependency count=0
+  while IFS=$'\t' read -r resource dependency; do
+    [ -n "$resource" ] || continue
+    count=$((count + 1))
+    log_error "${resource} depends on ${dependency}, which names something this workflow leaves to infrastructure as code, in a form the plan can't resolve. Spell the dependency as a plain path (a literal name, not a parameter), remove it, or set deploy-integration-runtimes / deploy-managed-private-endpoints to true if it is one of those."
+  done < <(jq -r '[.resource, .dependency] | @tsv' "$1")
+  [ "$count" -eq 0 ]
 }
 
 # Print the "Left to infrastructure as code" section for a list made by
@@ -673,10 +747,14 @@ arm_left_to_iac_warn() {
 # under <base url> (a virtual network's endpoints, managedVirtualNetworks/
 # default/managedPrivateEndpoints, are typed managedVirtualNetworks/
 # managedPrivateEndpoints). Fails if a collection can't be listed; az's
-# error goes to stderr.
+# error goes to stderr. Two collections are not what they seem:
+#   - Synapse's lake databases (databases) answer {items, continuationToken}
+#     with a Name and no etag, so the etag is a digest of the item;
+#   - managed private endpoints have a null etag, so they're fingerprinted by
+#     name only.
 # Usage: arm_live_lines <base url> <api version> <audience or ""> <collection>...
 arm_live_lines() {
-  local base="$1" version="$2" audience="$3" collection type
+  local base="$1" version="$2" audience="$3" collection type items item name
   local -a options=()
   shift 3
   if [ -n "$audience" ]; then
@@ -684,6 +762,15 @@ arm_live_lines() {
   fi
   for collection in "$@"; do
     type="${collection/\/default\//\/}"
+    if [ "$collection" = databases ]; then
+      items="$(arm_rest_items "${base}/${collection}?api-version=${version}" "${options[@]+"${options[@]}"}")" || return 1
+      while IFS= read -r item; do
+        [ -n "$item" ] || continue
+        name="$(jq -r '.Name // .name' <<< "$item")"
+        jq -cn --arg type "$type" --arg name "$name" --arg etag "$(text_sha256 "$(jq -cS . <<< "$item")")" '{type: $type, name: $name, etag: $etag}'
+      done <<< "$items"
+      continue
+    fi
     arm_rest_list "${base}/${collection}?api-version=${version}" "${options[@]+"${options[@]}"}" |
       jq -c --arg type "$type" '{type: $type, name: .name, etag: (.etag // "")}' || return 1
   done
@@ -698,30 +785,74 @@ arm_live_fingerprint() {
   text_sha256 "$lines"
 }
 
-# The same for a Synapse workspace's listing, less what the service creates
-# itself (the default linked services and credential, and the synapse-ws-*
-# endpoints): deployments skip them, so they say nothing about a change.
+# The names the Synapse service creates itself: the workspace's default
+# linked services (<workspace>-WorkspaceDefaultStorage and ...SqlServer), its
+# credential, and the synapse-ws-* managed private endpoints. Deployments
+# skip them. A jq test for a name; anchored, so a user's
+# x-WorkspaceDefaultStorage-copy is not one.
+ARM_SYNAPSE_DEFAULT_NAME='test("-workspacedefault(sqlserver|storage)$|^workspacesystemidentity$|^synapse-ws-(sql|sqlondemand|kusto)--"; "i")'
+
+# The same fingerprint for a Synapse workspace's listing, less the service's
+# own artifacts (ARM_SYNAPSE_DEFAULT_NAME): they say nothing about a change.
 # Usage: arm_synapse_fingerprint <lines file>
 arm_synapse_fingerprint() {
   local lines
   lines="$(mktemp)"
-  jq -c 'select(.name | test("workspacedefaultsqlserver|workspacedefaultstorage|workspacesystemidentity|^synapse-ws-(sql|sqlondemand|kusto)"; "i") | not)' "$1" > "$lines"
+  jq -c "select(.name | ${ARM_SYNAPSE_DEFAULT_NAME} | not)" "$1" > "$lines"
   arm_live_fingerprint "$lines"
   rm -f "$lines"
 }
 
+# --- Refusing an apply --------------------------------------------------------
+
+# Log why an apply is refused, and add it to the plan's summary, which the PR
+# comment posts, so the reason is where the reviewer looks.
+# Usage: arm_refuse "<plan dir>" "<message>"
+arm_refuse() {
+  local plan_dir="$1" message="$2"
+  log_error "$message"
+  if [ -f "$plan_dir/summary.md" ]; then
+    {
+      echo ""
+      echo "> **Apply refused:** ${message}"
+    } >> "$plan_dir/summary.md"
+  fi
+}
+
 # Fail unless a fresh fingerprint (arm_live_fingerprint, or
 # arm_synapse_fingerprint) is the one the plan recorded in its
-# deploy/live.json.
+# deploy/live.json. "Re-run failed jobs" would reuse that plan, so the advice
+# is to run all of them.
 # Usage: arm_verify_live "<Factory|Workspace>" "<name>" "<plan dir>" "<fingerprint now>"
 arm_verify_live() {
   local what="$1" name="$2" plan_dir="$3" now="$4" planned
   planned="$(jq -r .fingerprint "$plan_dir/deploy/live.json")"
   if [ "$planned" != "$now" ]; then
-    log_error "${what} ${name} changed since this plan (another deployment, or a change made in the portal). Re-run the workflow to plan again, then approve that run."
+    arm_refuse "$plan_dir" "${what} ${name} changed since this plan (another deployment, a change made in the portal, or an earlier attempt of this apply). Re-run all jobs of the workflow, not just the failed one (that would reuse this plan), to plan again, then approve that run."
     return 1
   fi
   log_success "${what} ${name} is as it was when planned"
+}
+
+# Print what the plan decided for a setting of the apply (true or false),
+# from a field of its target.json, and refuse (see arm_refuse) an input that
+# differs: the apply must not delete or deploy what the plan never showed. An
+# empty input takes the plan's. A plan without the field gives the input, or
+# <default>.
+# Usage: arm_planned_setting <plan dir> <field> <input name, e.g. delete-artifacts> <input value> <default>
+arm_planned_setting() {
+  local plan_dir="$1" field="$2" input="$3" value="$4" default="$5" planned wanted
+  planned="$(jq -r --arg f "$field" 'if has($f) then .[$f] | tostring else empty end' "$plan_dir/deploy/target.json")"
+  if [ -z "$value" ]; then
+    echo "${planned:-$default}"
+    return 0
+  fi
+  wanted="$(is_true "$value" && echo true || echo false)"
+  if [ -n "$planned" ] && [ "$planned" != "$wanted" ]; then
+    arm_refuse "$plan_dir" "The apply has ${input} ${value}, but the plan was made with ${planned}. Pass the same value to the plan and the apply, then re-run all jobs of the workflow."
+    return 1
+  fi
+  echo "$wanted"
 }
 
 # --- Plans --------------------------------------------------------------------

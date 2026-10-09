@@ -156,7 +156,8 @@ synapse-deploy.yaml                   plan ──> apply (after approval)
 - **apply** (per deployment) waits for approval, refuses a stale plan,
   checks the plan's SHA-256, lists the workspace again and refuses if it
   differs from the plan's fingerprint (something else changed it since:
-  re-run the workflow to plan again), then stops triggers, runs the deployer
+  re-run all jobs of the workflow to plan again, not just the failed one,
+  which would reuse the old plan), then stops triggers, runs the deployer
   and starts triggers.
 - **result** is the single check to require: `<caller job> / Result`.
 
@@ -260,8 +261,7 @@ WORKING_DIR=synapse TEMPLATE_DIR=/tmp/synapse-template PARAMETER_FILES=deploymen
 
 ## Limitations
 
-- **Global parameters** don't exist in Synapse, and Data Factory's aren't
-  deployed.
+- **Global parameters** don't exist in Synapse.
 - **Synapse Studio's Publish** publishes the collaboration branch
   (`main`) to the workspace and may create a `workspace_publish` branch.
   Under the required checks `main` only holds what was reviewed and
@@ -271,6 +271,15 @@ WORKING_DIR=synapse TEMPLATE_DIR=/tmp/synapse-template PARAMETER_FILES=deploymen
   workspace changed since the plan.
 - **A change in the portal** (or a trigger started there) changes etags, so
   the next apply asks for a new plan.
+- **The apply's inputs must be the plan's.** An apply given a different
+  `delete-artifacts` or `deploy-managed-private-endpoints` is refused, with
+  the reason in the PR comment, so it can't delete what the plan never
+  listed.
+- **Endpoints have no etag, and lake databases are hashed.** Managed private
+  endpoint listings carry no etag, so with
+  `deploy-managed-private-endpoints: true` the fingerprint covers their names
+  only. Lake databases come from a different API with no etag either: the
+  fingerprint uses a digest of each database's definition.
 
 ## Coming from workspace\_publish
 

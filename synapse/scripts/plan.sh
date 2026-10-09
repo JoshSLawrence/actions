@@ -4,9 +4,9 @@
 # infrastructure as code owns (see "Infrastructure kinds" in arm.sh), renders
 # its parameters, optionally compares the template with the live workspace
 # (which artifacts are new, which the deployment deletes, that the Spark and
-# SQL pools the artifacts use exist), and writes the plan -- the template, the parameters and the target, which the apply
-# deploys exactly -- with a markdown summary. Never changes anything, so
-# it's safe to run locally:
+# SQL pools the artifacts use exist), and writes the plan -- the template,
+# the parameters and the target, which the apply deploys exactly -- with a
+# markdown summary. Never changes anything, so it's safe to run locally:
 #
 #   WORKING_DIR=synapse TEMPLATE_DIR=/tmp/synapse-template \
 #     PARAMETER_FILES=deployments/dev.json RESOURCE_GROUP=rg-dev \
@@ -143,8 +143,12 @@ jq -c '
 
 log_step "Infrastructure left to infrastructure as code"
 arm_infrastructure_types synapse > "$WORK_DIR/infrastructure-types.jsonl"
-arm_strip_resources "$TEMPLATE" "$WORK_DIR/infrastructure-types.jsonl" "$WORK_DIR/stripped.json" "$WORK_DIR/left-to-iac.jsonl"
+arm_strip_resources "$TEMPLATE" "$WORK_DIR/infrastructure-types.jsonl" "$WORK_DIR/stripped.json" "$WORK_DIR/left-to-iac.jsonl" "$WORK_DIR/dangling.jsonl"
 mv "$WORK_DIR/stripped.json" "$TEMPLATE"
+if ! arm_strip_problems "$WORK_DIR/dangling.jsonl" 2> "$WORK_DIR/strip.log"; then
+  cat "$WORK_DIR/strip.log" >&2
+  fail "The template has dependencies on resources this workflow leaves to infrastructure as code that the plan can't resolve, so the deployer would stop on them." "$WORK_DIR/strip.log"
+fi
 log_info "$(grep -c . "$WORK_DIR/left-to-iac.jsonl" || true) resource(s) left out of the deployment"
 arm_left_to_iac_warn "$WORK_DIR/left-to-iac.jsonl"
 
@@ -172,12 +176,13 @@ arm_write_parameters_file "$merged" "$PARAMETERS_FILE"
 
 workspace="$(jq -r '.parameters.workspaceName.value // empty' "$PARAMETERS_FILE")"
 [ -n "$workspace" ] || fail "workspaceName is empty. Set it to the target workspace's name."
-# What the plan left out is recorded so the apply can check its own inputs
-# against it
+# What the plan left out, and whether it listed deletions, is recorded so the
+# apply can check its own inputs against it
 jq -n --arg service synapse --arg deployment "${DEPLOYMENT:-}" --arg resource_group "$RESOURCE_GROUP" --arg name "$workspace" \
   --argjson mpes "$(is_true "$DEPLOY_MANAGED_PRIVATE_ENDPOINTS" && echo true || echo false)" \
+  --argjson delete "$(is_true "$DELETE_ARTIFACTS" && echo true || echo false)" \
   '{service: $service, deployment: $deployment, resource_group: $resource_group, name: $name,
-    deploy_managed_private_endpoints: $mpes}' > "$PLAN_DIR/deploy/target.json"
+    deploy_managed_private_endpoints: $mpes, delete_artifacts: $delete}' > "$PLAN_DIR/deploy/target.json"
 set_output workspace-name "$workspace"
 set_output resource-group "$RESOURCE_GROUP"
 log_success "Parameters rendered for workspace ${workspace} in ${RESOURCE_GROUP}"
@@ -213,7 +218,7 @@ if is_true "$WHAT_IF"; then
   jq -n --arg fingerprint "$(arm_synapse_fingerprint "$WORK_DIR/live-lines.jsonl")" --argjson kinds "$(printf '%s\n' "${kinds[@]}" | jq -R . | jq -sc .)" \
     '{fingerprint: $fingerprint, kinds: $kinds}' > "$PLAN_DIR/deploy/live.json"
 
-  default_artifact='test("workspacedefaultsqlserver|workspacedefaultstorage|workspacesystemidentity|^synapse-ws-(sql|sqlondemand|kusto)"; "i")'
+  default_artifact="$ARM_SYNAPSE_DEFAULT_NAME"
   new="$(jq -cs --slurpfile live <(jq -s . "$WORK_DIR/live.jsonl") '
     ($live[0] | map(.key)) as $existing | map(select(.key as $k | $existing | index($k) | not))' "$WORK_DIR/template.jsonl")"
   if is_true "$DELETE_ARTIFACTS"; then

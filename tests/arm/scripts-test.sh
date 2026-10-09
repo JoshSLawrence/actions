@@ -63,8 +63,9 @@ exit 0
 STUB
 
 # Logs its arguments. `az rest` answers from $STUB_LIVE/<last path segment
-# of the URL>.json (an empty list without one), so a test sets what a
-# factory or workspace holds by writing those files.
+# of the URL>.json (an empty list without one; <name>.2.json for a second
+# page, <name>.404 to answer ResourceNotFound), so a test sets what a factory
+# or workspace holds by writing those files.
 cat > "$STUBS/az" << 'STUB'
 #!/usr/bin/env bash
 echo "az $*" >> "$STUB_LOG/az.log"
@@ -88,7 +89,20 @@ case "$1 $2" in
       shift
     done
     path="${url%%\?*}"
-    file="$STUB_LIVE/${path##*/}.json"
+    name="${path##*/}"
+    file="$STUB_LIVE/${name}.json"
+    # The second page of a list: nextLink ...page=2, or continuationToken
+    case "$url" in
+      *page=2* | *continuationToken=*) file="$STUB_LIVE/${name}.2.json" ;;
+      *page=3*)
+        echo "ERROR: (ResourceNotFound) the page is gone" >&2
+        exit 1
+        ;;
+    esac
+    if [ -f "$STUB_LIVE/${name}.404" ] && [ "$file" = "$STUB_LIVE/${name}.json" ]; then
+      echo "ERROR: (ResourceNotFound) not found" >&2
+      exit 1
+    fi
     if [ -f "$file" ]; then cat "$file"; else echo '{"value": []}'; fi
     ;;
 esac
@@ -210,8 +224,17 @@ live_list() {
   } | jq -sc '{value: .}' > "$STUB_LIVE/${collection}.json"
 }
 
+# A list in two pages: the first links to the second (nextLink)
+# Usage: live_pages <collection> <first item> <second item>, items name:etag
+live_pages() {
+  live_list "$1" "$2"
+  jq --arg next "https://management.azure.com/x/$1?api-version=1&page=2" '. + {nextLink: $next}' "$STUB_LIVE/${1}.json" > "$WORK/page.json"
+  mv "$WORK/page.json" "$STUB_LIVE/${1}.json"
+  live_list "${1}.2" "$3"
+}
+
 reset_live() {
-  rm -f "$STUB_LIVE"/*.json "$STUB_LOG"/*
+  rm -f "$STUB_LIVE"/*.json "$STUB_LIVE"/*.404 "$STUB_LOG"/*
 }
 
 # The resources of a template that have a type, as "type" lines (lower case)
@@ -508,7 +531,7 @@ factory_plan WHAT_IF=true
 live_list pipelines pl_wait:e1 pl_old:e2 pl_new:e9
 factory_apply
 expect "adf apply: a resource added since the plan is refused" "1" "$status"
-expect_log "adf apply: ... saying what to do" "Factory adf-test changed since this plan (another deployment, or a change made in the portal). Re-run the workflow to plan again, then approve that run."
+expect_log "adf apply: ... saying what to do" "Factory adf-test changed since this plan (another deployment, a change made in the portal, or an earlier attempt of this apply). Re-run all jobs of the workflow, not just the failed one (that would reuse this plan), to plan again, then approve that run."
 expect "adf apply: ... before anything is changed" "0" "$(cat "$STUB_LOG/pwsh.log" "$STUB_LOG/az.log" | grep -c 'pwsh\|deployment group create' || true)"
 live_list pipelines pl_wait:e1x pl_old:e2
 factory_apply
@@ -581,7 +604,7 @@ expect "synapse apply: prepares a plan whose workspace is as planned" "0" "$stat
 live_list notebooks nb_old:n1 nb_new:n2
 workspace_prepare
 expect "synapse apply: an artifact added since the plan is refused" "1" "$status"
-expect_log "synapse apply: ... saying what to do" "Workspace syn-test changed since this plan (another deployment, or a change made in the portal). Re-run the workflow to plan again, then approve that run."
+expect_log "synapse apply: ... saying what to do" "Workspace syn-test changed since this plan (another deployment, a change made in the portal, or an earlier attempt of this apply). Re-run all jobs of the workflow, not just the failed one (that would reuse this plan), to plan again, then approve that run."
 live_list notebooks nb_old:n1
 workspace_prepare DEPLOY_MANAGED_PRIVATE_ENDPOINTS=true
 expect "synapse apply: an apply that disagrees with the plan about endpoints is refused" "1" "$status"
@@ -590,6 +613,165 @@ workspace_plan
 workspace_prepare
 expect "synapse apply: a plan without what-if is prepared" "0" "$status"
 expect_log "synapse apply: ... with a warning that the live check is skipped" "so the check that the workspace is unchanged since the plan is skipped"
+
+
+# --- Review fixes ---------------------------------------------------------------------------
+
+# The boundary's helpers leave nothing behind
+arm_infrastructure_types datafactory > /dev/null
+expect "strip: the helper for the types stays private" "0" "$(declare -F emit > /dev/null && echo 1 || echo 0)"
+mkdir -p "$WORK/tmp-empty"
+echo 'not json' > "$WORK/bad-template.json"
+: > "$WORK/types-empty.jsonl"
+set +e
+TMPDIR="$WORK/tmp-empty" arm_strip_resources "$WORK/bad-template.json" "$WORK/types-empty.jsonl" "$WORK/o1" "$WORK/o2" > /dev/null 2>&1
+bad_status=$?
+set -e
+expect "strip: a template jq can't read fails" "1" "$bad_status"
+expect "strip: ... without leaving its scratch file" "0" "$(find "$WORK/tmp-empty" -type f | wc -l | tr -d ' ')"
+
+# Dependencies on what isn't deployed, in the forms ARM templates write them
+forms_template() {
+  jq --argjson deps "$1" '(.resources[] | select(.name | contains("/ls_storage")) | .dependsOn) = $deps' "$ADF" > "$WORK/forms.json"
+}
+forms_template '["[resourceId(\u0027Microsoft.DataFactory/factories\u0027, parameters(\u0027factoryName\u0027))]", "[variables(\u0027factoryId\u0027)]", "[concat(variables(\u0027factoryId\u0027), \u0027/integrationRuntimes/\u0027, parameters(\u0027irName\u0027))]", "[concat(variables(\u0027factoryId\u0027), \u0027/pipelines/pl_wait\u0027)]"]'
+arm_infrastructure_types datafactory > "$WORK/types.jsonl"
+arm_strip_resources "$WORK/forms.json" "$WORK/types.jsonl" "$WORK/stripped.json" "$WORK/left.jsonl" "$WORK/dangling.jsonl"
+expect "dependsOn: the factory itself and a computed runtime name are dropped, the rest stays" "[concat(variables('factoryId'), '/pipelines/pl_wait')]" "$(jq -r '.resources[] | select(.name | contains("/ls_storage")) | .dependsOn[]' "$WORK/stripped.json")"
+expect "dependsOn: ... and nothing is left to complain about" "0" "$(wc -l < "$WORK/dangling.jsonl" | tr -d ' ')"
+
+forms_template '["[resourceId(\u0027Microsoft.DataFactory/factories/integrationRuntimes\u0027, parameters(\u0027factoryName\u0027), parameters(\u0027irName\u0027))]"]'
+arm_strip_resources "$WORK/forms.json" "$WORK/types.jsonl" "$WORK/stripped.json" "$WORK/left.jsonl" "$WORK/dangling.jsonl"
+expect "dependsOn: a resourceId with a computed name is reported" "linkedServices/ls_storage" "$(jq -r '.resource' "$WORK/dangling.jsonl")"
+arm_strip_problems "$WORK/dangling.jsonl" > "$WORK/log" 2>&1 || true
+expect_log "dependsOn: ... saying which dependency and what to do" "depends on [resourceId('Microsoft.DataFactory/factories/integrationRuntimes', parameters('factoryName'), parameters('irName'))], which names something this workflow leaves to infrastructure as code"
+expect_log "dependsOn: ... with the way out" "set deploy-integration-runtimes / deploy-managed-private-endpoints to true"
+
+forms_template '["[resourceId(\u0027Microsoft.DataFactory/factories/integrationRuntimes\u0027, parameters(\u0027factoryName\u0027), parameters(\u0027irName\u0027))]"]'
+mkdir -p "$WORK/dangling-template"
+cp "$FACTORY_TEMPLATE"/* "$WORK/dangling-template/" 2> /dev/null || true
+cp "$WORK/forms.json" "$WORK/dangling-template/ARMTemplateForFactory.json"
+rm -rf "$PLAN"
+run datafactory/scripts/plan.sh WORKING_DIR=factory TEMPLATE_DIR="$WORK/dangling-template" PLAN_DIR="$PLAN" WORK_DIR="$WORK/plan-work" PARAMETER_FILES=deployments/dev.json RESOURCE_GROUP=rg-dev DEPLOYMENT=dev
+expect "dependsOn: a plan with one fails" "1" "$status"
+expect_file_has "dependsOn: ... and says why in the summary" "$PLAN/summary.md" "dependencies on resources this workflow leaves to infrastructure as code"
+
+# The same, for the Synapse forms
+jq '(.resources[] | select(.name | contains("/nb_load")) | .dependsOn) += ["[resourceId(\u0027Microsoft.Synapse/workspaces\u0027, parameters(\u0027workspaceName\u0027))]", "[concat(variables(\u0027workspaceId\u0027), \u0027/bigDataPools/\u0027, parameters(\u0027pool\u0027))]"]' "$SYN" > "$WORK/forms.json"
+arm_infrastructure_types synapse > "$WORK/types.jsonl"
+arm_strip_resources "$WORK/forms.json" "$WORK/types.jsonl" "$WORK/stripped.json" "$WORK/left.jsonl" "$WORK/dangling.jsonl"
+expect "dependsOn: Synapse's workspace and a computed pool name are dropped" "[concat(variables('workspaceId'), '/linkedServices/ls_storage')]" "$(jq -r '.resources[] | select(.name | contains("/nb_load")) | .dependsOn[]' "$WORK/stripped.json")"
+
+# Global parameters are logic: the export's resource for them is deployed
+jq '.resources += [{"name": "[concat(parameters(\u0027factoryName\u0027), \u0027/default\u0027)]", "type": "Microsoft.DataFactory/factories/globalparameters", "apiVersion": "2018-06-01", "properties": {}, "dependsOn": []}]' "$ADF" > "$WORK/gp.json"
+arm_infrastructure_types datafactory > "$WORK/types.jsonl"
+arm_strip_resources "$WORK/gp.json" "$WORK/types.jsonl" "$WORK/stripped.json" "$WORK/left.jsonl"
+expect "global parameters: the resource stays in the deployed template" "1" "$(template_types "$WORK/stripped.json" | grep -c globalparameters)"
+
+# Default names are anchored
+printf '%s\n' '{"type":"linkedServices","name":"x-WorkspaceDefaultStorage-copy","etag":"1"}' > "$WORK/s1.jsonl"
+printf '%s\n' '{"type":"linkedServices","name":"x-WorkspaceDefaultStorage-copy","etag":"2"}' > "$WORK/s2.jsonl"
+expect "defaults: a user artifact that merely contains a default's name counts" "1" "$([ "$(arm_synapse_fingerprint "$WORK/s1.jsonl")" != "$(arm_synapse_fingerprint "$WORK/s2.jsonl")" ] && echo 1 || echo 0)"
+printf '%s\n' '{"type":"credentials","name":"WorkspaceSystemIdentity","etag":"1"}' '{"type":"managedVirtualNetworks/managedPrivateEndpoints","name":"synapse-ws-sql--w","etag":""}' > "$WORK/s1.jsonl"
+printf '%s\n' '{"type":"credentials","name":"WorkspaceSystemIdentity","etag":"2"}' '{"type":"managedVirtualNetworks/managedPrivateEndpoints","name":"synapse-ws-sql--w","etag":"9"}' > "$WORK/s2.jsonl"
+expect "defaults: the service's own credential and endpoints don't" "$(arm_synapse_fingerprint "$WORK/s1.jsonl")" "$(arm_synapse_fingerprint "$WORK/s2.jsonl")"
+
+# Paged lists
+reset_live
+live_pages pipelines pl_wait:e1 pl_old:e2
+live_list triggers trg_daily:e3
+live_list linkedservices ls_storage:e4
+factory_plan WHAT_IF=true
+expect "paging: a plan follows nextLink" "0" "$status"
+expect_file_has "paging: ... and sees the second page (a deletion there)" "$PLAN/summary.md" "> - \`pipelines/pl_old\`"
+paged="$(output plan-sha256)"
+live_pages pipelines pl_wait:e1 pl_old:e2x
+factory_plan WHAT_IF=true
+expect "paging: ... and fingerprints it" "1" "$([ "$(output plan-sha256)" != "$paged" ] && echo 1 || echo 0)"
+jq '.nextLink = "https://management.azure.com/x/pipelines?api-version=1&page=3"' "$STUB_LIVE/pipelines.2.json" > "$WORK/page.json" && mv "$WORK/page.json" "$STUB_LIVE/pipelines.2.json"
+factory_plan WHAT_IF=true
+expect "paging: a page that disappears fails the plan, not the list" "1" "$status"
+expect_log "paging: ... saying so" "Couldn't list the resources of factory adf-test"
+live_list pipelines pl_wait:e1
+touch "$STUB_LIVE/pipelines.404"
+rm -f "$STUB_LIVE/pipelines.2.json"
+factory_plan WHAT_IF=true
+expect "paging: a missing list (404 on the first page) is empty" "0" "$status"
+rm -f "$STUB_LIVE/pipelines.404"
+
+# Lake databases answer {items, continuationToken}
+reset_live
+jq -n '{items: [{Name: "lake1", Properties: {a: 1}}], continuationToken: "t 1"}' > "$STUB_LIVE/databases.json"
+jq -n '{items: [{Name: "lake2", Properties: {b: 2}}]}' > "$STUB_LIVE/databases.2.json"
+arm_live_lines https://ws.dev.azuresynapse.net 2019-06-01-preview https://dev.azuresynapse.net databases > "$WORK/db.jsonl"
+expect "databases: both pages are listed, by Name" "lake1 lake2" "$(jq -r .name "$WORK/db.jsonl" | paste -sd' ' -)"
+expect "databases: ... typed databases, with a digest for an etag" "databases 64" "$(jq -r '"\(.type) \(.etag | length)"' "$WORK/db.jsonl" | head -1)"
+expect "databases: ... asking for the next page by its token" "1" "$(grep -c 'continuationToken=t%201' "$STUB_LOG/az.log")"
+first_db="$(arm_live_fingerprint "$WORK/db.jsonl")"
+jq -n '{items: [{Name: "lake2", Properties: {b: 3}}]}' > "$STUB_LIVE/databases.2.json"
+arm_live_lines https://ws.dev.azuresynapse.net 2019-06-01-preview https://dev.azuresynapse.net databases > "$WORK/db.jsonl"
+expect "databases: a changed database changes the fingerprint" "1" "$([ "$(arm_live_fingerprint "$WORK/db.jsonl")" != "$first_db" ] && echo 1 || echo 0)"
+
+# The apply's inputs must be the plan's
+reset_live
+live_list pipelines pl_wait:e1
+factory_plan WHAT_IF=true
+factory_apply PRE_POST_SCRIPT=false
+expect "adf apply: pre-post-script that differs from the plan's is refused" "1" "$status"
+expect_log "adf apply: ... saying why" "The apply has pre-post-script false, but the plan was made with true."
+expect_file_has "adf apply: ... in the summary the PR comment posts" "$PLAN/summary.md" "Apply refused:**"
+factory_plan WHAT_IF=true PRE_POST_SCRIPT=false
+factory_apply
+expect "adf apply: with no input the plan's pre-post-script is used" "0" "$status"
+expect "adf apply: ... so no script ran" "" "$(cat "$STUB_LOG/pwsh.log")"
+
+# A refused live check says so where the reviewer looks
+factory_plan WHAT_IF=true
+live_list pipelines pl_wait:e1 pl_new:e9
+factory_apply
+expect_file_has "adf apply: a refused live check is in the summary" "$PLAN/summary.md" "Apply refused:** Factory adf-test changed since this plan"
+expect_log "adf apply: ... advising to re-run all jobs" "Re-run all jobs of the workflow, not just the failed one"
+
+# The integration runtimes the script keeps are listed right before it runs
+reset_live
+live_list pipelines pl_wait:e1
+live_pages integrationRuntimes AutoResolveIntegrationRuntime:e5 ir_live:e6
+factory_plan WHAT_IF=true
+factory_apply
+expect "adf apply: every page of the runtimes is kept" "AutoResolveIntegrationRuntime,ir_live" "$(jq -r '[.resources[] | select(.type == "Microsoft.DataFactory/factories/integrationRuntimes") | .name | .[37:length - 3]] | join(",")' "$STUB_LOG/pwsh-template-post.json")"
+create_line="$(grep -n 'deployment group create' "$STUB_LOG/az.log" | tail -1 | cut -d: -f1)"
+list_line="$(grep -n 'integrationRuntimes' "$STUB_LOG/az.log" | tail -1 | cut -d: -f1)"
+expect "adf apply: ... listed after the ARM deployment, not before" "1" "$([ "$list_line" -gt "$create_line" ] && echo 1 || echo 0)"
+jq '.nextLink = "https://management.azure.com/x/integrationRuntimes?api-version=1&page=3"' "$STUB_LIVE/integrationRuntimes.2.json" > "$WORK/page.json" && mv "$WORK/page.json" "$STUB_LIVE/integrationRuntimes.2.json"
+factory_apply
+expect "adf apply: a list cut short stops before the script can delete" "1" "$status"
+expect "adf apply: ... after only the pre phase" "pwsh pre" "$(cat "$STUB_LOG/pwsh.log")"
+expect_log "adf apply: ... saying what happened and what to do" "listing the integration runtimes of factory adf-test failed"
+
+# Synapse's delete-artifacts must be the plan's
+reset_live
+live_list pipelines pl_wait:p1
+live_list linkedServices syn-test-WorkspaceDefaultStorage:d1 ls_storage:l1
+live_list bigDataPools spark:b1 spark_big:b2
+live_list sqlPools dw:q1
+workspace_plan WHAT_IF=true DELETE_ARTIFACTS=false
+workspace_prepare DELETE_ARTIFACTS=true
+expect "synapse apply: delete-artifacts that differs from the plan's is refused" "1" "$status"
+expect_log "synapse apply: ... saying why" "The apply has delete-artifacts true, but the plan was made with false."
+expect_file_has "synapse apply: ... in the summary the PR comment posts" "$PLAN/summary.md" "Apply refused:**"
+workspace_prepare
+expect "synapse apply: with no input the plan's is used" "0" "$status"
+workspace_plan WHAT_IF=true
+live_list pipelines pl_wait:p1 pl_new:p9
+workspace_prepare
+expect_log "synapse apply: a refused live check advises re-running all jobs" "Re-run all jobs of the workflow, not just the failed one"
+
+# A user artifact named like a default is not skipped by the deletion list
+live_list pipelines pl_wait:p1
+live_list linkedServices syn-test-WorkspaceDefaultStorage:d1 x-WorkspaceDefaultStorage-copy:l9
+workspace_plan WHAT_IF=true
+expect_file_has "synapse plan: x-WorkspaceDefaultStorage-copy is deleted like any artifact" "$PLAN/summary.md" "> - \`linkedServices/x-WorkspaceDefaultStorage-copy\`"
+expect_file_lacks "synapse plan: ... unlike the real default" "$PLAN/summary.md" "> - \`linkedServices/syn-test-WorkspaceDefaultStorage"
 
 if [ "$failures" -gt 0 ]; then
   log_error "${failures} of ${cases} test(s) failed"

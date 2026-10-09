@@ -162,7 +162,10 @@ catalog, layout and principles.
   - A what-if plan records `deploy/live.json` (a fingerprint of the live
     `{type, name, etag}` lines and the kinds listed); the apply lists the
     same kinds and refuses on a difference. The plan's `target.json` records
-    what was left out, and the apply refuses a different input.
+    what was left out and whether it previewed deletions (`pre-post-script`,
+    `delete-artifacts`), and the apply refuses a different input. Refusals
+    are written into the plan's `summary.md` for the PR comment, and advise
+    re-running all jobs (re-running failed jobs reuses the refused plan).
   - `has-changes` stays true for Synapse (no "no changes" diff yet).
 - **Paths:** composite action inputs are relative to the workspace, which is
   the repository root; var files are relative to the module.

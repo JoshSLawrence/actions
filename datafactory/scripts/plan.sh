@@ -126,8 +126,12 @@ log_step "Infrastructure left to infrastructure as code"
 # are the unstripped one in pieces, and nothing deploys them.
 rm -rf "$PLAN_DIR/deploy/template/linkedTemplates"
 arm_infrastructure_types datafactory > "$WORK_DIR/infrastructure-types.jsonl"
-arm_strip_resources "$TEMPLATE" "$WORK_DIR/infrastructure-types.jsonl" "$WORK_DIR/stripped.json" "$WORK_DIR/left-to-iac.jsonl"
+arm_strip_resources "$TEMPLATE" "$WORK_DIR/infrastructure-types.jsonl" "$WORK_DIR/stripped.json" "$WORK_DIR/left-to-iac.jsonl" "$WORK_DIR/dangling.jsonl"
 mv "$WORK_DIR/stripped.json" "$TEMPLATE"
+if ! arm_strip_problems "$WORK_DIR/dangling.jsonl" 2> "$WORK_DIR/strip.log"; then
+  cat "$WORK_DIR/strip.log" >&2
+  fail "The template has dependencies on resources this workflow leaves to infrastructure as code that the plan can't resolve, so ARM would reject it." "$WORK_DIR/strip.log"
+fi
 log_info "$(grep -c . "$WORK_DIR/left-to-iac.jsonl" || true) resource(s) left out of the deployment"
 arm_left_to_iac_warn "$WORK_DIR/left-to-iac.jsonl"
 
@@ -151,13 +155,15 @@ arm_write_parameters_file "$merged" "$PARAMETERS_FILE"
 
 factory="$(jq -r '.parameters.factoryName.value // empty' "$PARAMETERS_FILE")"
 [ -n "$factory" ] || fail "factoryName must be a plain value, not a Key Vault reference."
-# What the plan left out is recorded so the apply can check its own inputs
-# against it
+# What the plan left out, and whether it previewed the script's deletions, is
+# recorded so the apply can check its own inputs against it
 jq -n --arg service datafactory --arg deployment "${DEPLOYMENT:-}" --arg resource_group "$RESOURCE_GROUP" --arg name "$factory" \
   --argjson mpes "$(is_true "$DEPLOY_MANAGED_PRIVATE_ENDPOINTS" && echo true || echo false)" \
   --argjson irs "$(is_true "$DEPLOY_INTEGRATION_RUNTIMES" && echo true || echo false)" \
+  --argjson pre_post "$(is_true "$PRE_POST_SCRIPT" && echo true || echo false)" \
   '{service: $service, deployment: $deployment, resource_group: $resource_group, name: $name,
-    deploy_managed_private_endpoints: $mpes, deploy_integration_runtimes: $irs}' > "$PLAN_DIR/deploy/target.json"
+    deploy_managed_private_endpoints: $mpes, deploy_integration_runtimes: $irs,
+    pre_post_script: $pre_post}' > "$PLAN_DIR/deploy/target.json"
 set_output factory-name "$factory"
 set_output resource-group "$RESOURCE_GROUP"
 log_success "Parameters rendered for factory ${factory} in ${RESOURCE_GROUP}"

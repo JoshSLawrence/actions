@@ -4,12 +4,12 @@ description: >-
   infrastructure as code owns (the managed virtual network, and unless
   deployed the managed private endpoints and integration runtimes), renders
   its parameters (every name checked against the template), optionally
-  previews it with az deployment group what-if, lists what the
-  post-deployment script would delete and records the live factory's
-  fingerprint for the apply to check, and writes a markdown summary. Fails after writing the
-  summary, so it can still be posted. Upload plan-dir as an artifact for
-  datafactory/apply when has-changes is true. With what-if, sign in with
-  azure/login and run shared/setup (azure-cli pinned) first.
+  previews it with az deployment group what-if, lists what the post-deployment
+  script would delete and records the live factory's fingerprint for the apply
+  to check, and writes a markdown summary. Fails after writing the summary, so
+  it can still be posted. Upload plan-dir as an artifact for datafactory/apply
+  when has-changes is true. With what-if, sign in with azure/login and run
+  shared/setup (azure-cli pinned) first.
 
 inputs:
   working-directory:
