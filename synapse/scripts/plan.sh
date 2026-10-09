@@ -187,10 +187,18 @@ set_output workspace-name "$workspace"
 set_output resource-group "$RESOURCE_GROUP"
 log_success "Parameters rendered for workspace ${workspace} in ${RESOURCE_GROUP}"
 
-# The template's artifacts, keyed like the live ones below
+# The template's artifacts, keyed like the live ones below. The deployer
+# skips the workspace's own defaults (its default linked services and
+# credential, and its synapse-ws-* endpoints), whatever the folder holds
+# for them: a folder exported from another workspace carries that
+# workspace's names. They are marked, and not counted as deployed.
 arm_template_resources "$TEMPLATE" |
-  jq -c '. + {key: "\(.type | ascii_downcase)/\(.name | ascii_downcase)"}' > "$WORK_DIR/template.jsonl"
-artifacts="$(wc -l < "$WORK_DIR/template.jsonl" | tr -d ' ')"
+  jq -c "(.type | ascii_downcase) as \$t
+    | . + {key: \"\(\$t)/\(.name | ascii_downcase)\",
+           default: ((\$t | IN(\"linkedservices\", \"credentials\", \"managedvirtualnetworks/managedprivateendpoints\")) and (.name | ${ARM_SYNAPSE_DEFAULT_NAME}))}" > "$WORK_DIR/template.jsonl"
+total="$(wc -l < "$WORK_DIR/template.jsonl" | tr -d ' ')"
+defaults="$(jq -s 'map(select(.default)) | length' "$WORK_DIR/template.jsonl")"
+artifacts=$((total - defaults))
 
 new="[]"
 deletions="[]"
@@ -229,7 +237,7 @@ if is_true "$WHAT_IF"; then
 
   default_artifact="$ARM_SYNAPSE_DEFAULT_NAME"
   new="$(jq -cs --slurpfile live <(jq -s . "$WORK_DIR/live.jsonl") '
-    ($live[0] | map(.key)) as $existing | map(select(.key as $k | $existing | index($k) | not))' "$WORK_DIR/template.jsonl")"
+    ($live[0] | map(.key)) as $existing | map(select((.default | not) and (.key as $k | $existing | index($k) | not)))' "$WORK_DIR/template.jsonl")"
   if is_true "$DELETE_ARTIFACTS"; then
     # The deployer never deletes integration runtimes; endpoints are only
     # listed when they're deployed, and then it deletes those not in the template
@@ -273,10 +281,14 @@ arm_left_to_iac_warn "$WORK_DIR/left-to-iac.jsonl"
 log_step "Summary"
 deleted="$(jq length <<< "$deletions")"
 {
+  skipped_note=""
+  if [ "$defaults" -gt 0 ]; then
+    skipped_note="${defaults} service default(s) skipped"
+  fi
   if is_true "$WHAT_IF"; then
-    echo "### 📋 Plan: deploy ${artifacts} artifact(s) ($(jq length <<< "$new") new), delete ${deleted}"
+    echo "### 📋 Plan: deploy ${artifacts} artifact(s) ($(jq length <<< "$new") new${skipped_note:+, $skipped_note}), delete ${deleted}"
   else
-    echo "### 📋 Plan: deploy ${artifacts} artifact(s)"
+    echo "### 📋 Plan: deploy ${artifacts} artifact(s)${skipped_note:+ ($skipped_note)}"
   fi
   echo ""
   context_line
@@ -291,7 +303,7 @@ deleted="$(jq length <<< "$deletions")"
     jq -r '.[] | "> - `\(.type)/\(.name)`"' <<< "$deletions"
     echo ""
   fi
-  echo "<details><summary>Artifacts (${artifacts})</summary>"
+  echo "<details><summary>Artifacts (${total})</summary>"
   echo ""
   echo "| Action | Artifact |"
   echo "| --- | --- |"
@@ -299,7 +311,8 @@ deleted="$(jq length <<< "$deletions")"
     ($new | map(.key)) as $new_keys
     | sort_by(.type, .name)[]
     | .key as $key
-    | (if $what_if != "true" then "🔵 publish"
+    | (if .default then "⚪ skipped (service default)"
+       elif $what_if != "true" then "🔵 publish"
        elif ($new_keys | index($key)) != null then "🟢 create"
        else "🟡 update" end) as $action
     | "| \($action) | `\(.type)/\(.name)` |"' "$WORK_DIR/template.jsonl"

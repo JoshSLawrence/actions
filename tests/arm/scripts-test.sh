@@ -878,6 +878,36 @@ live_list pipelines pl_wait:p1 pl_new:p9
 workspace_prepare
 expect_log "synapse apply: a refused live check advises re-running all jobs" "Re-run all jobs of the workflow, not just the failed one"
 
+# The service's default artifacts are skipped by the deployer, whatever the
+# folder holds: a folder exported from another workspace carries its names
+reset_live
+live_list bigDataPools spark:b1 spark_big:b2
+live_list sqlPools dw:q1
+live_list linkedServices syn-test-WorkspaceDefaultStorage:d1
+mkdir -p "$WORK/syn-defaults"
+cp -R "$WORKSPACE_TEMPLATE"/. "$WORK/syn-defaults/"
+jq '.resources += [
+  {name: "[concat(parameters(\u0027workspaceName\u0027), \u0027/syn-dev-WorkspaceDefaultStorage\u0027)]", type: "Microsoft.Synapse/workspaces/linkedServices", properties: {}, dependsOn: []},
+  {name: "[concat(parameters(\u0027workspaceName\u0027), \u0027/syn-dev-WorkspaceDefaultSqlServer\u0027)]", type: "Microsoft.Synapse/workspaces/linkedServices", properties: {}, dependsOn: []},
+  {name: "[concat(parameters(\u0027workspaceName\u0027), \u0027/WorkspaceSystemIdentity\u0027)]", type: "Microsoft.Synapse/workspaces/credentials", properties: {}, dependsOn: []}]' "$SYN" > "$WORK/syn-defaults/TemplateForWorkspace.json"
+workspace_plan WHAT_IF=true TEMPLATE_DIR="$WORK/syn-defaults"
+expect "defaults: a plan against another workspace succeeds" "0" "$status"
+expect_file_has "defaults: the heading counts the artifacts that are deployed, and the defaults apart" "$PLAN/summary.md" "### 📋 Plan: deploy 4 artifact(s) (4 new, 3 service default(s) skipped), delete 0"
+expect "defaults: ... each default is shown as skipped" "3" "$(grep -c '⚪ skipped (service default)' "$PLAN/summary.md")"
+expect_file_lacks "defaults: ... never as created or updated" "$PLAN/summary.md" "create | \`linkedServices/syn-dev-WorkspaceDefaultStorage"
+expect_file_lacks "defaults: ... nor as updated" "$PLAN/summary.md" "update | \`credentials/WorkspaceSystemIdentity"
+expect "defaults: has-changes stays true" "true" "$(output has-changes)"
+workspace_plan TEMPLATE_DIR="$WORK/syn-defaults"
+expect_file_has "defaults: without what-if the heading says so too" "$PLAN/summary.md" "### 📋 Plan: deploy 4 artifact(s) (3 service default(s) skipped)"
+
+# Only defaults: honest, and still a plan
+mkdir -p "$WORK/syn-only-defaults"
+cp -R "$WORKSPACE_TEMPLATE"/. "$WORK/syn-only-defaults/"
+jq '.resources |= map(select(.name | test("WorkspaceDefault|WorkspaceSystemIdentity")))' "$WORK/syn-defaults/TemplateForWorkspace.json" > "$WORK/syn-only-defaults/TemplateForWorkspace.json"
+workspace_plan WHAT_IF=true TEMPLATE_DIR="$WORK/syn-only-defaults"
+expect_file_has "defaults: with nothing else the heading says 0 are deployed" "$PLAN/summary.md" "### 📋 Plan: deploy 0 artifact(s) (0 new, 3 service default(s) skipped), delete 0"
+expect "defaults: ... and has-changes stays true" "true" "$(output has-changes)"
+
 # A user artifact named like a default is not skipped by the deletion list
 live_list pipelines pl_wait:p1
 live_list linkedServices syn-test-WorkspaceDefaultStorage:d1 x-WorkspaceDefaultStorage-copy:l9

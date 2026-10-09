@@ -138,6 +138,13 @@ infrastructure as code created.
   The service defaults (`AutoResolveIntegrationRuntime`, the `default`
   virtual network, `synapse-ws-*` endpoints) are never warned about, nor
   are pool stubs.
+- **The workspace's own defaults are skipped.** The deployer never
+  deploys the default linked services (`<workspace>-WorkspaceDefaultStorage`
+  and `...SqlServer`), the `WorkspaceSystemIdentity` credential or
+  `synapse-ws-*` endpoints, whatever the folder holds (a folder exported from
+  the development workspace carries its names). The plan shows them as
+  "skipped (service default)" and counts neither as deployed nor as new:
+  "deploy 4 artifact(s) (4 new, 3 service default(s) skipped)".
 - **Pools are infrastructure.** Create each pool with infrastructure as
   code, with the same name in every workspace: a notebook attached to a pool
   its target workspace doesn't have fails half-way through the deployment.
