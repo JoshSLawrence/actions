@@ -266,3 +266,69 @@ jobs:
       what-if: false
       apply: false
       build-runs-on: '["ubuntu-latest"]'
+
+  # A SQL project with two deployments (deployments/dev.publish.xml and
+  # prod.publish.xml): build the dacpac (and, on PRs, the base commit's to
+  # compare the deployment scripts), then plan each offline against
+  # ci/baseline.dacpac and comment on the PR. Additive: the rename and the
+  # creates plan without data loss, and Extra is listed as kept. No
+  # database, so no apply.
+  e2e-sqlproject:
+    name: E2E sqlproject
+    uses: $/.github/workflows/sqlproject.yaml
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      working-directory: tests/fixtures/sqlproject/basic
+      stack-name: sqlproject (additive)
+      deployments: deployments/*.publish.xml
+      target-dacpac: ci/baseline.dacpac
+      apply: false
+      runs-on: '["ubuntu-latest"]'
+
+  # The same in truth mode: the project is the source of truth, so Extra
+  # would be dropped, which is possible data loss: allowed here, or the
+  # plans would be blocked.
+  e2e-sqlproject-truth:
+    name: E2E sqlproject truth
+    uses: $/.github/workflows/sqlproject.yaml
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      working-directory: tests/fixtures/sqlproject/basic
+      stack-name: sqlproject (truth)
+      deployments: deployments/*.publish.xml
+      target-dacpac: ci/baseline.dacpac
+      deploy-mode: truth
+      allow-data-loss: true
+      apply: false
+      runs-on: '["ubuntu-latest"]'
+
+  # The plan and publish scripts against a real SQL Server in a container
+  # (docker is on the runner): deploy modes, renames, data loss, deployment
+  # scripts and the apply's refusals.
+  sqlproject-engine:
+    name: SQL project engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up tools
+        uses: $/shared/setup
+        with:
+          working-directory: tests/fixtures/sqlproject/basic
+          required-tools: dotnet dotnet:microsoft.sqlpackage yq
+
+      - name: Run the engine test
+        run: tests/sqlproject/engine-test.sh
