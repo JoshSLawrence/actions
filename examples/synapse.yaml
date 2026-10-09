@@ -19,6 +19,12 @@
 #   `ref:refs/heads/main`, `environment:dev` and `environment:prod`
 #   subjects. The identity needs Reader on each workspace and, in Synapse
 #   Studio, Synapse Artifact Publisher.
+# - The workspaces' managed virtual network, managed private endpoints,
+#   integration runtimes and Spark and SQL pools come from infrastructure as
+#   code: by default the workflow leaves them alone
+#   (deploy-managed-private-endpoints and deploy-integration-runtimes are
+#   false), so it never deletes them. Create a pool, with the same name in
+#   every workspace, before deploying a notebook that uses it.
 
 name: Synapse
 
@@ -39,7 +45,7 @@ permissions: {}
 
 jobs:
   synapse:
-    uses: JoshSLawrence/actions/.github/workflows/synapse.yaml@v0.3.0
+    uses: JoshSLawrence/actions/.github/workflows/synapse.yaml@v0.6.0
     permissions:
       actions: read
       contents: read

@@ -14,6 +14,7 @@ same way.
 - [Why](#why)
 - [Quick start](#quick-start)
 - [Concepts](#concepts)
+- [What's deployed: logic and infrastructure](#whats-deployed-logic-and-infrastructure)
 - [How it works](#how-it-works)
 - [Setup](#setup)
 - [Reference](#reference)
@@ -104,6 +105,41 @@ can only narrow them. A complete caller, with the setup it needs, is in
 
 [custom-parameters]: https://learn.microsoft.com/azure/data-factory/continuous-integration-delivery-resource-manager-custom-parameters
 
+## What's deployed: logic and infrastructure
+
+The factory's Git folder holds its **logic**. Its **network and compute**
+(the factory itself, the managed virtual network, managed private endpoints,
+integration runtimes) belong to infrastructure as code, such as OpenTofu.
+This workflow deploys the first and leaves the second alone, so a deployment
+can't replace or delete what infrastructure as code created.
+
+<!-- markdownlint-disable MD013 -->
+
+| Kind | Deployed | Deleted when it isn't in the folder |
+| --- | --- | --- |
+| Pipelines, datasets, data flows, linked services, triggers | yes | yes |
+| Credentials | yes | no (Microsoft's script has no section for them) |
+| Integration runtimes | only with `deploy-integration-runtimes` | only with `deploy-integration-runtimes` |
+| Managed private endpoints | only with `deploy-managed-private-endpoints` | never |
+| Managed virtual network | never | never |
+| The factory itself (identity, network access, Git settings) | never | never |
+| Global parameters | never (see [Limitations](#limitations)) | never |
+
+<!-- markdownlint-enable MD013 -->
+
+- **Reference files are fine.** Studio may write an integration runtime,
+  endpoint or virtual network file into the folder, and that does no harm:
+  the plan leaves it out of the deployed template, and lists it under "Left
+  to infrastructure as code". A file that isn't a service default (not
+  `AutoResolveIntegrationRuntime` or the `default` virtual network) also
+  gets a warning, telling you to define it in infrastructure as code or
+  remove the file. Nothing in the folder is deleted from the factory.
+- **Opting in.** `deploy-integration-runtimes: true` and
+  `deploy-managed-private-endpoints: true` deploy the folder's, and then
+  Data Factory's script also deletes runtimes that aren't in the folder.
+  Before v0.6.0 this was the behavior; a factory whose runtimes come from
+  infrastructure as code must not use it.
+
 ## How it works
 
 ```text
@@ -124,21 +160,35 @@ datafactory-deploy.yaml                   plan ──> apply (after approval)
   - the resources the post-deployment script would delete, because they're
     no longer in the folder.
 
-  It uploads the plan (template, parameters and target, never secrets) and
-  comments the summary on the PR. A what-if with nothing to change skips the
-  apply.
+  Before either, it takes what infrastructure as code owns out of the
+  template (see [above](#whats-deployed-logic-and-infrastructure)), so the
+  plan, the what-if and the apply all use the same template. With `what-if`
+  it also records the factory's current state (a fingerprint of its
+  pipelines, datasets, ... and their etags) for the apply to check.
+
+  It uploads the plan (template, parameters, target and that fingerprint,
+  never secrets) and comments the summary on the PR. A what-if with nothing
+  to change skips the apply.
 - **apply** (per deployment) waits for the `apply-environment`'s reviewers,
   then:
   1. refuses a stale plan: the PR moved on, or the folder or its parameter
      files changed on the target branch since;
   2. checks the plan's SHA-256, and deploys to the factory and resource group
      the plan names;
-  3. runs the export's `PrePostDeploymentScript.ps1` to stop the triggers the
+  3. lists the factory again and refuses if it differs from the plan's
+     fingerprint: something else changed it since (another PR's apply, or a
+     change in the portal), and deploying this plan would undo or delete it.
+     Re-run the workflow to plan again;
+  4. runs the export's `PrePostDeploymentScript.ps1` to stop the triggers the
      deployment changes;
-  4. deploys the template (incremental);
-  5. runs the script again to delete what's no longer in the folder and start
-     the triggers the template marks `Started`;
-  6. updates the PR comment.
+  5. deploys the template (incremental);
+  6. runs the script again to delete what's no longer in the folder and start
+     the triggers the template marks `Started`. The script deletes every
+     integration runtime that isn't in the template, so when integration
+     runtimes are left to infrastructure as code the apply lists the live
+     ones and hands the script a copy of the template that names them, and
+     it keeps them;
+  7. updates the PR comment.
 - **result** rolls everything up into one check to require in branch
   protection: `<caller job> / Result`.
 
@@ -157,7 +207,8 @@ approval.
    the development factory can be a deployment too: deploying it replaces
    **Publish**.
 3. **Apply environments** with required reviewers, one per deployment with
-   `apply-environment: "{deployment}"`. The apply warns when its environment
+   `apply-environment: "{deployment}"`. It's required while `apply` is true,
+   because it's the approval gate; the apply also warns when its environment
    has no required reviewers.
 4. **Azure OIDC.** No secrets are needed: set the variables
    `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`
@@ -187,11 +238,16 @@ approval.
      apply: ${{ github.actor != 'dependabot[bot]' }}
      ```
 
-5. **Secure parameters:** prefer Key Vault linked services, so a deployment
+5. **Infrastructure as code** creates the factory, its managed virtual
+   network, managed private endpoints and integration runtimes (including
+   `AutoResolveIntegrationRuntime`) before the first deployment. Linked
+   services reach storage and Key Vault through the endpoints it creates.
+   Apply an infrastructure change that a pipeline needs first.
+6. **Secure parameters:** prefer Key Vault linked services, so a deployment
    only needs the vault's URL. Parameter files may also use Key Vault
    `reference`s. Anything else goes in the `parameter-secrets` secret, one
    `name=value` per line.
-6. **Branch protection:** require `<caller job> / Result`.
+7. **Branch protection:** require `<caller job> / Result`.
 
 ## Reference
 
@@ -216,9 +272,11 @@ accept spaces or newlines. `{deployment}` is replaced where noted.
 | `what-if` | `true` | Preview with what-if and list deletions (needs Azure access) |
 | `apply` | `true` | Include the apply job (`false` = plan only) |
 | `apply-from-pr` | `true` | Deploy from the PR before merge; `false` = on the default branch only |
-| `apply-environment` | none | Environment with required reviewers; `{deployment}` |
-| `preflight-paths` | working directory | What plans depend on; parameter files are added |
+| `apply-environment` | none | Environment with required reviewers; `{deployment}`. Required with `apply` |
+| `preflight-paths` | working directory | What plans depend on; other deployments' parameter files are left out |
 | `pre-post-script` | `true` | Run the export's pre/post-deployment script |
+| `deploy-managed-private-endpoints` | `false` | Deploy the folder's managed private endpoints; `false` leaves them to infrastructure as code. Data Factory never deletes them |
+| `deploy-integration-runtimes` | `false` | Deploy the folder's integration runtimes; `false` leaves them to infrastructure as code. `true` also lets the post-deployment script delete runtimes not in the folder |
 | `runs-on` | `ubuntu-latest` | Runner of every job without its own: a label, or JSON (below) |
 | `build-runs-on` | `runs-on` | Runner of the build job |
 | `plan-runs-on` | `runs-on` | Runner of each deployment's plan job |
@@ -276,8 +334,8 @@ runs a tool (it installs the folder's mise tools).
 | --- | --- |
 | [`datafactory/build`](build/action.yaml) | Validate the folder and export its ARM template, offline |
 | [`datafactory/deployments`](deployments/action.yaml) | The folder's deployments as a matrix |
-| [`datafactory/plan`](plan/action.yaml) | Render parameters, optional what-if and deletions preview, summary |
-| [`datafactory/apply`](apply/action.yaml) | Environment check, stale-plan preflight, digest check, pre/post script around the ARM deployment |
+| [`datafactory/plan`](plan/action.yaml) | Leave out what infrastructure as code owns, render parameters, optional what-if, deletions preview and live fingerprint, summary |
+| [`datafactory/apply`](apply/action.yaml) | Environment check, stale-plan preflight, digest check, live check, pre/post script around the ARM deployment |
 | [`shared/pr-comment`](../shared/pr-comment/action.yaml) | Create or update the PR comment for one deployment |
 | [`shared/result`](../shared/result/action.yaml) | Roll a workflow's jobs up into one check |
 
@@ -300,10 +358,19 @@ WORKING_DIR=adf TEMPLATE_DIR=/tmp/datafactory-template PARAMETER_FILES=deploymen
   deploy; the build fails with that message.
 - **The export bundle isn't versioned:** every run downloads Microsoft's
   latest, as the npm package does. Its SHA-256 is in the build summary.
-- **Global parameters** are deployed only if the factory includes them in
-  the ARM template (Manage → ARM template).
-- **The factory itself** (identity, networking, Git configuration) isn't in
-  the template: manage it with infrastructure as code, such as OpenTofu.
+- **Global parameters aren't deployed.** The export writes
+  `<factory>_GlobalParameters.json` and `GlobalParametersUpdateScript.ps1`
+  next to the template, and nothing runs the script. Don't use global
+  parameters yet.
+- **The factory itself** (identity, networking, Git configuration), its
+  managed virtual network, endpoints and integration runtimes belong to
+  infrastructure as code (see
+  [What's deployed](#whats-deployed-logic-and-infrastructure)).
+  With `deploy-managed-private-endpoints: true`, endpoints that aren't in the
+  folder are never deleted: Microsoft's script has no section for them.
+- **A plan made before another PR applied is refused.** The apply's live
+  check compares etags, so a change made in the portal (or a trigger
+  started there) also makes the next apply ask for a new plan.
 - **A failed deployment leaves stopped triggers stopped**, as Microsoft's
   script does; a successful re-run starts them again.
 
@@ -318,6 +385,7 @@ WORKING_DIR=adf TEMPLATE_DIR=/tmp/datafactory-template PARAMETER_FILES=deploymen
 | `azure/arm-deploy` with parameters inline, per environment | `deployments/<env>.json`, plus `parameters` |
 | Resource group per environment call | `resource-group: rg-{deployment}` |
 | Stopping and starting triggers by hand | `pre-post-script` (Microsoft's script) |
+| Integration runtimes and private endpoints in the publish branch | Infrastructure as code; `deploy-integration-runtimes` and `deploy-managed-private-endpoints` to deploy the folder's |
 | One workflow per environment, chained with `needs` | One call; each deployment has its own environment and approval |
 
 <!-- markdownlint-enable MD013 -->

@@ -38,7 +38,7 @@ catalog, layout and principles.
     the shared one);
   - `arm/scripts/arm.sh`: what Data Factory and Synapse share (deployments
     of ARM parameters files, parameter layering, the export bundle,
-    plans).
+    infrastructure kinds, live state, plans).
 - **OpenTofu is two reusable workflows, called once per deployment:**
   `opentofu.yaml` (one root module, its var files, one apply environment)
   and `opentofu-drift.yaml` (the same deployment planned on a schedule and
@@ -142,6 +142,28 @@ catalog, layout and principles.
   from `target.json`, never from inputs. `parameter-secrets` are merged only
   into temporary files at plan (what-if) and apply time, never into an
   artifact.
+- **Infrastructure as code owns network and compute; Git owns logic.** The
+  decisions are in `docs/design/arm-infrastructure-boundary.md`: don't
+  change them without the user's agreement.
+  - `deploy-managed-private-endpoints` and `deploy-integration-runtimes`
+    (both default false, identical on both services) decide whether those
+    kinds are deployed. Managed virtual networks, Spark and SQL pools and the
+    factory itself are always left out. `arm_strip_resources` takes the
+    kinds out of the template (and the `dependsOn` naming them) at plan
+    time; the plan, what-if, digest and apply all use the stripped template.
+    A file of those kinds in the folder warns, never fails.
+  - Data Factory's generated post-deployment script deletes every
+    integration runtime not in the template. Don't edit the script: the
+    apply gives it a copy of the template with a name-only stub per live
+    runtime (`[concat(parameters('factoryName'), '/<name>')]`: it reads the
+    name by position, 37 characters before and 3 after).
+  - The Synapse deployer fork (`v1.9.2-oidc.2` in `synapse/apply`) never
+    deletes managed private endpoints unless it deploys them.
+  - A what-if plan records `deploy/live.json` (a fingerprint of the live
+    `{type, name, etag}` lines and the kinds listed); the apply lists the
+    same kinds and refuses on a difference. The plan's `target.json` records
+    what was left out, and the apply refuses a different input.
+  - `has-changes` stays true for Synapse (no "no changes" diff yet).
 - **Paths:** composite action inputs are relative to the workspace, which is
   the repository root; var files are relative to the module.
 - **Every script runs locally too.** Outputs and summaries degrade to
@@ -195,6 +217,9 @@ catalog, layout and principles.
   - the workflow input sync check and the no-inline-scripts check;
   - the OpenTofu script tests (`tests/opentofu/scripts-test.sh`: change
     detection, input validation, the Azure mapping, names);
+  - the Data Factory and Synapse script tests (`tests/arm/scripts-test.sh`:
+    the infrastructure boundary, template artifact names, stale-plan paths,
+    the live fingerprint, plan and apply with stubbed az and pwsh);
   - the SQL project script tests (`tests/sqlproject/scripts-test.sh`:
     names, input validation, the build's scripts comparison, reports, plan
     and apply with stubbed tools, secret handling);
