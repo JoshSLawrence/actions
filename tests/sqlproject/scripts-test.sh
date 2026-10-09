@@ -22,6 +22,10 @@ CANNED="$REPO_ROOT/tests/sqlproject/fixtures"
 # shellcheck source=shared/scripts/common.sh
 source "$REPO_ROOT/shared/scripts/common.sh"
 
+# Never inherit a repository from a caller (a pre-commit hook sets GIT_DIR and
+# friends): every git command below must act on a throwaway repository
+unset $(git rev-parse --local-env-vars)
+
 require_tool git
 require_tool jq
 require_tool yq
@@ -340,6 +344,14 @@ make_repo() {
   mkdir -p "$WORK/repo"
   cd "$WORK/repo"
   git init -q -b main
+  # Refuse to configure or commit anywhere but the throwaway repository
+  case "$(git rev-parse --absolute-git-dir)" in
+    "$(cd "$WORK" && pwd -P)"/*) ;;
+    *)
+      log_error "make_repo: git would act on $(git rev-parse --absolute-git-dir), outside ${WORK}. Aborting before touching its config."
+      exit 1
+      ;;
+  esac
   git config user.email test@example.com
   git config user.name test
   make_project proj scripts
@@ -380,6 +392,16 @@ names WORKING_DIRECTORY=a/b
 first="$(output artifact-name)"
 names WORKING_DIRECTORY=a-b
 expect "names: keys that sanitize alike get distinct artifacts" "true" "$([ "$(output artifact-name)" != "$first" ] && echo true)"
+names WORKING_DIRECTORY=a/b DEPLOYMENTS=deployments/*.publish.xml
+dacpac_a="$(output dacpac-artifact-name)"
+names WORKING_DIRECTORY=a/b DEPLOYMENTS=deployments/*.publish.xml
+expect "names: identical calls share the dacpac artifact" "$dacpac_a" "$(output dacpac-artifact-name)"
+names WORKING_DIRECTORY=a/b DEPLOYMENTS=deployments/dev.publish.xml
+expect "names: other deployments get another dacpac artifact" "true" "$([ "$(output dacpac-artifact-name)" != "$dacpac_a" ] && echo true)"
+names WORKING_DIRECTORY=a/b DEPLOYMENTS=deployments/*.publish.xml TARGET_DACPAC=ci/baseline.dacpac
+expect "names: so does a target-dacpac" "true" "$([ "$(output dacpac-artifact-name)" != "$dacpac_a" ] && echo true)"
+names WORKING_DIRECTORY=a/b STACK_NAME="$(printf 'x%.0s' $(seq 1 300))" DEPLOYMENTS=d
+expect "names: the dacpac artifact name keeps to 255 characters" "true" "$([ "$(output dacpac-artifact-name | wc -c)" -le 256 ] && echo true)"
 names WORKING_DIRECTORY=a/b
 expect "names: the dacpac artifact is per project and distinct from the plan's" "true" "$([ "$(output dacpac-artifact-name)" != "$(output artifact-name)" ] && echo true)"
 

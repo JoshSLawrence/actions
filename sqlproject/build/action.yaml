@@ -17,6 +17,14 @@ inputs:
     description: "Display name, and the dacpac artifact's name (default: the working directory)."
     required: false
     default: ""
+  deployments:
+    description: The call's deployments input, to key the artifact name (two calls for one folder must not share an artifact).
+    required: false
+    default: ""
+  target-dacpac:
+    description: The call's target-dacpac input, to key the artifact name.
+    required: false
+    default: ""
   output-dir:
     description: "Where the dacpac goes (default: $RUNNER_TEMP/sqlproject-dacpac)."
     required: false
@@ -57,6 +65,8 @@ runs:
       env:
         WORKING_DIRECTORY: ${{ inputs.working-directory }}
         STACK_NAME: ${{ inputs.stack-name }}
+        DEPLOYMENTS: ${{ inputs.deployments }}
+        TARGET_DACPAC: ${{ inputs.target-dacpac }}
         REPOSITORY_NAME: ${{ github.event.repository.name }}
 
     - name: Build

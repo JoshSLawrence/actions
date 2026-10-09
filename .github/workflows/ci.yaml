@@ -12,9 +12,12 @@
 # the Data Factory fixture to a real, otherwise empty factory
 # (adf-githubtest), through the adf-githubtest environment: its variables
 # hold the identity, whose only federated credential is for that
-# environment. Require "Lint", "E2E OpenTofu", "E2E datafactory / Result",
-# "E2E synapse / Result" and "E2E datafactory (Azure) / Result" in branch
-# protection.
+# environment. The SQL project fixture is built and planned offline against
+# a baseline dacpac (no database or Azure), in both deploy modes, and a SQL
+# Server container runs the real plan and publish scripts once more. Require
+# "Lint", "E2E OpenTofu", "E2E datafactory / Result", "E2E synapse / Result",
+# "E2E datafactory (Azure) / Result", "E2E sqlproject / Result", "E2E
+# sqlproject truth / Result" and "SQL project engine" in branch protection.
 
 name: CI
 

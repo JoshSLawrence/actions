@@ -250,6 +250,8 @@ jobs:
           working-directory: ${{ inputs.working-directory }}
           stack-name: ${{ inputs.stack-name }}
           deployment-scripts: ${{ inputs.deployment-scripts }}
+          deployments: ${{ inputs.deployments }}
+          target-dacpac: ${{ inputs.target-dacpac }}
           # Pull requests apply before they merge, so the base commit is what
           # is deployed; other runs have nothing to compare with
           scripts-base: >-

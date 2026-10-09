@@ -15,13 +15,19 @@
 #   DEPLOYMENT        - deployment name (its publish profile's), if any
 #   APPLY_ENVIRONMENT - environment the plan is for, if any
 #   REPOSITORY_NAME   - repository name, for a root-level project
+#   DEPLOYMENTS, TARGET_DACPAC
+#                     - the call's deployments and target-dacpac inputs. They
+#                       key the dacpac artifact, so two calls for one folder
+#                       and stack name (say, one per deploy mode) in one run
+#                       don't overwrite each other's.
 #
 # Outputs:
 #   key                  - "sqlproject:<stack>", plus ":<deployment>" and
 #                          ":<environment>" when set
 #   artifact-name        - plan artifact name derived from key (see
 #                          artifact_name)
-#   dacpac-artifact-name - build artifact name (per project, not deployment)
+#   dacpac-artifact-name - build artifact name (per call: stack,
+#                          deployments and target-dacpac)
 #   title                - e.g. SQL project: `core` · `dev` → `core-dev`
 #
 
@@ -44,7 +50,11 @@ environment="${APPLY_ENVIRONMENT:-}"
 
 key="sqlproject:${stack}${deployment:+:${deployment}}${environment:+:${environment}}"
 artifact="$(artifact_name sqlproject-plan "${stack}${deployment:+:${deployment}}${environment:+:${environment}}")"
-dacpac_artifact="$(artifact_name sqlproject-dacpac "$stack")"
+# A short digest of the call's inputs keeps the name within artifact limits
+# (the readable part of the stack name is cut; the digest covers all of it)
+call_key="${stack}|$(list_items "${DEPLOYMENTS:-}" | paste -sd, -)|${TARGET_DACPAC:-}"
+call_digest="$(text_sha256 "$call_key")"
+dacpac_artifact="$(artifact_name sqlproject-dacpac "${stack:0:80}")-${call_digest:0:8}"
 
 title="SQL project: \`${stack}\`"
 if [ -n "$deployment" ]; then

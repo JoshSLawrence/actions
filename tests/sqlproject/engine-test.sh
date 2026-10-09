@@ -39,6 +39,9 @@ source "$REPO_ROOT/shared/scripts/common.sh"
 # shellcheck source=sqlproject/scripts/sqlproject.sh
 source "$SCRIPTS/sqlproject.sh"
 
+# Never inherit a repository from a caller (a pre-commit hook sets GIT_DIR)
+unset $(git rev-parse --local-env-vars)
+
 require_tool docker
 require_tool git
 require_tool jq
