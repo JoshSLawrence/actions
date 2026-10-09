@@ -28,6 +28,11 @@ while IFS= read -r git_var; do
   unset "$git_var"
 done < <(git rev-parse --local-env-vars)
 
+# The scripts behave differently under GitHub Actions (they mask secrets with
+# workflow commands and require PLAN_SHA256), so run as a plain shell even
+# when this test itself runs in a job; the Actions behavior has its own cases
+unset GITHUB_ACTIONS
+
 require_tool git
 require_tool jq
 require_tool yq
@@ -751,6 +756,12 @@ expect_refused "plan: a missing target-dacpac" "target-dacpac ci/none.dacpac doe
 plan STUB_ECHO_SECRET=1
 expect "secrets: the plan succeeds" "0" "$status"
 expect_not_log "secrets: the token isn't in the log" "FAKE.TOKEN.VALUE"
+# Under Actions the token is masked with a workflow command, which the runner
+# consumes: it must be the only line that has the token
+plan STUB_ECHO_SECRET=1 GITHUB_ACTIONS=true
+expect "secrets: under Actions the token is only in its mask command" "::add-mask::FAKE.TOKEN.VALUE" "$(grep -F 'FAKE.TOKEN.VALUE' "$WORK/log" | sort -u)"
+expect "secrets: ... and SqlPackage's echo was still scrubbed" "0" "$(grep -v '^::add-mask::' "$WORK/log" | grep -c 'FAKE.TOKEN.VALUE' || true)"
+plan STUB_ECHO_SECRET=1
 expect "secrets: the token isn't on any command line" "0" "$(grep -c 'FAKE.TOKEN.VALUE' "$STUB_LOG/argv.log" || true)"
 expect "secrets: the token isn't in the plan" "0" "$(grep -rl 'FAKE.TOKEN.VALUE' "$PLAN" | wc -l | tr -d ' ')"
 expect "secrets: the token is in the response file" "1" "$(grep -c '^"/AccessToken:FAKE.TOKEN.VALUE"$' "$STUB_LOG/calls/1.rsp")"
@@ -775,6 +786,9 @@ expect "secrets: SQL authentication succeeds" "0" "$status"
 expect "secrets: the password is in the response file" "1" "$(grep -c '^"/TargetPassword:Sup3rSecret"$' "$STUB_LOG/calls/1.rsp")"
 expect "secrets: ... and the user" "1" "$(grep -c '^"/TargetUser:sa"$' "$STUB_LOG/calls/1.rsp")"
 expect_not_log "secrets: the password isn't in the log" "Sup3rSecret"
+plan SQL_AUTH=sql SQL_USER=sa SQL_PASSWORD=Sup3rSecret STUB_ECHO_SECRET=1 GITHUB_ACTIONS=true
+expect "secrets: under Actions the password is only in its mask command" "::add-mask::Sup3rSecret" "$(grep -F 'Sup3rSecret' "$WORK/log" | sort -u)"
+plan SQL_AUTH=sql SQL_USER=sa SQL_PASSWORD=Sup3rSecret STUB_ECHO_SECRET=1
 expect "secrets: the password isn't on a command line" "0" "$(grep -c 'Sup3rSecret' "$STUB_LOG/argv.log" || true)"
 expect "secrets: the password isn't in the plan" "0" "$(grep -rl 'Sup3rSecret' "$PLAN" | wc -l | tr -d ' ')"
 expect "secrets: no token is fetched" "" "$(cat "$STUB_LOG/az.log")"
@@ -815,6 +829,10 @@ expect_log "apply: ... and says what may be live" "some changes may be live"
 apply STUB_FAIL=DeployReport
 expect "apply: an unreachable database fails before publishing" "1" "$status"
 expect "apply: ... without publishing" "0" "$(calls_of Publish)"
+
+apply GITHUB_ACTIONS=true PLAN_SHA256=
+expect "apply: under Actions the digest is required" "1" "$status"
+expect_log "apply: ... and the refusal says where it comes from" "PLAN_SHA256 is not set"
 
 echo tampered >> "$PLAN/deploy/target.json"
 apply
