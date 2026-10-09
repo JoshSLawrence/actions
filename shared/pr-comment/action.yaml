@@ -28,6 +28,12 @@ inputs:
     description: GitHub environment the apply runs in, for the comment text.
     required: false
     default: ""
+  blocked-reason:
+    description: >-
+      With apply-status blocked: the sentence saying why, shown in the
+      comment (default: the policy check text OpenTofu uses).
+    required: false
+    default: ""
   comment-author:
     description: >-
       Login that posts the comment; only its comments are edited. Change it
@@ -54,4 +60,5 @@ runs:
         SUMMARY_FILE: ${{ inputs.summary-file }}
         APPLY_STATUS: ${{ inputs.apply-status }}
         APPLY_ENVIRONMENT: ${{ inputs.apply-environment }}
+        BLOCKED_REASON: ${{ inputs.blocked-reason }}
         COMMENT_AUTHOR: ${{ inputs.comment-author }}
