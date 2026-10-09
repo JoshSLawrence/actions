@@ -169,4 +169,4 @@ while IFS= read -r file; do
   fi
 done <<< "$changed"
 
-decide false "nothing watched changed (${watched[*]})"
+decide false "nothing watched changed (\`${watched[*]}\`)"

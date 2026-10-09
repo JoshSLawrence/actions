@@ -244,6 +244,15 @@ expect "the watched paths: the module, less other var files, then the var files,
 
 # --- Watched path rules ----------------------------------------------------------
 
+# rules_match prints false when a helper is missing, which would let the
+# false-expecting tests below pass for the wrong reason.
+for helper in path_entry_rule path_rules_match; do
+  if ! declare -F "$helper" > /dev/null; then
+    log_error "$helper isn't defined: the path-rule tests below would pass without testing anything. Check that shared/scripts/common.sh defines it."
+    exit 1
+  fi
+done
+
 # Usage: rules_match <path> <entry>...   (prints true or false)
 rules_match() {
   local path="$1" entry
