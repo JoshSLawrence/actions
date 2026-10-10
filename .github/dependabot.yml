@@ -1,7 +1,6 @@
 # Keeps the SHA-pinned actions up to date, in the workflows and in every
-# composite action (Dependabot only scans the directories listed here). The
-# Synapse deployer fork in synapse/apply follows upstream's releases by hand
-# (see the comment there).
+# composite action (Dependabot only scans the directories listed here),
+# including the Synapse deployer pinned in synapse/apply.
 version: 2
 updates:
   - package-ecosystem: github-actions

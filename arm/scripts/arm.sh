@@ -475,7 +475,11 @@ arm_az() {
 # compact JSON object per line, following nextLink. Prints nothing when the
 # first page is a 404 (e.g. a factory that doesn't exist yet); fails on any
 # other error, including a 404 on a later page, so a list is never silently
-# cut short.
+# cut short. A workspace without a managed virtual network answers its
+# endpoint list with a 400 ("does not have a managed virtual network
+# associated"): with ARM_EMPTY_WITHOUT_VNET=true that first page is an empty
+# list too (the caller decides whether that is acceptable; the deployer fails
+# only when the template has an endpoint of its own).
 # Usage: arm_rest_list "<url>" [az rest options, e.g. --resource <audience>]
 arm_rest_list() {
   local url="$1" page err first=true
@@ -483,7 +487,13 @@ arm_rest_list() {
   err="$(mktemp)"
   while [ -n "$url" ]; do
     if ! page="$(arm_az rest --method get --url "$url" "$@" 2> "$err")"; then
-      if [ "$first" = true ] && grep -q -e 'Not Found' -e 'ResourceNotFound' -e 'NotFound' "$err"; then
+      if grep -qi 'does not have a managed virtual network associated' "$err"; then
+        # Checked before the NotFound test: the message must not be mistaken
+        # for it, and an unallowed one fails the list
+        if [ "$first" = true ] && [ "${ARM_EMPTY_WITHOUT_VNET:-}" = true ]; then
+          break
+        fi
+      elif [ "$first" = true ] && grep -q -e 'Not Found' -e 'ResourceNotFound' -e 'NotFound' "$err"; then
         break
       fi
       cat "$err" >&2
@@ -615,7 +625,7 @@ arm_strip_resources() {
         elif $tail == "bigdatapools" or $tail == "sqlpools" then true
         elif $tail == "integrationruntimes" then ($name | ascii_downcase) == "autoresolveintegrationruntime"
         elif $tail == "managedvirtualnetworks" then ($name | ascii_downcase) == "default"
-        elif $tail == "managedvirtualnetworks/managedprivateendpoints" then ($name | test("^synapse-ws-(sql|sqlondemand|kusto)--"; "i"))
+        elif $tail == "managedvirtualnetworks/managedprivateendpoints" then ($name | test("^synapse-ws-"; "i"))
         else false end;
 
     ($types | map(.type | ascii_downcase)) as $strip
@@ -775,6 +785,16 @@ arm_left_to_iac_warn() {
 # since the plan (another deployment, or the portal), and applying would
 # undo that or delete it.
 
+# Print true when a lake database listing item is one the deployer manages:
+# Spark origin (case-insensitive) and IsSyMSCDMDatabase strictly true (not the
+# string "true"). The fields are under .properties; an item without that
+# object is read flat. Reads the item from stdin.
+arm_lake_database() {
+  jq -c '(if (.properties | type) == "object" then .properties else . end)
+    | (((.Origin | if type == "object" then .Type else null end) | if type == "string" then ascii_upcase else "" end) == "SPARK")
+      and (((.Properties | if type == "object" then .IsSyMSCDMDatabase else null end)) == true)'
+}
+
 # Print the resources of some collections of a factory or workspace, one
 # compact JSON object {type, name, etag} per line, listing each collection
 # under <base url> (a virtual network's endpoints, managedVirtualNetworks/
@@ -782,7 +802,11 @@ arm_left_to_iac_warn() {
 # managedPrivateEndpoints). Fails if a collection can't be listed; az's
 # error goes to stderr. Two collections are not what they seem:
 #   - Synapse's lake databases (databases) answer {items, continuationToken}
-#     with a Name and no etag, so the etag is a digest of the item;
+#     with a name and no etag, so the etag is a digest of the item. Their
+#     lines also carry lake: true for the ones the deployer manages (Spark
+#     origin and a Synapse Metadata Service database, read from
+#     properties.Origin.Type and properties.Properties.IsSyMSCDMDatabase, or
+#     the same fields at the top of the item), and false for the others;
 #   - managed private endpoints have a null etag, so they're fingerprinted by
 #     name only.
 # Usage: arm_live_lines <base url> <api version> <audience or ""> <collection>...
@@ -799,8 +823,10 @@ arm_live_lines() {
       items="$(arm_rest_items "${base}/${collection}?api-version=${version}" "${options[@]+"${options[@]}"}")" || return 1
       while IFS= read -r item; do
         [ -n "$item" ] || continue
-        name="$(jq -r '.Name // .name' <<< "$item")" || return 1
-        jq -cn --arg type "$type" --arg name "$name" --arg etag "$(text_sha256 "$(jq -cS . <<< "$item")")" '{type: $type, name: $name, etag: $etag}' || return 1
+        # Only a non-empty string name is an item, as for the deployer
+        name="$(jq -r '[.name, .Name] | map(select(type == "string" and . != "")) | first // empty' <<< "$item")" || return 1
+        [ -n "$name" ] || continue
+        jq -cn --arg type "$type" --arg name "$name" --arg etag "$(text_sha256 "$(jq -cS . <<< "$item")")" --argjson lake "$(arm_lake_database <<< "$item")" '{type: $type, name: $name, etag: $etag, lake: $lake}' || return 1
       done <<< "$items"
       continue
     fi
@@ -850,20 +876,29 @@ arm_classify_left_to_iac() {
   rm -f "$live"
 }
 
-# The names the Synapse service creates itself: the workspace's default
-# linked services (<workspace>-WorkspaceDefaultStorage and ...SqlServer), its
-# credential, and the synapse-ws-* managed private endpoints. Deployments
-# skip them. A jq test for a name; anchored, so a user's
+# Whether an artifact is one the Synapse service creates itself, as a jq
+# filter for an object with a type and a name: the workspace's default linked
+# services (<workspace>-WorkspaceDefaultStorage and ...SqlServer), its
+# credential, and its synapse-ws-* managed private endpoints (any name that
+# starts so, such as the primary storage's
+# synapse-ws-custstgacct--<workspace>-<suffix>). Each type has its own
+# pattern, as in the deployer's isServiceDefault (src/defaults.ts): a pipeline
+# or a credential named like a default linked service is an ordinary
+# artifact. Deployments skip the defaults. Anchored, so a user's
 # x-WorkspaceDefaultStorage-copy is not one.
-ARM_SYNAPSE_DEFAULT_NAME='test("-workspacedefault(sqlserver|storage)$|^workspacesystemidentity$|^synapse-ws-(sql|sqlondemand|kusto)--"; "i")'
+ARM_SYNAPSE_IS_DEFAULT='(if (.type | ascii_downcase) == "linkedservices" then ((.name // "") | test("-workspacedefault(sqlserver|storage)$"; "i"))
+  elif (.type | ascii_downcase) == "credentials" then ((.name // "") | test("^workspacesystemidentity$"; "i"))
+  elif (.type | ascii_downcase) == "managedvirtualnetworks/managedprivateendpoints" then ((.name // "") | test("^synapse-ws-"; "i"))
+  else false end)'
 
 # The same fingerprint for a Synapse workspace's listing, less the service's
-# own artifacts (ARM_SYNAPSE_DEFAULT_NAME): they say nothing about a change.
+# own artifacts (ARM_SYNAPSE_IS_DEFAULT) and the lake databases the deployer
+# doesn't manage (lake false: a Spark job's): they say nothing about a change.
 # Usage: arm_synapse_fingerprint <lines file>
 arm_synapse_fingerprint() {
   local lines
   lines="$(mktemp)"
-  jq -c "select(.name | ${ARM_SYNAPSE_DEFAULT_NAME} | not)" "$1" > "$lines" || { rm -f "$lines"; return 1; }
+  jq -c "select((${ARM_SYNAPSE_IS_DEFAULT} | not) and (.type != \"databases\" or .lake == true))" "$1" > "$lines" || { rm -f "$lines"; return 1; }
   arm_live_fingerprint "$lines" || { rm -f "$lines"; return 1; }
   rm -f "$lines"
 }

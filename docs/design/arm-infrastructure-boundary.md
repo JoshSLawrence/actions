@@ -13,9 +13,10 @@ infrastructure as code (OpenTofu) created:
   runtime that is not in the folder. That includes
   `AutoResolveIntegrationRuntime`, which `iac` creates in each factory's
   managed virtual network.
-- The Synapse deployer, with `DeleteArtifactsNotInTemplate`, deletes every
-  non-default managed private endpoint that is not in the folder, even when
-  `deployManagedPrivateEndpoint` is false. That is every endpoint
+- The Synapse deployer this repository used before v0.7.0, with
+  `DeleteArtifactsNotInTemplate`, deleted every non-default managed private
+  endpoint that is not in the folder, even when `deployManagedPrivateEndpoint`
+  is false. That is every endpoint
   infrastructure as code created.
 
 Both are fixed by one ownership boundary, expressed with the same two inputs
@@ -41,9 +42,9 @@ decisions and why.
 | Boundary | Option A: infrastructure as code owns network and compute, Git owns logic. Input `deploy-managed-private-endpoints` and `deploy-integration-runtimes`, both default `false`, on both services. |
 | Always left out | Managed virtual networks, Spark and SQL pools (and the stubs the Synapse export generates for them), and `Microsoft.DataFactory/factories` itself. No input. |
 | How | `arm_strip_resources` removes the resources of the left-out types from the template, and from every remaining resource's `dependsOn` the entries naming them. The plan, what-if, digest and apply all use the stripped template. |
-| Reference files in Git | Allowed and never deployed: Studio's Git mode shows only what is in the folder, so the owner keeps copies of the real network there. The plan lists them under "Left to infrastructure as code". It does not fail: failing would block unrelated PRs. With what-if it lists the live integration runtimes and endpoints (this check only) and marks a file whose type and name exist live (case-insensitive) as a reference copy, with no warning. A file without a live counterpart warns only when other files of its kind do match ("new": added in Studio); when none of a kind match, the folder holds another environment's copies (dev's endpoint names in stg and prod) and the plan shows one note per kind. With what-if off, or when that listing fails (it only decides what the plan says, so it never fails the plan), every such file warns. |
+| Reference files in Git | Allowed and never deployed: Studio's Git mode shows only what is in the folder, so the owner keeps copies of the real network there. The plan lists them under "Left to infrastructure as code". It does not fail: failing would block unrelated PRs. With what-if it lists the live integration runtimes and endpoints (this check only) and marks a file whose type and name exist live (case-insensitive) as a reference copy, with no warning. A file without a live counterpart warns only when other files of its kind do match ("new": added in Studio); when none of a kind match, the folder holds another environment's copies (dev's endpoint names in stg and prod) and the plan shows one note per kind. With what-if off, or when that listing fails (it only decides what the plan says, so it never fails the plan; the one exception is a workspace without a managed virtual network: its endpoint list answers a 400, which the plan reads as an empty list when the template has no endpoint of its own to deploy, so the folder's endpoint files get the one note per kind), every such file warns. The live listing for the fingerprint tolerates that 400 as an empty list when endpoints are deployed and the template has none of its own; with one, the plan fails. With endpoints left to infrastructure as code they aren't listed at all. |
 | Data Factory deletions | The post-deployment script is not edited. When integration runtimes are left to infrastructure as code, the apply gives the script a copy of the template that also lists every live integration runtime by name, so it keeps them. |
-| Synapse deletions | The Synapse deployer fork (`v1.0.0`) never deletes managed private endpoints unless it deploys them. The plan's deletion list matches. |
+| Synapse deletions | The Synapse deployer (`JoshSLawrence/synapse-deploy`) never deletes managed private endpoints unless it deploys them. The plan's deletion list matches its rules: the service's defaults by type, endpoints named `synapse-ws-*`, and only Spark, SyMS lake databases. |
 | Live re-check | A plan records a fingerprint (SHA-256 of the sorted `{type, name, etag}` lines) of the live logic, plus the integration runtimes and endpoints when deployed. The apply lists the same kinds again and refuses on a difference. Without what-if there is no fingerprint and the apply says the check is skipped. |
 | Pool check | With what-if, a Synapse plan fails when a notebook, Spark job definition or generated pool stub names a pool the workspace lacks. |
 | Synapse "no changes" | Deferred. `has-changes` stays true: every Synapse deployment a PR runs asks for approval, as before. The live re-check covers the safety side. |
