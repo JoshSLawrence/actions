@@ -64,7 +64,8 @@ STUB
 
 # Logs its arguments. `az rest` answers from $STUB_LIVE/<last path segment
 # of the URL>.json (an empty list without one; <name>.2.json for a second
-# page, <name>.404 to answer ResourceNotFound), so a test sets what a factory
+# page, <name>.404 to answer ResourceNotFound, <name>.400 to answer a
+# workspace without a managed virtual network), so a test sets what a factory
 # or workspace holds by writing those files.
 cat > "$STUBS/az" << 'STUB'
 #!/usr/bin/env bash
@@ -99,6 +100,10 @@ case "$1 $2" in
         exit 1
         ;;
     esac
+    if [ -f "$STUB_LIVE/${name}.400" ] && [ "$file" = "$STUB_LIVE/${name}.json" ]; then
+      echo "ERROR: (BadRequest) The workspace does not have a managed virtual network associated with it." >&2
+      exit 1
+    fi
     if [ -f "$STUB_LIVE/${name}.404" ] && [ "$file" = "$STUB_LIVE/${name}.json" ]; then
       echo "ERROR: (ResourceNotFound) not found" >&2
       exit 1
@@ -244,7 +249,7 @@ live_pages() {
 }
 
 reset_live() {
-  rm -f "$STUB_LIVE"/*.json "$STUB_LIVE"/*.404 "$STUB_LOG"/*
+  rm -f "$STUB_LIVE"/*.json "$STUB_LIVE"/*.404 "$STUB_LIVE"/*.400 "$STUB_LOG"/*
 }
 
 # The resources of a template that have a type, as "type" lines (lower case)
@@ -590,6 +595,69 @@ expect_file_has "synapse plan: with endpoints deployed, one missing from the fol
 expect_file_lacks "synapse plan: ... never the service's own" "$PLAN/summary.md" "> - \`managedVirtualNetworks/managedPrivateEndpoints/synapse-ws-sql"
 expect "synapse plan: ... and the endpoints are in the fingerprint" "1" "$(jq -r '.kinds[]' "$PLAN/deploy/live.json" | grep -c 'managedPrivateEndpoints')"
 
+# The deployer's default rules: by type, and any synapse-ws-* endpoint
+live_list pipelines pl_wait:p1 syn-test-WorkspaceDefaultStorage:p2
+live_list managedPrivateEndpoints synapse-ws-custstgacct--syn-test-ab12cd:m1 SYNAPSE-WS-sql--syn-test:m3 mpe_live:m2
+workspace_plan WHAT_IF=true DEPLOY_MANAGED_PRIVATE_ENDPOINTS=true
+expect_file_has "synapse plan: a default's name is only a default for its type (a pipeline named like one is deleted)" "$PLAN/summary.md" "> - \`pipelines/syn-test-WorkspaceDefaultStorage\`"
+expect_file_lacks "synapse plan: ... the linked service of that name never is" "$PLAN/summary.md" "> - \`linkedServices/syn-test-WorkspaceDefaultStorage\`"
+expect_file_lacks "synapse plan: a primary storage endpoint (synapse-ws-custstgacct--...) is a default" "$PLAN/summary.md" "synapse-ws-custstgacct"
+expect_file_lacks "synapse plan: ... whatever its case" "$PLAN/summary.md" "SYNAPSE-WS-sql"
+expect_file_has "synapse plan: ... while another endpoint is deleted" "$PLAN/summary.md" "> - \`managedVirtualNetworks/managedPrivateEndpoints/mpe_live\`"
+live_list pipelines pl_wait:p1
+live_list managedPrivateEndpoints synapse-ws-sql--syn-test:m1 mpe_live:m2
+
+# Lake databases: only Spark, SyMS ones are the deployer's
+rm -f "$STUB_LIVE/databases.json"
+jq -n '{items: [
+  {id: "1", type: "DATABASE", name: "lake_syms", properties: {Origin: {Type: "SPARK"}, Properties: {IsSyMSCDMDatabase: true}}},
+  {id: "2", type: "DATABASE", name: "lake_lower", properties: {Origin: {Type: "spark"}, Properties: {IsSyMSCDMDatabase: true}}},
+  {id: "3", type: "DATABASE", name: "lake_notsyms", properties: {Origin: {Type: "SPARK"}, Properties: {IsSyMSCDMDatabase: false}}},
+  {id: "4", type: "DATABASE", name: "lake_string", properties: {Origin: {Type: "SPARK"}, Properties: {IsSyMSCDMDatabase: "true"}}},
+  {id: "5", type: "DATABASE", name: "lake_noflag", properties: {Origin: {Type: "SPARK"}, Properties: {}}},
+  {id: "6", type: "DATABASE", name: "lake_other", properties: {Origin: {Type: "SYNAPSE"}, Properties: {IsSyMSCDMDatabase: true}}},
+  {Name: "lake_flat", Origin: {Type: "SPARK"}, Properties: {IsSyMSCDMDatabase: true}},
+  {Name: "lake_flat_no", Origin: {Type: "SPARK"}, Properties: {IsSyMSCDMDatabase: "true"}}
+]}' > "$STUB_LIVE/databases.json"
+workspace_plan WHAT_IF=true
+for lake in lake_syms lake_lower lake_flat; do
+  expect_file_has "synapse plan: a SyMS lake database missing from the folder is deleted ($lake)" "$PLAN/summary.md" "> - \`databases/${lake}\`"
+done
+for lake in lake_notsyms lake_string lake_noflag lake_other lake_flat_no; do
+  expect_file_lacks "synapse plan: ... but not one that isn't a Spark SyMS database ($lake)" "$PLAN/summary.md" "databases/${lake}"
+done
+expect_file_lacks "synapse plan: no note about lake tables without a lake database in the folder" "$PLAN/summary.md" "tables and relationships"
+rm -f "$STUB_LIVE/databases.json"
+
+# With a lake database in the folder, its tables and relationships are deleted too
+LAKE_TEMPLATE="$WORK/workspace-template-lake"
+mkdir -p "$LAKE_TEMPLATE"
+jq '.resources += [{"name": "[concat(parameters(\u0027workspaceName\u0027), \u0027/lake_syms\u0027)]", "type": "Microsoft.Synapse/workspaces/databases", "apiVersion": "2019-06-01-preview", "properties": {}, "dependsOn": []}]' "$SYN" > "$LAKE_TEMPLATE/TemplateForWorkspace.json"
+cp "$WORKSPACE_TEMPLATE/TemplateParametersForWorkspace.json" "$LAKE_TEMPLATE/"
+workspace_plan WHAT_IF=true TEMPLATE_DIR="$LAKE_TEMPLATE"
+expect_file_has "synapse plan: lake tables and relationships are deleted too, and the summary says they aren't counted" "$PLAN/summary.md" "tables and relationships that a lake database in the folder no longer has are deleted too"
+workspace_plan WHAT_IF=true DELETE_ARTIFACTS=false TEMPLATE_DIR="$LAKE_TEMPLATE"
+expect_file_lacks "synapse plan: ... not without delete-artifacts" "$PLAN/summary.md" "tables and relationships"
+
+# A workspace without a managed virtual network answers the endpoint list with a 400
+live_list managedPrivateEndpoints
+touch "$STUB_LIVE/managedPrivateEndpoints.400"
+NOEP_TEMPLATE="$WORK/workspace-template-noep"
+mkdir -p "$NOEP_TEMPLATE"
+jq '.resources |= map(select(.name | contains("mpe_bronze") | not))' "$SYN" > "$NOEP_TEMPLATE/TemplateForWorkspace.json"
+cp "$WORKSPACE_TEMPLATE/TemplateParametersForWorkspace.json" "$NOEP_TEMPLATE/"
+workspace_plan WHAT_IF=true DEPLOY_MANAGED_PRIVATE_ENDPOINTS=true TEMPLATE_DIR="$NOEP_TEMPLATE"
+expect "synapse plan: no managed virtual network and no endpoint of the template's own is an empty list" "0" "$status"
+NOVNET_PLAN="$WORK/novnet-plan"
+cp -R "$PLAN" "$NOVNET_PLAN"
+workspace_plan WHAT_IF=true DEPLOY_MANAGED_PRIVATE_ENDPOINTS=true
+expect "synapse plan: no managed virtual network and an endpoint to deploy fails the plan" "1" "$status"
+expect_log "synapse plan: ... saying so and what to do" "has no managed virtual network, so the managed private endpoints in the folder can't be deployed to it."
+workspace_plan WHAT_IF=true
+expect "synapse plan: ... but the endpoints aren't listed when they aren't deployed" "0" "$status"
+rm -f "$STUB_LIVE/managedPrivateEndpoints.400"
+live_list managedPrivateEndpoints synapse-ws-sql--syn-test:m1 mpe_live:m2
+
 workspace_plan WHAT_IF=true DELETE_ARTIFACTS=false
 expect_file_lacks "synapse plan: nothing is deleted without delete-artifacts" "$PLAN/summary.md" "nb_old"
 
@@ -619,6 +687,14 @@ live_list notebooks nb_old:n1
 workspace_prepare DEPLOY_MANAGED_PRIVATE_ENDPOINTS=true
 expect "synapse apply: an apply that disagrees with the plan about endpoints is refused" "1" "$status"
 expect_log "synapse apply: ... saying why" "The apply has deploy-managed-private-endpoints true, but the plan was made with false."
+
+# ... and the apply sees the same empty endpoint list as the plan that allowed it
+touch "$STUB_LIVE/managedPrivateEndpoints.400"
+rm -rf "$PLAN"
+cp -R "$NOVNET_PLAN" "$PLAN"
+workspace_prepare DEPLOY_MANAGED_PRIVATE_ENDPOINTS=true
+expect "synapse apply: a workspace without a managed virtual network is as planned" "0" "$status"
+rm -f "$STUB_LIVE/managedPrivateEndpoints.400"
 workspace_plan
 workspace_prepare
 expect "synapse apply: a plan without what-if is prepared" "0" "$status"
@@ -721,6 +797,18 @@ first_db="$(arm_live_fingerprint "$WORK/db.jsonl")"
 jq -n '{items: [{Name: "lake2", Properties: {b: 3}}]}' > "$STUB_LIVE/databases.2.json"
 arm_live_lines https://ws.dev.azuresynapse.net 2019-06-01-preview https://dev.azuresynapse.net databases > "$WORK/db.jsonl"
 expect "databases: a changed database changes the fingerprint" "1" "$([ "$(arm_live_fingerprint "$WORK/db.jsonl")" != "$first_db" ] && echo 1 || echo 0)"
+
+# ... and the lake flag the deletion prediction reads
+jq -n '{items: [
+  {name: "n1", properties: {Origin: {Type: "SPARK"}, Properties: {IsSyMSCDMDatabase: true}}},
+  {name: "n2", properties: {Origin: {Type: "SPARK"}, Properties: {IsSyMSCDMDatabase: "true"}}},
+  {Name: "f1", Origin: {Type: "spark"}, Properties: {IsSyMSCDMDatabase: true}},
+  {Name: "f2", Properties: {a: 1}}
+]}' > "$STUB_LIVE/databases.json"
+rm -f "$STUB_LIVE/databases.2.json"
+arm_live_lines https://ws.dev.azuresynapse.net 2019-06-01-preview https://dev.azuresynapse.net databases > "$WORK/db.jsonl"
+expect "databases: the lake flag is read from the nested shape and the flat one, strictly" "n1:true n2:false f1:true f2:false" "$(jq -r '"\(.name):\(.lake)"' "$WORK/db.jsonl" | paste -sd' ' -)"
+rm -f "$STUB_LIVE/databases.json"
 
 # The apply's inputs must be the plan's
 reset_live

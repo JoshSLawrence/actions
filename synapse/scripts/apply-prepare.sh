@@ -90,6 +90,10 @@ if [ -f "$PLAN_DIR/deploy/live.json" ]; then
   log_step "Check the workspace is as planned"
   endpoint="https://${workspace}.dev.azuresynapse.net"
   mapfile -t kinds < <(jq -r '.kinds[]' "$PLAN_DIR/deploy/live.json")
+  # The plan allowed a workspace without a managed virtual network only when
+  # the template had no endpoint of its own; if one has been created since,
+  # the fingerprint differs and the apply refuses
+  export ARM_EMPTY_WITHOUT_VNET=true
   if ! arm_live_lines "$endpoint" 2019-06-01-preview https://dev.azuresynapse.net "${kinds[@]}" > "$STATE_DIR/live-lines.jsonl" 2> "$STATE_DIR/live.log"; then
     cat "$STATE_DIR/live.log" >&2
     arm_refuse "$PLAN_DIR" "Couldn't list the artifacts of workspace ${workspace} to check it hasn't changed since the plan. The job needs network access to ${endpoint} (a private workspace needs a runner in its network) and the Synapse Artifact User role; then re-run all jobs of the workflow."

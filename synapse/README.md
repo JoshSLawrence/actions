@@ -19,6 +19,7 @@ page covers what's different.
 - [Setup](#setup)
 - [Reference](#reference)
 - [Composite actions](#composite-actions)
+- [Using synapse/build on its own](#using-synapsebuild-on-its-own)
 - [Limitations](#limitations)
 - [Coming from workspace\_publish](#coming-from-workspace_publish)
 
@@ -71,13 +72,13 @@ A complete caller is in [`examples/synapse.yaml`](../examples/synapse.yaml).
     deletes, and checks that the Spark and SQL pools the artifacts use exist;
   - Key Vault `reference`s in parameter files don't work (they're an ARM
     feature): use `parameter-secrets`, or a Key Vault linked service.
-- **The deployer is a fork.** Upstream
-  [`Azure/Synapse-workspace-deployment`][upstream] only signs in with a
-  client secret or an Azure VM's managed identity. `synapse/apply` uses
-  [a fork][fork] that adds GitHub OIDC to upstream's V1.9.2, and never
-  deletes a managed private endpoint unless it deploys them (upstream deletes
-  those that aren't in the template whatever `deployManagedPrivateEndpoint`
-  says).
+- **The deployer is a standalone action.** `synapse/apply` uses
+  [`JoshSLawrence/synapse-deploy`][deployer], which has its own releases
+  (Dependabot bumps the pin in this repository). It signs in with GitHub
+  OIDC, and never deletes a managed private endpoint unless it deploys them.
+  The Synapse deploys in this repository's releases v0.1.0 to v0.6.0 pin the
+  deployer's old repository, and stop working once it is deleted: move to
+  v0.7.0 or later.
 - **Triggers** are stopped before the deployment (the deployer can't update
   or delete a started trigger) and started after: those the template marks
   `Started`, and those that were running and the template doesn't mark
@@ -88,11 +89,18 @@ A complete caller is in [`examples/synapse.yaml`](../examples/synapse.yaml).
   the folder. Integration runtimes and the workspace's own defaults
   (`<workspace>-WorkspaceDefaultStorage`, ...) are never deleted, and
   managed private endpoints are never deleted unless they're deployed
-  (`deploy-managed-private-endpoints`).
+  (`deploy-managed-private-endpoints`). The defaults are the linked
+  services named `*-WorkspaceDefaultStorage` and `*-WorkspaceDefaultSqlServer`,
+  the credential `WorkspaceSystemIdentity` and any endpoint named
+  `synapse-ws-*`. Of the lake databases only the Spark ones that are Synapse
+  Metadata Service databases are managed, and the tables and relationships
+  that a lake database in the folder no longer has are deleted too (the plan
+  doesn't count them).
 - **Each deployment sets `workspaceName`** instead of `factoryName`.
 
-[upstream]: https://github.com/Azure/Synapse-workspace-deployment
-[fork]: https://github.com/JoshSLawrence/Synapse-workspace-deployment/releases/tag/v1.0.0
+[deployer]: https://github.com/JoshSLawrence/synapse-deploy/releases/tag/v1.0.0
+[deployer-readme]: https://github.com/JoshSLawrence/synapse-deploy/blob/v1.0.0/README.md
+[deployer-permissions]: https://github.com/JoshSLawrence/synapse-deploy/blob/v1.0.0/README.md#permissions
 
 ## What's deployed: logic and infrastructure
 
@@ -213,10 +221,11 @@ synapse-deploy.yaml                   plan ──> apply (after approval)
      which quotes the subject presented.
    - Synapse roles are separate from Azure's:
    - the apply identity needs **Synapse Artifact Publisher** in the
-     workspace (**Synapse Administrator** with
-     `deploy-managed-private-endpoints`), and Azure **Reader** on the
-     workspace; deploying integration runtimes also needs
-     `Microsoft.Synapse/workspaces/integrationruntimes/write`;
+     workspace (also **Synapse Linked Data Manager** with
+     `deploy-managed-private-endpoints`). It needs no Azure role unless
+     `deploy-integration-runtimes` is on: then **Contributor** on the
+     workspace only (see the
+     [deployer's permissions][deployer-permissions]);
    - with `what-if`, the plan identity needs **Synapse Artifact User**, and
      Azure **Reader** on the workspace to list its pools.
    - **Dependabot** runs get no OIDC token (and no Actions secrets), so a
@@ -282,6 +291,62 @@ WORKING_DIR=synapse synapse/scripts/build.sh
 WORKING_DIR=synapse TEMPLATE_DIR=/tmp/synapse-template PARAMETER_FILES=deployments/dev.json RESOURCE_GROUP=rg-dev synapse/scripts/plan.sh
 ```
 
+## Using synapse/build on its own
+
+The build is offline and needs no credentials, so it can run on its own,
+without this repository's plan and apply, and feed the deployer directly. Pin
+node in the folder's `mise.toml`:
+
+```toml
+[tools]
+node = "22.23.3"
+```
+
+Validate every pull request by building the template:
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@<sha> # vX.Y.Z
+        with:
+          persist-credentials: false
+      - uses: JoshSLawrence/actions/shared/setup@v1
+        with:
+          working-directory: synapse
+          required-tools: node
+      - id: build
+        uses: JoshSLawrence/actions/synapse/build@v1
+        with:
+          working-directory: synapse
+      - uses: actions/upload-artifact@<sha> # vX.Y.Z
+        with:
+          name: ${{ steps.build.outputs.artifact-name }}
+          path: ${{ steps.build.outputs.template-dir }}
+```
+
+Deploy on merge by building again and handing the exported template to the
+deployer, in a job with an environment, `id-token: write` and the roles under
+[Setup](#setup):
+
+```yaml
+      - uses: JoshSLawrence/synapse-deploy@<sha> # v1.0.0
+        with:
+          workspace-name: myworkspace
+          template-file: ${{ steps.build.outputs.template-dir }}/TemplateForWorkspace.json
+          parameters-file: ${{ steps.build.outputs.template-dir }}/TemplateParametersForWorkspace.json
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+```
+
+That skips what this repository adds around the deployer: the plan and its
+approval, the stale-plan and live checks, the trigger handling and the
+infrastructure boundary. The deployer's [README][deployer-readme] lists every
+input.
+
 ## Limitations
 
 - **Global parameters** don't exist in Synapse.
@@ -298,6 +363,12 @@ WORKING_DIR=synapse TEMPLATE_DIR=/tmp/synapse-template PARAMETER_FILES=deploymen
   `delete-artifacts` or `deploy-managed-private-endpoints` is refused, with
   the reason in the PR comment, so it can't delete what the plan never
   listed.
+- **A name built from other parameters.** The plan reads a resource's name
+  from the end of its template name (`'/<name>')]`), while the deployer
+  evaluates the whole expression. A name built from parameters other than
+  `workspaceName` is keyed differently by the plan, which can then list a
+  deletion or a new artifact wrongly. The deployment itself is right; the
+  plan only predicts.
 - **Endpoints have no etag, and lake databases are hashed.** Managed private
   endpoint listings carry no etag, so with
   `deploy-managed-private-endpoints: true` the fingerprint covers their names

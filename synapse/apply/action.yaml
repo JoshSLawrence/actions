@@ -4,8 +4,8 @@ description: >-
   resource group it names. First refuses a stale plan (the PR moved on, or the
   folder changed on the target branch since it was planned) and checks the
   plan's digest and that the workspace is as it was when planned; then stops
-  started triggers, publishes the artifacts with the Synapse workspace
-  deployer (signed in with the job's GitHub OIDC token), and starts triggers
+  started triggers, publishes the artifacts with the Synapse deployer
+  (JoshSLawrence/synapse-deploy, signed in with the job's GitHub OIDC token), and starts triggers
   again. Download the plan artifact into plan-dir, sign in with azure/login,
   and run shared/setup (azure-cli pinned) first, on a runner that can reach
   the workspace. Needs id-token: write. Gate the job with an environment that
@@ -115,26 +115,22 @@ runs:
         DELETE_ARTIFACTS: ${{ inputs.delete-artifacts }}
         STATE_DIR: ${{ runner.temp }}/synapse-apply
 
-    # Upstream Azure/Synapse-workspace-deployment only signs in with a client
-    # secret or an Azure VM's managed identity. This fork adds GitHub OIDC
-    # (federatedIdentity) and keeps managed private endpoints it doesn't
-    # deploy; it has its own semver releases: bump this when it releases.
+    # The deployer is a standalone action with its own releases
+    # (JoshSLawrence/synapse-deploy), signed in with GitHub OIDC; Dependabot
+    # bumps this pin like any other action.
     - name: Deploy artifacts
       id: deploy
-      uses: JoshSLawrence/Synapse-workspace-deployment@bc2fdca4d407ef8a6f6b05e71b507eedf5dc9877 # v1.0.0
+      uses: JoshSLawrence/synapse-deploy@5ef505d3b08a71c3e15edce63db7c3bf8aa7af1d # v1.0.0
       with:
-        operation: deploy
-        TargetWorkspaceName: ${{ steps.prepare.outputs.workspace-name }}
-        TemplateFile: ${{ steps.prepare.outputs.template-file }}
-        ParametersFile: ${{ steps.prepare.outputs.parameters-file }}
-        Environment: Azure Public
-        resourceGroup: ${{ steps.prepare.outputs.resource-group }}
-        clientId: ${{ inputs.azure-client-id || env.ARM_CLIENT_ID }}
-        tenantId: ${{ inputs.azure-tenant-id || env.ARM_TENANT_ID }}
-        subscriptionId: ${{ inputs.azure-subscription-id || env.ARM_SUBSCRIPTION_ID }}
-        federatedIdentity: "true"
-        DeleteArtifactsNotInTemplate: ${{ steps.prepare.outputs.delete-artifacts }}
-        deployManagedPrivateEndpoint: ${{ steps.prepare.outputs.deploy-managed-private-endpoints }}
+        workspace-name: ${{ steps.prepare.outputs.workspace-name }}
+        template-file: ${{ steps.prepare.outputs.template-file }}
+        parameters-file: ${{ steps.prepare.outputs.parameters-file }}
+        resource-group: ${{ steps.prepare.outputs.resource-group }}
+        subscription-id: ${{ inputs.azure-subscription-id || env.ARM_SUBSCRIPTION_ID }}
+        client-id: ${{ inputs.azure-client-id || env.ARM_CLIENT_ID }}
+        tenant-id: ${{ inputs.azure-tenant-id || env.ARM_TENANT_ID }}
+        delete-artifacts: ${{ steps.prepare.outputs.delete-artifacts }}
+        deploy-managed-private-endpoints: ${{ steps.prepare.outputs.deploy-managed-private-endpoints }}
 
     # Always, once prepare has written the parameters file: it holds the
     # secrets, and triggers stopped before a failed deployment must restart

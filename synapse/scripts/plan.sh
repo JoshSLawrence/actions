@@ -218,8 +218,18 @@ if is_true "$WHAT_IF"; then
   if is_true "$DEPLOY_INTEGRATION_RUNTIMES"; then
     kinds+=(integrationRuntimes)
   fi
+  # A workspace without a managed virtual network has no endpoints to list
+  # (the list answers 400): that is fine unless the template has an endpoint
+  # of its own to deploy, which can't work there
+  export ARM_EMPTY_WITHOUT_VNET=false
+  if [ "$(jq -s 'map(select((.type | ascii_downcase) == "managedvirtualnetworks/managedprivateendpoints" and (.default | not))) | length' "$WORK_DIR/template.jsonl")" = 0 ]; then
+    ARM_EMPTY_WITHOUT_VNET=true
+  fi
   if ! arm_live_lines "$endpoint" 2019-06-01-preview https://dev.azuresynapse.net "${kinds[@]}" > "$WORK_DIR/live-lines.jsonl" 2> "$WORK_DIR/live.log"; then
     cat "$WORK_DIR/live.log" >&2
+    if grep -q 'does not have a managed virtual network associated' "$WORK_DIR/live.log"; then
+      fail "Workspace ${workspace} has no managed virtual network, so the managed private endpoints in the folder can't be deployed to it. Create the workspace with a managed virtual network (with your infrastructure as code) and apply that first, or set deploy-managed-private-endpoints to false." "$WORK_DIR/live.log"
+    fi
     fail "Couldn't list the artifacts of workspace ${workspace}. The plan job needs network access to ${endpoint} (a private workspace needs a runner in its network) and the Synapse Artifact User role; or set what-if to false." "$WORK_DIR/live.log"
   fi
   jq -c '. + {key: "\(.type | ascii_downcase)/\(.name | ascii_downcase)"}' "$WORK_DIR/live-lines.jsonl" > "$WORK_DIR/live.jsonl"
@@ -235,15 +245,19 @@ if is_true "$WHAT_IF"; then
   jq -n --arg fingerprint "$(arm_synapse_fingerprint "$WORK_DIR/live-lines.jsonl")" --argjson kinds "$(printf '%s\n' "${kinds[@]}" | jq -R . | jq -sc .)" \
     '{fingerprint: $fingerprint, kinds: $kinds}' > "$PLAN_DIR/deploy/live.json"
 
-  default_artifact="$ARM_SYNAPSE_DEFAULT_NAME"
   new="$(jq -cs --slurpfile live <(jq -s . "$WORK_DIR/live.jsonl") '
     ($live[0] | map(.key)) as $existing | map(select((.default | not) and (.key as $k | $existing | index($k) | not)))' "$WORK_DIR/template.jsonl")"
   if is_true "$DELETE_ARTIFACTS"; then
     # The deployer never deletes integration runtimes; endpoints are only
-    # listed when they're deployed, and then it deletes those not in the template
+    # listed when they're deployed, and then it deletes those not in the
+    # template. It leaves the service's defaults alone (by type: a pipeline
+    # named like one is deleted as any other) and manages only the lake
+    # databases that are Spark, SyMS ones (the others are a Spark job's).
     deletions="$(jq -cs --slurpfile template <(jq -s . "$WORK_DIR/template.jsonl") "
       (\$template[0] | map(.key)) as \$keep
-      | map(select(.type != \"integrationRuntimes\" and (.name | ${default_artifact} | not)))
+      | map(select(.type != \"integrationRuntimes\"
+          and (.type != \"databases\" or .lake == true)
+          and (((.type | ascii_downcase | ${ARM_SYNAPSE_DEFAULT_TYPES}) and (.name | ${ARM_SYNAPSE_DEFAULT_NAME})) | not)))
       | map(select(.key as \$k | \$keep | index(\$k) | not))
       | map({type, name, key})" "$WORK_DIR/live.jsonl")"
   fi
@@ -301,6 +315,10 @@ deleted="$(jq length <<< "$deletions")"
   if [ "$deleted" -gt 0 ]; then
     echo "> **Warning:** the deployment deletes ${deleted} artifact(s) that are no longer in the folder:"
     jq -r '.[] | "> - `\(.type)/\(.name)`"' <<< "$deletions"
+    echo ""
+  fi
+  if is_true "$WHAT_IF" && is_true "$DELETE_ARTIFACTS" && [ "$(jq -s 'map(select(.type == "databases")) | length' "$WORK_DIR/template.jsonl")" -gt 0 ]; then
+    echo "> **Note:** the tables and relationships that a lake database in the folder no longer has are deleted too. They aren't counted or listed above."
     echo ""
   fi
   echo "<details><summary>Artifacts (${total})</summary>"
