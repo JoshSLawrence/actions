@@ -238,8 +238,10 @@ if is_true "$WHAT_IF"; then
   # Files of the kinds left to infrastructure as code that exist live are
   # reference copies, and don't warn. This only decides what the plan says,
   # so a failed listing warns about each file, as without what-if, instead
-  # of failing the plan (a workspace without a managed virtual network has
-  # no endpoints to list).
+  # of failing the plan. A workspace without a managed virtual network
+  # answers the endpoint list with a 400; ARM_EMPTY_WITHOUT_VNET (set above)
+  # makes that an empty list here too, so the folder's endpoint files get the
+  # one-note-per-kind treatment instead of a warning each.
   if ! arm_classify_left_to_iac "$WORK_DIR/left-to-iac.jsonl" "$endpoint" 2019-06-01-preview https://dev.azuresynapse.net 2> "$WORK_DIR/live.log"; then
     cat "$WORK_DIR/live.log" >&2
     log_warn "Couldn't list the integration runtimes and managed private endpoints of workspace ${workspace}, so the plan can't tell which of the folder's are reference copies of live ones and warns about each. The plan identity needs a Synapse role that reads them (Synapse Artifact User) to quiet them."

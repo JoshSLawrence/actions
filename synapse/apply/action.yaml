@@ -6,10 +6,10 @@ description: >-
   plan's digest and that the workspace is as it was when planned; then stops
   started triggers, publishes the artifacts with the Synapse deployer
   (JoshSLawrence/synapse-deploy, signed in with the job's GitHub OIDC
-  token), and starts triggers again. Download the plan artifact into plan-dir, sign in with azure/login,
-  and run shared/setup (azure-cli pinned) first, on a runner that can reach
-  the workspace. Needs id-token: write. Gate the job with an environment that
-  requires reviewers.
+  token), and starts triggers again. Download the plan artifact into
+  plan-dir, sign in with azure/login, and run shared/setup (azure-cli pinned)
+  first, on a runner that can reach the workspace. Needs id-token: write.
+  Gate the job with an environment that requires reviewers.
 
 inputs:
   working-directory:
@@ -36,8 +36,8 @@ inputs:
       Deploy the folder's managed private endpoints. "false" leaves them to
       infrastructure as code: they're left out of the deployment and never
       deleted. With "true", Synapse also deletes endpoints that aren't in the
-      folder (the deployer's identity then needs Synapse Linked Data Manager, or Synapse Administrator). Must
-      be what the plan was made with.
+      folder (the deployer's identity then needs Synapse Linked Data Manager,
+      or Synapse Administrator). Must be what the plan was made with.
     required: false
     default: "false"
   manage-triggers:

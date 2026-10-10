@@ -101,7 +101,7 @@ case "$1 $2" in
         ;;
     esac
     if [ -f "$STUB_LIVE/${name}.400" ] && [ "$file" = "$STUB_LIVE/${name}.json" ]; then
-      echo "ERROR: (BadRequest) The workspace does not have a managed virtual network associated with it." >&2
+      echo "ERROR: (ManagedVnetNotFound) The workspace Does Not Have a managed virtual network associated with it." >&2
       exit 1
     fi
     if [ -f "$STUB_LIVE/${name}.404" ] && [ "$file" = "$STUB_LIVE/${name}.json" ]; then
@@ -652,6 +652,15 @@ workspace_plan WHAT_IF=true TEMPLATE_DIR="$LAKE_TEMPLATE"
 expect_file_has "synapse plan: lake tables and relationships are deleted too, and the summary says they aren't counted" "$PLAN/summary.md" "tables and relationships that a lake database in the folder no longer has are deleted too"
 workspace_plan WHAT_IF=true DELETE_ARTIFACTS=false TEMPLATE_DIR="$LAKE_TEMPLATE"
 expect_file_lacks "synapse plan: ... not without delete-artifacts" "$PLAN/summary.md" "tables and relationships"
+
+# A template's linked service named like an endpoint default is an ordinary artifact
+SYNWS_TEMPLATE="$WORK/workspace-template-synws"
+mkdir -p "$SYNWS_TEMPLATE"
+jq '.resources += [{"name": "[concat(parameters(\u0027workspaceName\u0027), \u0027/synapse-ws-x\u0027)]", "type": "Microsoft.Synapse/workspaces/linkedServices", "apiVersion": "2019-06-01-preview", "properties": {}, "dependsOn": []}]' "$SYN" > "$SYNWS_TEMPLATE/TemplateForWorkspace.json"
+cp "$WORKSPACE_TEMPLATE/TemplateParametersForWorkspace.json" "$SYNWS_TEMPLATE/"
+workspace_plan WHAT_IF=true TEMPLATE_DIR="$SYNWS_TEMPLATE"
+expect_file_lacks "synapse plan: a template linked service named synapse-ws-x isn't a skipped default" "$PLAN/summary.md" "skipped (service default) | \`linkedServices/synapse-ws-x\`"
+expect_file_has "synapse plan: ... it is published like any other" "$PLAN/summary.md" "\`linkedServices/synapse-ws-x\`"
 
 # A workspace without a managed virtual network answers the endpoint list with a 400
 live_list managedPrivateEndpoints
