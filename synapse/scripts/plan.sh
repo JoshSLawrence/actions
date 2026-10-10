@@ -195,7 +195,7 @@ log_success "Parameters rendered for workspace ${workspace} in ${RESOURCE_GROUP}
 arm_template_resources "$TEMPLATE" |
   jq -c "(.type | ascii_downcase) as \$t
     | . + {key: \"\(\$t)/\(.name | ascii_downcase)\",
-           default: ((\$t | IN(\"linkedservices\", \"credentials\", \"managedvirtualnetworks/managedprivateendpoints\")) and (.name | ${ARM_SYNAPSE_DEFAULT_NAME}))}" > "$WORK_DIR/template.jsonl"
+           default: (${ARM_SYNAPSE_IS_DEFAULT})}" > "$WORK_DIR/template.jsonl"
 total="$(wc -l < "$WORK_DIR/template.jsonl" | tr -d ' ')"
 defaults="$(jq -s 'map(select(.default)) | length' "$WORK_DIR/template.jsonl")"
 artifacts=$((total - defaults))
@@ -219,15 +219,17 @@ if is_true "$WHAT_IF"; then
     kinds+=(integrationRuntimes)
   fi
   # A workspace without a managed virtual network has no endpoints to list
-  # (the list answers 400): that is fine unless the template has an endpoint
-  # of its own to deploy, which can't work there
+  # (the list answers 400). Endpoints are listed only when they're deployed;
+  # then that is fine unless the template has an endpoint of its own to
+  # deploy, which can't work there. With endpoints left to infrastructure as
+  # code they aren't listed, so such a workspace never reaches this
   export ARM_EMPTY_WITHOUT_VNET=false
   if [ "$(jq -s 'map(select((.type | ascii_downcase) == "managedvirtualnetworks/managedprivateendpoints" and (.default | not))) | length' "$WORK_DIR/template.jsonl")" = 0 ]; then
     ARM_EMPTY_WITHOUT_VNET=true
   fi
   if ! arm_live_lines "$endpoint" 2019-06-01-preview https://dev.azuresynapse.net "${kinds[@]}" > "$WORK_DIR/live-lines.jsonl" 2> "$WORK_DIR/live.log"; then
     cat "$WORK_DIR/live.log" >&2
-    if grep -q 'does not have a managed virtual network associated' "$WORK_DIR/live.log"; then
+    if grep -qi 'does not have a managed virtual network associated' "$WORK_DIR/live.log"; then
       fail "Workspace ${workspace} has no managed virtual network, so the managed private endpoints in the folder can't be deployed to it. Create the workspace with a managed virtual network (with your infrastructure as code) and apply that first, or set deploy-managed-private-endpoints to false." "$WORK_DIR/live.log"
     fi
     fail "Couldn't list the artifacts of workspace ${workspace}. The plan job needs network access to ${endpoint} (a private workspace needs a runner in its network) and the Synapse Artifact User role; or set what-if to false." "$WORK_DIR/live.log"
@@ -257,7 +259,7 @@ if is_true "$WHAT_IF"; then
       (\$template[0] | map(.key)) as \$keep
       | map(select(.type != \"integrationRuntimes\"
           and (.type != \"databases\" or .lake == true)
-          and (((.type | ascii_downcase | ${ARM_SYNAPSE_DEFAULT_TYPES}) and (.name | ${ARM_SYNAPSE_DEFAULT_NAME})) | not)))
+          and (${ARM_SYNAPSE_IS_DEFAULT} | not)))
       | map(select(.key as \$k | \$keep | index(\$k) | not))
       | map({type, name, key})" "$WORK_DIR/live.jsonl")"
   fi

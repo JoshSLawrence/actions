@@ -487,10 +487,13 @@ arm_rest_list() {
   err="$(mktemp)"
   while [ -n "$url" ]; do
     if ! page="$(arm_az rest --method get --url "$url" "$@" 2> "$err")"; then
-      if [ "$first" = true ] && grep -q -e 'Not Found' -e 'ResourceNotFound' -e 'NotFound' "$err"; then
-        break
-      fi
-      if [ "$first" = true ] && [ "${ARM_EMPTY_WITHOUT_VNET:-}" = true ] && grep -q 'does not have a managed virtual network associated' "$err"; then
+      if grep -qi 'does not have a managed virtual network associated' "$err"; then
+        # Checked before the NotFound test: the message must not be mistaken
+        # for it, and an unallowed one fails the list
+        if [ "$first" = true ] && [ "${ARM_EMPTY_WITHOUT_VNET:-}" = true ]; then
+          break
+        fi
+      elif [ "$first" = true ] && grep -q -e 'Not Found' -e 'ResourceNotFound' -e 'NotFound' "$err"; then
         break
       fi
       cat "$err" >&2
@@ -788,8 +791,8 @@ arm_left_to_iac_warn() {
 # object is read flat. Reads the item from stdin.
 arm_lake_database() {
   jq -c '(if (.properties | type) == "object" then .properties else . end)
-    | (((.Origin.Type? // "") | if type == "string" then ascii_upcase else "" end) == "SPARK")
-      and (.Properties.IsSyMSCDMDatabase? == true)'
+    | (((.Origin | if type == "object" then .Type else null end) | if type == "string" then ascii_upcase else "" end) == "SPARK")
+      and (((.Properties | if type == "object" then .IsSyMSCDMDatabase else null end)) == true)'
 }
 
 # Print the resources of some collections of a factory or workspace, one
@@ -820,7 +823,9 @@ arm_live_lines() {
       items="$(arm_rest_items "${base}/${collection}?api-version=${version}" "${options[@]+"${options[@]}"}")" || return 1
       while IFS= read -r item; do
         [ -n "$item" ] || continue
-        name="$(jq -r '.name // .Name' <<< "$item")" || return 1
+        # Only a non-empty string name is an item, as for the deployer
+        name="$(jq -r '[.name, .Name] | map(select(type == "string" and . != "")) | first // empty' <<< "$item")" || return 1
+        [ -n "$name" ] || continue
         jq -cn --arg type "$type" --arg name "$name" --arg etag "$(text_sha256 "$(jq -cS . <<< "$item")")" --argjson lake "$(arm_lake_database <<< "$item")" '{type: $type, name: $name, etag: $etag, lake: $lake}' || return 1
       done <<< "$items"
       continue
@@ -871,27 +876,29 @@ arm_classify_left_to_iac() {
   rm -f "$live"
 }
 
-# The names the Synapse service creates itself: the workspace's default
-# linked services (<workspace>-WorkspaceDefaultStorage and ...SqlServer), its
-# credential, and the synapse-ws-* managed private endpoints (any name that
-# starts so, such as the primary storage's synapse-ws-custstgacct--<workspace>-
-# <suffix>; the same rule as the deployer's). Deployments skip them. A jq test
-# for a name, to apply only to linked services, credentials and endpoints
-# (ARM_SYNAPSE_DEFAULT_TYPES); anchored, so a user's
+# Whether an artifact is one the Synapse service creates itself, as a jq
+# filter for an object with a type and a name: the workspace's default linked
+# services (<workspace>-WorkspaceDefaultStorage and ...SqlServer), its
+# credential, and its synapse-ws-* managed private endpoints (any name that
+# starts so, such as the primary storage's
+# synapse-ws-custstgacct--<workspace>-<suffix>). Each type has its own
+# pattern, as in the deployer's isServiceDefault (src/defaults.ts): a pipeline
+# or a credential named like a default linked service is an ordinary
+# artifact. Deployments skip the defaults. Anchored, so a user's
 # x-WorkspaceDefaultStorage-copy is not one.
-ARM_SYNAPSE_DEFAULT_NAME='test("-workspacedefault(sqlserver|storage)$|^workspacesystemidentity$|^synapse-ws-"; "i")'
-
-# The lower-case types ARM_SYNAPSE_DEFAULT_NAME applies to, as the deployer
-# scopes it: a pipeline named like a default is an ordinary pipeline.
-ARM_SYNAPSE_DEFAULT_TYPES='IN("linkedservices", "credentials", "managedvirtualnetworks/managedprivateendpoints")'
+ARM_SYNAPSE_IS_DEFAULT='(if (.type | ascii_downcase) == "linkedservices" then ((.name // "") | test("-workspacedefault(sqlserver|storage)$"; "i"))
+  elif (.type | ascii_downcase) == "credentials" then ((.name // "") | test("^workspacesystemidentity$"; "i"))
+  elif (.type | ascii_downcase) == "managedvirtualnetworks/managedprivateendpoints" then ((.name // "") | test("^synapse-ws-"; "i"))
+  else false end)'
 
 # The same fingerprint for a Synapse workspace's listing, less the service's
-# own artifacts (ARM_SYNAPSE_DEFAULT_NAME): they say nothing about a change.
+# own artifacts (ARM_SYNAPSE_IS_DEFAULT) and the lake databases the deployer
+# doesn't manage (lake false: a Spark job's): they say nothing about a change.
 # Usage: arm_synapse_fingerprint <lines file>
 arm_synapse_fingerprint() {
   local lines
   lines="$(mktemp)"
-  jq -c "select(((.type | ascii_downcase | ${ARM_SYNAPSE_DEFAULT_TYPES}) and (.name | ${ARM_SYNAPSE_DEFAULT_NAME})) | not)" "$1" > "$lines" || { rm -f "$lines"; return 1; }
+  jq -c "select((${ARM_SYNAPSE_IS_DEFAULT} | not) and (.type != \"databases\" or .lake == true))" "$1" > "$lines" || { rm -f "$lines"; return 1; }
   arm_live_fingerprint "$lines" || { rm -f "$lines"; return 1; }
   rm -f "$lines"
 }

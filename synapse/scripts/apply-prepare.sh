@@ -72,6 +72,13 @@ delete_artifacts="$(arm_planned_setting "$PLAN_DIR" delete_artifacts delete-arti
 rm -rf "$STATE_DIR"
 (umask 077 && mkdir -p "$STATE_DIR")
 STATE_DIR="$(cd "$STATE_DIR" && pwd)"
+# The deployer splits its parameters-file input on whitespace
+case "$STATE_DIR" in
+  *[[:space:]]*)
+    log_error "The apply's state directory (${STATE_DIR}) has whitespace in its path, which the Synapse deployer can't take in its parameters-file input. Run the job where the runner's temp directory has no spaces in its path."
+    exit 1
+    ;;
+esac
 # Set before anything can fail half-way (e.g. stopping triggers), so
 # apply-finish.sh can still clean up and restart what was stopped
 set_output state-dir "$STATE_DIR"
@@ -91,8 +98,9 @@ if [ -f "$PLAN_DIR/deploy/live.json" ]; then
   endpoint="https://${workspace}.dev.azuresynapse.net"
   mapfile -t kinds < <(jq -r '.kinds[]' "$PLAN_DIR/deploy/live.json")
   # The plan allowed a workspace without a managed virtual network only when
-  # the template had no endpoint of its own; if one has been created since,
-  # the fingerprint differs and the apply refuses
+  # the template had no endpoint of its own to deploy, so an empty list is the
+  # plan's too; the deployer itself fails a template with an endpoint on such
+  # a workspace, so nothing is deployed to it
   export ARM_EMPTY_WITHOUT_VNET=true
   if ! arm_live_lines "$endpoint" 2019-06-01-preview https://dev.azuresynapse.net "${kinds[@]}" > "$STATE_DIR/live-lines.jsonl" 2> "$STATE_DIR/live.log"; then
     cat "$STATE_DIR/live.log" >&2

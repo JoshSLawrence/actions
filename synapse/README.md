@@ -41,7 +41,7 @@ permissions: {}
 
 jobs:
   synapse:
-    uses: JoshSLawrence/actions/.github/workflows/synapse.yaml@v1
+    uses: JoshSLawrence/actions/.github/workflows/synapse.yaml@<sha> # v0.7.0
     permissions:
       actions: read
       contents: read
@@ -163,7 +163,8 @@ infrastructure as code created.
   and is only Studio's display: runs use the pool's name.
 - **Opting in.** `deploy-managed-private-endpoints: true` deploys the
   folder's endpoints and lets the deployer delete those that aren't in it
-  (the apply identity then needs Synapse Administrator).
+  (the apply identity then needs Synapse Linked Data Manager, or Synapse
+  Administrator).
   `deploy-integration-runtimes: true` deploys the folder's runtimes.
 
 ## How it works
@@ -221,10 +222,11 @@ synapse-deploy.yaml                   plan ──> apply (after approval)
      which quotes the subject presented.
    - Synapse roles are separate from Azure's:
    - the apply identity needs **Synapse Artifact Publisher** in the
-     workspace (also **Synapse Linked Data Manager** with
-     `deploy-managed-private-endpoints`). It needs no Azure role unless
-     `deploy-integration-runtimes` is on: then **Contributor** on the
-     workspace only (see the
+     workspace (also **Synapse Linked Data Manager**, or Synapse
+     Administrator, with `deploy-managed-private-endpoints`), and Azure
+     **Reader** on the workspace: `azure/login` with a subscription needs an
+     Azure role. With `deploy-integration-runtimes` it needs **Contributor**
+     on the workspace instead of Reader (see the
      [deployer's permissions][deployer-permissions]);
    - with `what-if`, the plan identity needs **Synapse Artifact User**, and
      Azure **Reader** on the workspace to list its pools.
@@ -314,12 +316,12 @@ jobs:
       - uses: actions/checkout@<sha> # vX.Y.Z
         with:
           persist-credentials: false
-      - uses: JoshSLawrence/actions/shared/setup@v1
+      - uses: JoshSLawrence/actions/shared/setup@<sha> # v0.7.0
         with:
           working-directory: synapse
           required-tools: node
       - id: build
-        uses: JoshSLawrence/actions/synapse/build@v1
+        uses: JoshSLawrence/actions/synapse/build@<sha> # v0.7.0
         with:
           working-directory: synapse
       - uses: actions/upload-artifact@<sha> # vX.Y.Z
@@ -336,11 +338,18 @@ deployer, in a job with an environment, `id-token: write` and the roles under
       - uses: JoshSLawrence/synapse-deploy@<sha> # v1.0.0
         with:
           workspace-name: myworkspace
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          resource-group: rg-example
           template-file: ${{ steps.build.outputs.template-dir }}/TemplateForWorkspace.json
           parameters-file: ${{ steps.build.outputs.template-dir }}/TemplateParametersForWorkspace.json
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
 ```
+
+The `subscription-id` and `resource-group` inputs are needed only when the
+template has integration runtimes (the folder may hold copies of them, such
+as `AutoResolveIntegrationRuntime`): the deployer then calls Azure Resource
+Manager, and the identity needs Contributor on the workspace.
 
 That skips what this repository adds around the deployer: the plan and its
 approval, the stale-plan and live checks, the trigger handling and the

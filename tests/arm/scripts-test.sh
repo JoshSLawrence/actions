@@ -607,6 +607,20 @@ expect_file_has "synapse plan: ... while another endpoint is deleted" "$PLAN/sum
 live_list pipelines pl_wait:p1
 live_list managedPrivateEndpoints synapse-ws-sql--syn-test:m1 mpe_live:m2
 
+# Each type has its own default pattern: these are ordinary artifacts, deleted
+live_list linkedServices syn-test-WorkspaceDefaultStorage:d1 ls_storage:l1 synapse-ws-x:l2 WorkspaceSystemIdentity:l3
+live_list credentials WorkspaceSystemIdentity:c1 x-WorkspaceDefaultStorage:c2
+live_list managedPrivateEndpoints synapse-ws-sql--syn-test:m1 x-WorkspaceDefaultSqlServer:m2
+workspace_plan WHAT_IF=true DEPLOY_MANAGED_PRIVATE_ENDPOINTS=true
+expect_file_has "synapse plan: a linked service named synapse-ws-* is deleted (that pattern is for endpoints)" "$PLAN/summary.md" "> - \`linkedServices/synapse-ws-x\`"
+expect_file_has "synapse plan: ... a linked service named WorkspaceSystemIdentity too" "$PLAN/summary.md" "> - \`linkedServices/WorkspaceSystemIdentity\`"
+expect_file_has "synapse plan: ... a credential named like a default linked service too" "$PLAN/summary.md" "> - \`credentials/x-WorkspaceDefaultStorage\`"
+expect_file_lacks "synapse plan: ... the real credential never" "$PLAN/summary.md" "> - \`credentials/WorkspaceSystemIdentity\`"
+expect_file_has "synapse plan: ... an endpoint named like a default linked service too" "$PLAN/summary.md" "> - \`managedVirtualNetworks/managedPrivateEndpoints/x-WorkspaceDefaultSqlServer\`"
+live_list linkedServices syn-test-WorkspaceDefaultStorage:d1 ls_storage:l1
+rm -f "$STUB_LIVE/credentials.json"
+live_list managedPrivateEndpoints synapse-ws-sql--syn-test:m1 mpe_live:m2
+
 # Lake databases: only Spark, SyMS ones are the deployer's
 rm -f "$STUB_LIVE/databases.json"
 jq -n '{items: [
@@ -695,6 +709,9 @@ cp -R "$NOVNET_PLAN" "$PLAN"
 workspace_prepare DEPLOY_MANAGED_PRIVATE_ENDPOINTS=true
 expect "synapse apply: a workspace without a managed virtual network is as planned" "0" "$status"
 rm -f "$STUB_LIVE/managedPrivateEndpoints.400"
+workspace_prepare STATE_DIR="$WORK/state with space"
+expect "synapse apply: a state directory with whitespace is refused (the deployer splits on it)" "1" "$status"
+expect_log "synapse apply: ... saying why" "has whitespace in its path"
 workspace_plan
 workspace_prepare
 expect "synapse apply: a plan without what-if is prepared" "0" "$status"
@@ -762,6 +779,19 @@ printf '%s\n' '{"type":"credentials","name":"WorkspaceSystemIdentity","etag":"1"
 printf '%s\n' '{"type":"credentials","name":"WorkspaceSystemIdentity","etag":"2"}' '{"type":"managedVirtualNetworks/managedPrivateEndpoints","name":"synapse-ws-sql--w","etag":"9"}' > "$WORK/s2.jsonl"
 expect "defaults: the service's own credential and endpoints don't" "$(arm_synapse_fingerprint "$WORK/s1.jsonl")" "$(arm_synapse_fingerprint "$WORK/s2.jsonl")"
 
+# The fingerprint scopes the defaults by type, as the deployer does
+printf '%s\n' '{"type":"pipelines","name":"x-WorkspaceDefaultStorage","etag":"1"}' > "$WORK/s1.jsonl"
+printf '%s\n' '{"type":"pipelines","name":"x-WorkspaceDefaultStorage","etag":"2"}' > "$WORK/s2.jsonl"
+expect "fingerprint: a pipeline named like a default linked service counts" "1" "$([ "$(arm_synapse_fingerprint "$WORK/s1.jsonl")" != "$(arm_synapse_fingerprint "$WORK/s2.jsonl")" ] && echo 1 || echo 0)"
+for pair in 'linkedServices synapse-ws-x' 'linkedServices WorkspaceSystemIdentity' 'credentials x-WorkspaceDefaultStorage' 'managedVirtualNetworks/managedPrivateEndpoints x-WorkspaceDefaultSqlServer'; do
+  printf '%s\n' "{\"type\":\"${pair%% *}\",\"name\":\"${pair#* }\",\"etag\":\"1\"}" > "$WORK/s1.jsonl"
+  printf '%s\n' "{\"type\":\"${pair%% *}\",\"name\":\"${pair#* }\",\"etag\":\"2\"}" > "$WORK/s2.jsonl"
+  expect "fingerprint: ${pair% *} ${pair#* } isn't a default of its type" "1" "$([ "$(arm_synapse_fingerprint "$WORK/s1.jsonl")" != "$(arm_synapse_fingerprint "$WORK/s2.jsonl")" ] && echo 1 || echo 0)"
+done
+printf '%s\n' '{"type":"managedVirtualNetworks/managedPrivateEndpoints","name":"synapse-ws-custstgacct--w-ab12","etag":""}' > "$WORK/s1.jsonl"
+printf '%s\n' '{"type":"managedVirtualNetworks/managedPrivateEndpoints","name":"synapse-ws-custstgacct--w-ab12","etag":"9"}' > "$WORK/s2.jsonl"
+expect "fingerprint: a primary storage endpoint (synapse-ws-custstgacct--...) doesn't" "$(arm_synapse_fingerprint "$WORK/s1.jsonl")" "$(arm_synapse_fingerprint "$WORK/s2.jsonl")"
+
 # Paged lists
 reset_live
 live_pages pipelines pl_wait:e1 pl_old:e2
@@ -787,14 +817,14 @@ rm -f "$STUB_LIVE/pipelines.404"
 
 # Lake databases answer {items, continuationToken}
 reset_live
-jq -n '{items: [{Name: "lake1", Properties: {a: 1}}], continuationToken: "t 1"}' > "$STUB_LIVE/databases.json"
-jq -n '{items: [{Name: "lake2", Properties: {b: 2}}]}' > "$STUB_LIVE/databases.2.json"
+jq -n '{items: [{Name: "lake1", Origin: {Type: "SPARK"}, Properties: {IsSyMSCDMDatabase: true, a: 1}}], continuationToken: "t 1"}' > "$STUB_LIVE/databases.json"
+jq -n '{items: [{Name: "lake2", Origin: {Type: "SPARK"}, Properties: {IsSyMSCDMDatabase: true, b: 2}}]}' > "$STUB_LIVE/databases.2.json"
 arm_live_lines https://ws.dev.azuresynapse.net 2019-06-01-preview https://dev.azuresynapse.net databases > "$WORK/db.jsonl"
 expect "databases: both pages are listed, by Name" "lake1 lake2" "$(jq -r .name "$WORK/db.jsonl" | paste -sd' ' -)"
 expect "databases: ... typed databases, with a digest for an etag" "databases 64" "$(jq -r '"\(.type) \(.etag | length)"' "$WORK/db.jsonl" | head -1)"
 expect "databases: ... asking for the next page by its token" "1" "$(grep -c 'continuationToken=t%201' "$STUB_LOG/az.log")"
 first_db="$(arm_live_fingerprint "$WORK/db.jsonl")"
-jq -n '{items: [{Name: "lake2", Properties: {b: 3}}]}' > "$STUB_LIVE/databases.2.json"
+jq -n '{items: [{Name: "lake2", Origin: {Type: "SPARK"}, Properties: {IsSyMSCDMDatabase: true, b: 3}}]}' > "$STUB_LIVE/databases.2.json"
 arm_live_lines https://ws.dev.azuresynapse.net 2019-06-01-preview https://dev.azuresynapse.net databases > "$WORK/db.jsonl"
 expect "databases: a changed database changes the fingerprint" "1" "$([ "$(arm_live_fingerprint "$WORK/db.jsonl")" != "$first_db" ] && echo 1 || echo 0)"
 
@@ -808,7 +838,25 @@ jq -n '{items: [
 rm -f "$STUB_LIVE/databases.2.json"
 arm_live_lines https://ws.dev.azuresynapse.net 2019-06-01-preview https://dev.azuresynapse.net databases > "$WORK/db.jsonl"
 expect "databases: the lake flag is read from the nested shape and the flat one, strictly" "n1:true n2:false f1:true f2:false" "$(jq -r '"\(.name):\(.lake)"' "$WORK/db.jsonl" | paste -sd' ' -)"
+# ... a Properties that isn't an object, and an item without a name, don't fail the listing
+jq -n '{items: [
+  {name: "p1", properties: {Origin: {Type: "SPARK"}, Properties: "x"}},
+  {name: "p2", properties: {Origin: {Type: "SPARK"}, Properties: [1]}},
+  {name: "p3", properties: {Origin: "SPARK", Properties: {IsSyMSCDMDatabase: true}}},
+  {name: "", properties: {}},
+  {properties: {}}
+]}' > "$STUB_LIVE/databases.json"
+arm_live_lines https://ws.dev.azuresynapse.net 2019-06-01-preview https://dev.azuresynapse.net databases > "$WORK/db.jsonl"
+expect "databases: odd shapes are not lake databases, nameless items are skipped" "p1:false p2:false p3:false" "$(jq -r '"\(.name):\(.lake)"' "$WORK/db.jsonl" | paste -sd' ' -)"
 rm -f "$STUB_LIVE/databases.json"
+
+# The fingerprint skips non-lake databases (a Spark job's)
+printf '%s\n' '{"type":"databases","name":"d","etag":"1","lake":false}' > "$WORK/s1.jsonl"
+printf '%s\n' '{"type":"databases","name":"d","etag":"2","lake":false}' > "$WORK/s2.jsonl"
+expect "fingerprint: a non-lake database doesn't count" "$(arm_synapse_fingerprint "$WORK/s1.jsonl")" "$(arm_synapse_fingerprint "$WORK/s2.jsonl")"
+printf '%s\n' '{"type":"databases","name":"d","etag":"1","lake":true}' > "$WORK/s1.jsonl"
+printf '%s\n' '{"type":"databases","name":"d","etag":"2","lake":true}' > "$WORK/s2.jsonl"
+expect "fingerprint: a lake database does" "1" "$([ "$(arm_synapse_fingerprint "$WORK/s1.jsonl")" != "$(arm_synapse_fingerprint "$WORK/s2.jsonl")" ] && echo 1 || echo 0)"
 
 # The apply's inputs must be the plan's
 reset_live
