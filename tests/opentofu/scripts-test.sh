@@ -728,6 +728,7 @@ cat > "$WORK/full-summary.md" << 'SUMMARY'
 ### Plan: 1 to add
 
 <details><summary>Resources (1)</summary>
+<br>
 
 | Action | Resource |
 | --- | --- |
@@ -736,6 +737,7 @@ cat > "$WORK/full-summary.md" << 'SUMMARY'
 </details>
 
 <details><summary>Full plan</summary>
+<br>
 
 ````diff
 + secret_value = "hunter2"
@@ -1103,6 +1105,12 @@ else
   sed 's/^/    /' "$WORK/log" >&2
   failures=$((failures + 1))
 fi
+
+# details_open: the summary, a <br> for a line of space, then a blank line
+# (newlines shown as |, since $(...) would drop the trailing ones)
+expect "details_open prints the summary, a <br> and a blank line" \
+  "<details><summary>Resources (1)</summary>|<br>||" \
+  "$(details_open "Resources (1)" | tr '\n' '|')"
 
 if [ "$failures" -gt 0 ]; then
   log_error "${failures} of ${cases} OpenTofu script test(s) failed. Run tests/opentofu/scripts-test.sh to reproduce."

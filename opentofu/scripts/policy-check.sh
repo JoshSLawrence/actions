@@ -71,8 +71,7 @@ could_not_run() {
     echo "${reason} The plan is treated as failing policy until this is fixed."
     if [ -n "$details" ]; then
       echo ""
-      echo "<details><summary>conftest output</summary>"
-      echo ""
+      details_open "conftest output"
       echo "\`\`\`\`text"
       echo "$details" | head -n 50
       echo "\`\`\`\`"

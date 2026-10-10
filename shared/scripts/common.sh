@@ -547,6 +547,16 @@ context_line() {
   echo "<sub>$line</sub>"
 }
 
+# Open a collapsible: the summary line, then a <br> and a blank line. GitHub
+# renders the content flush against the summary otherwise; the <br> leaves a
+# line of space, and the blank line lets the markdown after it render.
+# Close it with: echo "</details>". Usage: details_open "<summary>"
+details_open() {
+  echo "<details><summary>$1</summary>"
+  echo "<br>"
+  echo ""
+}
+
 # Print a file in a collapsible fenced block, truncated to MAX_PLAN_CHARS
 # (default 40000; at a line boundary) with a pointer to the full output in
 # the run log. A four-backtick fence, so a ``` inside the file can't close it
@@ -556,8 +566,7 @@ collapsible_block() {
   local max="${MAX_PLAN_CHARS:-40000}" size
   size=$(wc -c < "$file" | tr -d ' ')
 
-  echo "<details><summary>${summary}</summary>"
-  echo ""
+  details_open "$summary"
   echo "\`\`\`\`${language}"
   if [ "$size" -gt "$max" ]; then
     head -c "$max" "$file" | sed '$d'

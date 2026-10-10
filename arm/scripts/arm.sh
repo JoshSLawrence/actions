@@ -737,8 +737,7 @@ arm_left_to_iac_markdown() {
     map(select((.default | not) and .reference == "elsewhere")) | group_by(.kind)[]
     | "> **Note:** \(length) of the folder\u0027s \(.[0].kind) match nothing live in this target, so they are most likely copies from another environment. They are left to infrastructure as code and not deployed."' "$list"
   echo ""
-  echo "<details><summary>Left to infrastructure as code (${count})</summary>"
-  echo ""
+  details_open "Left to infrastructure as code (${count})"
   echo "| Resource | Kind | In the folder as |"
   echo "| --- | --- | --- |"
   jq -r '"| `\(.path)` | \(.kind) | \(
