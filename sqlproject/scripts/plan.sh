@@ -342,8 +342,7 @@ counts="$(jq -r '
 
   if [ "$operation_count" -gt 0 ]; then
     echo ""
-    echo "<details><summary>Changes (${operation_count})</summary>"
-    echo ""
+    details_open "Changes (${operation_count})"
     echo "| Operation | Object | Type |"
     echo "| --- | --- | --- |"
     jq -r '
@@ -359,8 +358,7 @@ counts="$(jq -r '
   kept_count="$(jq '[.operations[] | select(.operation == "Drop") | .items[]] | length' <<< "$kept_json")"
   if [ "$kept_count" -gt 0 ]; then
     echo ""
-    echo "<details><summary>Kept: in the database, not in the project (${kept_count})</summary>"
-    echo ""
+    details_open "Kept: in the database, not in the project (${kept_count})"
     echo "Additive mode leaves these alone; truth mode would drop them."
     echo ""
     echo "| Object | Type |"
@@ -392,8 +390,7 @@ counts="$(jq -r '
   collapsible_block "Deployment script" sql "$WORK_DIR/script.sql"
 
   echo ""
-  echo "<details><summary>Deploy options</summary>"
-  echo ""
+  details_open "Deploy options"
   echo "- Mode: \`${DEPLOY_MODE}\`$([ "$DEPLOY_MODE" = truth ] && echo ", never dropped: $(jq -r 'if length == 0 then "nothing" else map("`\(.)`") | join(", ") end' <<< "$keep_types")")"
   echo "- allow-data-loss: \`$(is_true "$ALLOW_DATA_LOSS" && echo true || echo false)\`"
   echo "- Profile properties: $(jq -r '.properties | del(.TargetDatabaseName, .TargetConnectionString) | to_entries | if length == 0 then "none" else map("`\(.key)=\(.value)`") | join(", ") end' <<< "$profile_json")"

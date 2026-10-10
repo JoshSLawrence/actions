@@ -51,8 +51,7 @@ unavailable() {
     echo "$reason"
     if [ -n "$details" ]; then
       echo ""
-      echo "<details><summary>infracost output</summary>"
-      echo ""
+      details_open "infracost output"
       echo "\`\`\`\`text"
       echo "$details" | tail -n 30
       echo "\`\`\`\`"
@@ -121,8 +120,7 @@ diff=$(money "$(jq -r '.diffTotalMonthlyCost' "$cost_json")" signed)
     | .[:$max][]
     | "\(.name)\t\(.cost)"' "$cost_json")
   if [ -n "$resources" ]; then
-    echo "<details><summary>Most expensive resources after this plan</summary>"
-    echo ""
+    details_open "Most expensive resources after this plan"
     echo "| Resource | Monthly cost |"
     echo "| --- | ---: |"
     while IFS=$'\t' read -r name cost; do

@@ -137,8 +137,7 @@ if [ "$destroy" -gt 0 ]; then
 fi
 
 if [ "$resources" -gt 0 ]; then
-  echo "<details><summary>Resources (${resources})</summary>"
-  echo ""
+  details_open "Resources (${resources})"
   echo "| Action | Resource |"
   echo "| --- | --- |"
   jq -r '

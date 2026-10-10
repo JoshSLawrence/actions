@@ -66,8 +66,7 @@ table() {
 
 if [ -n "${FRAGMENT_FILE:-}" ]; then
   {
-    echo "<details><summary>Checks: ${#failed[@]} failed of ${#rows[@]}</summary>"
-    echo ""
+    details_open "Checks: ${#failed[@]} failed of ${#rows[@]}"
     table
     echo ""
     echo "</details>"
