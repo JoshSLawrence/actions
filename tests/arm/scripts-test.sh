@@ -1422,8 +1422,14 @@ echo '{"parameters": {"workspaceName": {"value": "ws-test"}}}' > "$WORK/merge-pa
 (
   export TMPDIR="$WORK/merge-tmp" PARAMETER_SECRETS="ls_secret=placeholder-secret"
   unset WORK_DIR
+  # Observe where the intermediate is created: it is deleted before the call returns
+  mktemp() {
+    printf '%s\n' "$*" >> "$WORK/mktemp-args"
+    command mktemp "$@"
+  }
   arm_parameters_with_secrets "$SECURE_WS_TEMPLATE/TemplateForWorkspace.json" "$WORK/merge-parameters.json" "$WORK/merge-out/parameters.json"
 ) > "$WORK/log" 2>&1
+expect "secrets merge: the intermediate is created beside the output file" "$WORK/merge-out/merge." "$( (grep -m1 'merge\.XXXXXX$' "$WORK/mktemp-args" || true) | sed 's/XXXXXX$//')"
 expect "secrets merge: the output has the secret" "1" "$(grep -c placeholder-secret "$WORK/merge-out/parameters.json")"
 expect "secrets merge: ... the temporary directory stays empty" "0" "$(find "$WORK/merge-tmp" -type f | wc -l | tr -d ' ')"
 expect "secrets merge: ... and the intermediate file is removed from beside the output" "parameters.json" "$(ls "$WORK/merge-out")"
@@ -1439,6 +1445,15 @@ expect "synapse compare: a result in another order doesn't fail the plan" "0" "$
 expect_log "synapse compare: ... it warns" "Couldn't compare the artifacts with workspace syn-test"
 expect "synapse compare: ... and every existing artifact is one the plan can't compare" "4" "$(grep -c "⚪ can't compare" "$PLAN/summary.md")"
 expect "synapse compare: ... so has-changes is true" "true" "$(output has-changes)"
+
+# apply-finish removes the secrets an interrupted apply-prepare left in the state directory
+mkdir -p "$WORK/finish-state"
+echo secret > "$WORK/finish-state/parameters.json"
+echo secret > "$WORK/finish-state/merge.AbC123"
+echo nb_daily > "$WORK/finish-state/stopped-triggers.txt"
+run synapse/scripts/apply-finish.sh STATE_DIR="$WORK/finish-state" TEMPLATE_FILE=unused WORKSPACE_NAME=syn-test MANAGE_TRIGGERS=false
+expect "synapse finish: succeeds" "0" "$status"
+expect "synapse finish: the parameters and an interrupted merge are removed" "stopped-triggers.txt" "$(ls "$WORK/finish-state")"
 
 if [ "$failures" -gt 0 ]; then
   log_error "${failures} of ${cases} test(s) failed"
