@@ -1,0 +1,15 @@
+{
+  "value": [
+    {
+      "name": "pl_wait",
+      "etag": "p1",
+      "properties": {
+        "annotations": [],
+        "lastPublishTime": "2000-01-01T00:00:00Z",
+        "activities": [
+          { "name": "q", "type": "SqlPoolStoredProcedure", "sqlPool": { "referenceName": "dw", "type": "SqlPoolReference" } }
+        ]
+      }
+    }
+  ]
+}

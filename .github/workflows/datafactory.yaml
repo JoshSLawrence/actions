@@ -147,6 +147,14 @@ on:
           no Azure access.
         type: boolean
         default: true
+      always-apply:
+        description: >-
+          Apply a deployment whose plan found nothing to change, too (false =
+          its apply and approval are skipped). Use it to deploy everything
+          anyway, e.g. after a change in the portal that the plan ignores or
+          can't see. Without what-if every deployment is applied anyway.
+        type: boolean
+        default: false
 
       # --- Apply --------------------------------------------------------------
       apply:
@@ -338,6 +346,7 @@ jobs:
       plan-retention-days: ${{ inputs.plan-retention-days }}
       pr-comment: ${{ inputs.pr-comment }}
       what-if: ${{ inputs.what-if }}
+      always-apply: ${{ inputs.always-apply }}
       apply: ${{ inputs.apply }}
       apply-from-pr: ${{ inputs.apply-from-pr }}
       pre-post-script: ${{ inputs.pre-post-script }}

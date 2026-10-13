@@ -172,7 +172,10 @@ datafactory-deploy.yaml                   plan ──> apply (after approval)
 - **plan** (per deployment) renders the parameters and, with `what-if`,
   previews the deployment:
   - `az deployment group what-if`: what would be created or modified, and
-    which properties change;
+    which properties change. What-if leaves a secure parameter
+    (`[parameters('x')]`) unresolved, so the plan resolves it from the
+    parameters (and `parameter-secrets`), compares it with the live value
+    and drops the change when they're equal;
   - the resources the post-deployment script would delete, because they're
     no longer in the folder.
 
@@ -263,7 +266,8 @@ approval.
 6. **Secure parameters:** prefer Key Vault linked services, so a deployment
    only needs the vault's URL. Parameter files may also use Key Vault
    `reference`s. Anything else goes in the `parameter-secrets` secret, one
-   `name=value` per line.
+   `name=value` per line. A value the factory hides (`**********`) can't be
+   compared with the live one: see [Limitations](#limitations).
 7. **Branch protection:** require `<caller job> / Result`.
 
 ## Reference
@@ -287,6 +291,7 @@ accept spaces or newlines. `{deployment}` is replaced where noted.
 | `plan-retention-days` | `7` | Plan (and template) artifact retention |
 | `pr-comment` | `true` | Comment the plan and apply result on the PR |
 | `what-if` | `true` | Preview with what-if and list deletions (needs Azure access) |
+| `always-apply` | `false` | Apply a deployment even when its plan found nothing to change (to redeploy everything, e.g. after a change the what-if can't see). Without `what-if` every deployment is applied anyway |
 | `apply` | `true` | Include the apply job (`false` = plan only) |
 | `apply-from-pr` | `true` | Deploy from the PR before merge; `false` = on the default branch only |
 | `apply-environment` | none | Environment with required reviewers; `{deployment}`. Required with `apply` |
@@ -391,6 +396,12 @@ WORKING_DIR=adf TEMPLATE_DIR=/tmp/datafactory-template PARAMETER_FILES=deploymen
   [What's deployed](#whats-deployed-logic-and-infrastructure)).
   With `deploy-managed-private-endpoints: true`, endpoints that aren't in the
   folder are never deleted: Microsoft's script has no section for them.
+- **Secure values the factory hides aren't compared.** A secure property
+  is compared with the live value when the factory returns it (the value is
+  never shown). One it hides (`**********`, or omitted), or whose parameter
+  is a Key Vault reference, is listed as "secure, not compared" and counts
+  as a change for `has-changes`, so a rotated secret still reaches the
+  factory.
 - **A plan made before another PR applied is refused.** The apply's live
   check compares etags, so a change made in the portal (or a trigger
   started there) also makes the next apply ask for a new plan.

@@ -1,7 +1,7 @@
 # A Synapse workspace's artifacts deployed to dev and prod from its Git
 # folder (synapse/): every PR validates the folder, exports its workspace
 # template, compares it with each environment's workspace, and deploys each
-# after its approval -- before merge. No Publish button, no
+# that has changes after its approval -- before merge. No Publish button, no
 # workspace_publish branch.
 #
 # Setup:

@@ -4,11 +4,13 @@ description: >-
   what infrastructure as code owns (the managed virtual network, pools, and
   unless deployed the managed private endpoints and integration runtimes),
   renders its parameters (every name checked against the template), optionally
-  compares it with the live workspace (new artifacts, those the deployment
-  deletes, that the pools its artifacts use exist, and the workspace's
-  fingerprint for the apply to check), and writes a markdown summary. Fails
-  after writing the summary, so it can still be posted. Upload plan-dir as an
-  artifact for synapse/apply. With what-if, sign in with azure/login and run
+  compares it with the live workspace (each artifact, as the deployer would
+  publish it, against its live definition; new artifacts, those the
+  deployment deletes, that the pools its artifacts use exist, and the
+  workspace's fingerprint for the apply to check), and writes a markdown
+  summary. Fails after writing the summary, so it can still be posted. Upload
+  plan-dir as an artifact for synapse/apply when has-changes is true; a
+  deployment with nothing to change has has-changes false. With what-if, sign in with azure/login and run
   shared/setup (azure-cli pinned) first, on a runner that can reach the
   workspace.
 
@@ -35,14 +37,26 @@ inputs:
     required: false
     default: ""
   parameter-secrets:
-    description: name=value lines for secure parameters; only their names are used here, never their values.
+    description: >-
+      name=value lines for secure parameters. With what-if, their values are
+      compared with the live ones; they are never shown or saved.
     required: false
     default: ""
   resource-group:
     description: Resource group of the target workspace.
     required: true
   what-if:
-    description: Compare with the live workspace (needs az signed in, network access to it, and Synapse Artifact User).
+    description: >-
+      Compare each artifact with its live definition (needs az signed in,
+      network access to the workspace, and Synapse Artifact User). Without it
+      the plan can't tell what changes and has-changes is true.
+    required: false
+    default: "false"
+  always-apply:
+    description: >-
+      Make has-changes true even when the comparison found nothing to change
+      (to deploy everything anyway, e.g. after a change in the portal that
+      the comparison ignores or can't see).
     required: false
     default: "false"
   delete-artifacts:
@@ -90,7 +104,10 @@ outputs:
     description: Heading for the PR comment.
     value: ${{ steps.names.outputs.title }}
   has-changes:
-    description: "Always 'true' once planned: every deployment republishes every artifact."
+    description: >-
+      'false' when what-if found nothing to create, change or delete (and
+      always-apply is off); 'true' otherwise, and always without what-if. An
+      artifact the plan can't compare counts as a change.
     value: ${{ steps.plan.outputs.has-changes }}
   plan-sha256:
     description: SHA-256 of the plan; pass it to synapse/apply.
@@ -138,6 +155,7 @@ runs:
         PARAMETER_SECRETS: ${{ inputs.parameter-secrets }}
         RESOURCE_GROUP: ${{ inputs.resource-group }}
         WHAT_IF: ${{ inputs.what-if }}
+        ALWAYS_APPLY: ${{ inputs.always-apply }}
         DELETE_ARTIFACTS: ${{ inputs.delete-artifacts }}
         DEPLOY_MANAGED_PRIVATE_ENDPOINTS: ${{ inputs.deploy-managed-private-endpoints }}
         DEPLOY_INTEGRATION_RUNTIMES: ${{ inputs.deploy-integration-runtimes }}

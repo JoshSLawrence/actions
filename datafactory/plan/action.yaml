@@ -44,6 +44,12 @@ inputs:
     description: Preview against the live factory (needs az signed in, with rights to run what-if).
     required: false
     default: "false"
+  always-apply:
+    description: >-
+      Make has-changes true even when the what-if found nothing to change (to
+      redeploy everything, e.g. after a change the what-if can't see).
+    required: false
+    default: "false"
   pre-post-script:
     description: Whether the apply runs the pre/post-deployment script (which deletes resources removed from the folder); the preview then lists them.
     required: false
@@ -89,7 +95,10 @@ outputs:
     description: Heading for the PR comment.
     value: ${{ steps.names.outputs.title }}
   has-changes:
-    description: "'true' unless the what-if found nothing to change or delete (always 'true' without what-if)."
+    description: >-
+      'true' unless the what-if found nothing to change or delete (always
+      'true' without what-if or with always-apply). A secure value the factory
+      hides counts as a change.
     value: ${{ steps.plan.outputs.has-changes }}
   plan-sha256:
     description: SHA-256 of the plan; pass it to datafactory/apply.
@@ -137,6 +146,7 @@ runs:
         PARAMETER_SECRETS: ${{ inputs.parameter-secrets }}
         RESOURCE_GROUP: ${{ inputs.resource-group }}
         WHAT_IF: ${{ inputs.what-if }}
+        ALWAYS_APPLY: ${{ inputs.always-apply }}
         PRE_POST_SCRIPT: ${{ inputs.pre-post-script }}
         DEPLOY_MANAGED_PRIVATE_ENDPOINTS: ${{ inputs.deploy-managed-private-endpoints }}
         DEPLOY_INTEGRATION_RUNTIMES: ${{ inputs.deploy-integration-runtimes }}

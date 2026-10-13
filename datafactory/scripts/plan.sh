@@ -28,7 +28,8 @@
 #                       newline-separated)
 #   PARAMETERS        - name=value lines, after the files
 #   PARAMETER_SECRETS - name=value lines for secure parameters; only used for
-#                       the what-if, never written to the plan
+#                       the what-if (and to compare a secure property with
+#                       the live one), never written to the plan or shown
 #   RESOURCE_GROUP    - the target factory's resource group (required)
 #   WHAT_IF           - "true": preview with az deployment group what-if,
 #                       list what the post-deployment script would delete and
@@ -40,6 +41,10 @@
 #                       leaves them to infrastructure as code: they're taken
 #                       out of the template, and the integration runtimes
 #                       are left out of the deletions.
+#   ALWAYS_APPLY      - "true": has-changes is true even when the what-if
+#                       found nothing to change (to redeploy everything,
+#                       e.g. after a change the what-if can't see). Default
+#                       false.
 #   PRE_POST_SCRIPT   - "true" (default) if the apply runs the
 #                       pre/post-deployment script, which deletes resources
 #                       that are no longer in the folder
@@ -49,7 +54,9 @@
 #
 # Outputs:
 #   has-changes    - "true" unless the what-if found nothing to change or
-#                    delete ("true" without a what-if: it can't tell)
+#                    delete ("true" without a what-if: it can't tell, and
+#                    with ALWAYS_APPLY). A secure value the factory hides
+#                    counts as a change.
 #   plan-sha256    - digest of the plan's deploy/ directory
 #   plan-dir       - absolute path of PLAN_DIR
 #   summary-file   - the markdown summary (also on failure)
@@ -72,11 +79,12 @@ TMP_ROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 PLAN_DIR="${PLAN_DIR:-$TMP_ROOT/datafactory-plan}"
 WORK_DIR="${WORK_DIR:-$TMP_ROOT/datafactory-plan-work}"
 WHAT_IF="${WHAT_IF:-false}"
+ALWAYS_APPLY="${ALWAYS_APPLY:-false}"
 PRE_POST_SCRIPT="${PRE_POST_SCRIPT:-true}"
 export DEPLOY_MANAGED_PRIVATE_ENDPOINTS="${DEPLOY_MANAGED_PRIVATE_ENDPOINTS:-false}"
 export DEPLOY_INTEGRATION_RUNTIMES="${DEPLOY_INTEGRATION_RUNTIMES:-false}"
 
-log_config WORKING_DIR TEMPLATE_DIR PLAN_DIR DEPLOYMENT PARAMETER_FILES RESOURCE_GROUP WHAT_IF PRE_POST_SCRIPT DEPLOY_MANAGED_PRIVATE_ENDPOINTS DEPLOY_INTEGRATION_RUNTIMES
+log_config WORKING_DIR TEMPLATE_DIR PLAN_DIR DEPLOYMENT PARAMETER_FILES RESOURCE_GROUP WHAT_IF ALWAYS_APPLY PRE_POST_SCRIPT DEPLOY_MANAGED_PRIVATE_ENDPOINTS DEPLOY_INTEGRATION_RUNTIMES
 
 rm -rf "$PLAN_DIR" "$WORK_DIR"
 mkdir -p "$PLAN_DIR/deploy" "$WORK_DIR"
@@ -185,26 +193,40 @@ if is_true "$WHAT_IF"; then
     cat "$WORK_DIR/what-if.log" >&2
     fail "az deployment group what-if failed. If it's a permissions error, the plan identity needs to run what-if on ${RESOURCE_GROUP} (e.g. Data Factory Contributor); or set what-if to false." "$WORK_DIR/what-if.log"
   fi
+  # What-if leaves a secure parameter as "[parameters('x')]" in a delta, so a
+  # property that comes from one always looks modified. Compare each with
+  # its live value instead: equal drops the delta, and only a value the
+  # factory hides is left as "not compared".
+  arm_whatif_secure "$WORK_DIR/what-if.json" "$TEMPLATE" "$secret_parameters" > "$WORK_DIR/what-if-resolved.json" 2> "$WORK_DIR/what-if-parse.log" ||
+    fail "Couldn't read the what-if result (see the output below). Please report it, with the az version, at https://github.com/JoshSLawrence/actions/issues." "$WORK_DIR/what-if-parse.log"
   # Every change to a resource of the factory, named by its type and name
   # under the factory (pipelines/pl_x). The factory itself, and anything else
   # in the resource group, is left alone by an incremental deployment.
   # Properties the service sets itself (a pipeline's lastPublishTime) show
   # up in every what-if as removed; a modification made only of those is no
-  # change, or every plan would deploy again.
-  changes="$(jq -c '
-    ["properties.lastPublishTime"] as $service_managed
+  # change, or every plan would deploy again. A modification made only of
+  # secure values the factory hides is a "Secure" one: it counts as a change.
+  changes="$(jq -c --argjson managed "$ARM_SERVICE_MANAGED_PROPERTIES" '
+    ($managed | map("properties." + .)) as $service_managed
     | [ .changes[]?
       | select(.changeType != "Ignore")
       | (.resourceId | capture("/factories/[^/]+/(?<rest>.+)$").rest // empty) as $rest
       | ($rest | split("/")) as $s
-      | ([.delta[]? | .path | select(. as $p | $service_managed | index($p) | not)] | unique) as $properties
+      | [.delta[]? | select(.path as $p | $service_managed | index($p) | not)] as $delta
+      | ([$delta[] | select(.secure != "not-compared") | .path] | unique) as $properties
+      | ([$delta[] | select(.secure == "not-compared") | .path] | unique) as $secure
+      | ([$delta[] | select(.secure == "differs") | .path] | unique) as $secret_changes
       | {
-          action: (if .changeType == "Modify" and ($properties | length) == 0 then "NoChange" else .changeType end),
+          action: (if .changeType == "Modify" and ($properties | length) == 0 then
+                     (if ($secure | length) > 0 then "Secure" else "NoChange" end)
+                   else .changeType end),
           type: ([$s | to_entries[] | select(.key % 2 == 0) | .value] | join("/")),
           name: $s[-1],
-          properties: $properties
+          properties: $properties,
+          secure: $secure,
+          secret_changes: $secret_changes
         }
-    ]' "$WORK_DIR/what-if.json" 2> "$WORK_DIR/what-if-parse.log")" ||
+    ]' "$WORK_DIR/what-if-resolved.json" 2> "$WORK_DIR/what-if-parse.log")" ||
     fail "Couldn't read the what-if result (see the output below). Please report it, with the az version, at https://github.com/JoshSLawrence/actions/issues." "$WORK_DIR/what-if-parse.log"
 
   log_step "Live factory"
@@ -260,8 +282,15 @@ deleted="$(jq length <<< "$deletions")"
     created="$(count Create)"
     modified="$(count Modify)"
     unchanged="$(count NoChange)"
+    secured="$(count Secure)"
     unknown="$(jq -r '[.[] | select(.action == "Deploy" or .action == "Unsupported")] | length' <<< "$changes")"
-    if [ $((created + modified + unknown + deleted)) -eq 0 ]; then
+    if [ $((created + modified + unknown + secured + deleted)) -eq 0 ] && is_true "$ALWAYS_APPLY"; then
+      echo "### 📋 Plan: no changes, applied anyway (always-apply)"
+      echo ""
+      context_line
+      echo ""
+      echo "Factory \`${factory}\` in \`${RESOURCE_GROUP}\` matches the template (${unchanged} resource(s) unchanged). Everything is deployed again."
+    elif [ $((created + modified + unknown + secured + deleted)) -eq 0 ]; then
       echo "### ✅ No changes"
       echo ""
       context_line
@@ -276,6 +305,9 @@ deleted="$(jq length <<< "$deletions")"
       if [ "$unknown" -gt 0 ]; then
         unpredictable=", ${unknown} the what-if can't predict"
       fi
+      if [ "$secured" -gt 0 ]; then
+        unpredictable="${unpredictable}, ${secured} with secure values the what-if can't compare (deployed again so a new value reaches the factory)"
+      fi
       echo "Factory \`${factory}\` in resource group \`${RESOURCE_GROUP}\`: ${unchanged} resource(s) unchanged${unpredictable}."
       echo ""
       if [ "$deleted" -gt 0 ]; then
@@ -288,9 +320,12 @@ deleted="$(jq length <<< "$deletions")"
       echo "| --- | --- | --- |"
       jq -r '
         map(select(.action != "NoChange"))
-        | sort_by([({Delete: 0, Modify: 1, Create: 2}[.action] // 3), .type, .name])[]
-        | ({Create: "🟢 create", Modify: "🟡 modify", Delete: "🔴 delete", Deploy: "⚪ deploy", Unsupported: "⚪ unsupported"}[.action] // .action) as $label
-        | (.properties | if length > 5 then (.[:5] + ["..."]) else . end | map("`\(.)`") | join(", ")) as $props
+        | sort_by([({Delete: 0, Modify: 1, Create: 2, Secure: 3}[.action] // 4), .type, .name])[]
+        | ({Create: "🟢 create", Modify: "🟡 modify", Delete: "🔴 delete", Secure: "🔒 secure, not compared", Deploy: "⚪ deploy", Unsupported: "⚪ unsupported"}[.action] // .action) as $label
+        | .secret_changes as $secret_changes
+        | ((.properties | map({path: ., secret: (. as $p | $secret_changes | index($p) != null)})) + (.secure | map({path: ., secret: true}))
+           | if length > 5 then (.[:5] | map((if .secret then "🔒 " else "" end) + "`\(.path)`")) + ["..."] else map((if .secret then "🔒 " else "" end) + "`\(.path)`") end
+           | join(", ")) as $props
         | "| \($label) | `\(.type)/\(.name)` | \($props) |"' <<< "$changes"
       echo ""
       echo "</details>"
@@ -313,7 +348,7 @@ deleted="$(jq length <<< "$deletions")"
 fit_github_body "$SUMMARY_FILE" "the workflow run's job summary"
 
 has_changes=true
-if is_true "$WHAT_IF" && [ $(($(count Create) + $(count Modify) + $(jq -r '[.[] | select(.action == "Deploy" or .action == "Unsupported" or .action == "Delete")] | length' <<< "$changes") + deleted)) -eq 0 ]; then
+if is_true "$WHAT_IF" && ! is_true "$ALWAYS_APPLY" && [ $(($(count Create) + $(count Modify) + $(count Secure) + $(jq -r '[.[] | select(.action == "Deploy" or .action == "Unsupported" or .action == "Delete")] | length' <<< "$changes") + deleted)) -eq 0 ]; then
   has_changes=false
 fi
 

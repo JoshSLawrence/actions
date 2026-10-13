@@ -3,8 +3,9 @@
 # Plans one deployment of a Synapse workspace template: leaves out what
 # infrastructure as code owns (see "Infrastructure kinds" in arm.sh), renders
 # its parameters, optionally compares the template with the live workspace
-# (which artifacts are new, which the deployment deletes, that the Spark and
-# SQL pools the artifacts use exist), and writes the plan -- the template,
+# (which artifacts differ from their live definitions, which are new, which
+# the deployment deletes, that the Spark and SQL pools the artifacts use
+# exist), and writes the plan -- the template,
 # the parameters and the target, which the apply deploys exactly -- with a
 # markdown summary. Never changes anything, so it's safe to run locally:
 #
@@ -28,14 +29,21 @@
 #   PARAMETER_FILES   - ARM parameters files, in order (space- or
 #                       newline-separated)
 #   PARAMETERS        - name=value lines, after the files
-#   PARAMETER_SECRETS - name=value lines for secure parameters; only their
-#                       names are used here
+#   PARAMETER_SECRETS - name=value lines for secure parameters; the names
+#                       are used here and, with WHAT_IF, also the values, to
+#                       compare secure properties with the live ones (in a
+#                       scratch file, never in the plan, and never shown)
 #   RESOURCE_GROUP    - the target workspace's resource group (required)
-#   WHAT_IF           - "true": list the live workspace's artifacts, check its
-#                       pools exist, and record its fingerprint, which the
-#                       apply checks (needs az signed in, and network access
-#                       to the workspace's development endpoint). Default
-#                       false.
+#   WHAT_IF           - "true": list the live workspace's artifacts, compare
+#                       each with its template definition (as the deployer
+#                       would publish it), check its pools exist, and record
+#                       its fingerprint, which the apply checks (needs az
+#                       signed in, and network access to the workspace's
+#                       development endpoint). Default false.
+#   ALWAYS_APPLY      - "true": has-changes is true even when the comparison
+#                       found nothing to change (to deploy everything
+#                       anyway, e.g. after a change in the portal that the
+#                       comparison ignores or can't see). Default false.
 #   DELETE_ARTIFACTS  - "true" (default) if the apply deletes artifacts that
 #                       aren't in the template
 #   DEPLOY_MANAGED_PRIVATE_ENDPOINTS, DEPLOY_INTEGRATION_RUNTIMES
@@ -50,7 +58,11 @@
 #                     - describe what's being planned, for the summary
 #
 # Outputs:
-#   has-changes    - always "true": the deployment republishes every artifact
+#   has-changes    - "true" unless the comparison found nothing to create,
+#                    change or delete (true without WHAT_IF, which can't
+#                    tell, and with ALWAYS_APPLY). An artifact the plan can't
+#                    compare, or whose secure value the service hides, counts
+#                    as a change.
 #   plan-sha256    - digest of the plan's deploy/ directory
 #   plan-dir       - absolute path of PLAN_DIR
 #   summary-file   - the markdown summary (also on failure)
@@ -73,11 +85,12 @@ TMP_ROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 PLAN_DIR="${PLAN_DIR:-$TMP_ROOT/synapse-plan}"
 WORK_DIR="${WORK_DIR:-$TMP_ROOT/synapse-plan-work}"
 WHAT_IF="${WHAT_IF:-false}"
+ALWAYS_APPLY="${ALWAYS_APPLY:-false}"
 DELETE_ARTIFACTS="${DELETE_ARTIFACTS:-true}"
 export DEPLOY_MANAGED_PRIVATE_ENDPOINTS="${DEPLOY_MANAGED_PRIVATE_ENDPOINTS:-false}"
 export DEPLOY_INTEGRATION_RUNTIMES="${DEPLOY_INTEGRATION_RUNTIMES:-false}"
 
-log_config WORKING_DIR TEMPLATE_DIR PLAN_DIR DEPLOYMENT PARAMETER_FILES RESOURCE_GROUP WHAT_IF DELETE_ARTIFACTS DEPLOY_MANAGED_PRIVATE_ENDPOINTS DEPLOY_INTEGRATION_RUNTIMES
+log_config WORKING_DIR TEMPLATE_DIR PLAN_DIR DEPLOYMENT PARAMETER_FILES RESOURCE_GROUP WHAT_IF ALWAYS_APPLY DELETE_ARTIFACTS DEPLOY_MANAGED_PRIVATE_ENDPOINTS DEPLOY_INTEGRATION_RUNTIMES
 
 rm -rf "$PLAN_DIR" "$WORK_DIR"
 mkdir -p "$PLAN_DIR/deploy" "$WORK_DIR"
@@ -200,8 +213,21 @@ total="$(wc -l < "$WORK_DIR/template.jsonl" | tr -d ' ')"
 defaults="$(jq -s 'map(select(.default)) | length' "$WORK_DIR/template.jsonl")"
 artifacts=$((total - defaults))
 
+# Number of artifacts the comparison found to differ in any way (anything
+# but unchanged and a skipped service default)
+count_changed() {
+  jq -s 'map(select(.status != "skipped" and .status != "unchanged")) | length' "$WORK_DIR/compare.jsonl"
+}
+
+# Number of artifacts with a status in the comparison
+# Usage: count_status <status>
+count_status() {
+  jq -s --arg status "$1" 'map(select(.status == $status)) | length' "$WORK_DIR/compare.jsonl"
+}
+
 new="[]"
 deletions="[]"
+compare_failed=false
 if is_true "$WHAT_IF"; then
   ensure_mise
   require_mise_tool azure-cli
@@ -227,7 +253,9 @@ if is_true "$WHAT_IF"; then
   if [ "$(jq -s 'map(select((.type | ascii_downcase) == "managedvirtualnetworks/managedprivateendpoints" and (.default | not))) | length' "$WORK_DIR/template.jsonl")" = 0 ]; then
     ARM_EMPTY_WITHOUT_VNET=true
   fi
-  if ! arm_live_lines "$endpoint" 2019-06-01-preview https://dev.azuresynapse.net "${kinds[@]}" > "$WORK_DIR/live-lines.jsonl" 2> "$WORK_DIR/live.log"; then
+  # With the definitions, which the comparison below needs; the fingerprint
+  # and the deletions use only {type, name, etag}
+  if ! ARM_LIVE_PROPERTIES=true arm_live_lines "$endpoint" 2019-06-01-preview https://dev.azuresynapse.net "${kinds[@]}" > "$WORK_DIR/live-lines.jsonl" 2> "$WORK_DIR/live.log"; then
     cat "$WORK_DIR/live.log" >&2
     if grep -qi 'does not have a managed virtual network associated' "$WORK_DIR/live.log"; then
       fail "Workspace ${workspace} has no managed virtual network, so the managed private endpoints in the folder can't be deployed to it. Create the workspace with a managed virtual network (with your infrastructure as code) and apply that first, or set deploy-managed-private-endpoints to false." "$WORK_DIR/live.log"
@@ -267,6 +295,40 @@ if is_true "$WHAT_IF"; then
   fi
   log_info "$(jq length <<< "$new") new artifact(s), $(jq length <<< "$deletions") to delete"
 
+  # The deployer publishes every artifact again, so the plan says which of
+  # them would differ from the workspace: each template artifact, evaluated
+  # as the deployer would publish it, against its live definition. Anything
+  # the plan can't read or evaluate counts as a change, never as unchanged.
+  log_step "Compare the artifacts with their live definitions"
+  secret_parameters="$WORK_DIR/parameters-with-secrets.json"
+  arm_parameters_with_secrets "$TEMPLATE" "$PARAMETERS_FILE" "$secret_parameters" 2> "$WORK_DIR/parameters.log" ||
+    { cat "$WORK_DIR/parameters.log" >&2; fail "parameter-secrets is invalid." "$WORK_DIR/parameters.log"; }
+  # The summary joins the result to the template's artifacts by position, so
+  # a result that isn't one line per artifact, in the template's order, is as
+  # good as a failed comparison
+  compare_ok=false
+  if arm_synapse_compare "$TEMPLATE" "$secret_parameters" "$workspace" "$WORK_DIR/template.jsonl" "$WORK_DIR/live.jsonl" > "$WORK_DIR/compare.jsonl" 2> "$WORK_DIR/compare.log"; then
+    if [ "$(jq -s --slurpfile entries "$WORK_DIR/template.jsonl" '[.[].key] == [$entries[].key]' "$WORK_DIR/compare.jsonl" 2> /dev/null)" = true ]; then
+      compare_ok=true
+    else
+      echo "The comparison didn't return one result per artifact of the template." >> "$WORK_DIR/compare.log"
+    fi
+  fi
+  if [ "$compare_ok" != true ]; then
+    cat "$WORK_DIR/compare.log" >&2
+    log_warn "Couldn't compare the artifacts with workspace ${workspace}, so the plan counts every one that exists there as changed. Please report it at https://github.com/JoshSLawrence/actions/issues."
+    jq -c --argjson new "$new" '
+      {key} + (if .default then {status: "skipped", paths: []}
+        elif (.key as $k | $new | any(.key == $k)) then {status: "create", paths: []}
+        else {status: "unknown", paths: [{path: "properties", change: "unknown", why: "the comparison failed"}]} end)' "$WORK_DIR/template.jsonl" > "$WORK_DIR/compare.jsonl"
+    compare_failed=true
+  fi
+  # The comparison's lines are in the template's order: join them back to
+  # the template's names for the summary
+  jq -s --slurpfile entries "$WORK_DIR/template.jsonl" '
+    [., $entries] | transpose | map(.[0] + {type: .[1].type, name: .[1].name})' "$WORK_DIR/compare.jsonl" > "$WORK_DIR/artifacts.json"
+  log_info "$(count_status modify) to modify, $(count_status create) new, $(jq length <<< "$deletions") to delete, $(count_status unknown) the plan can't compare, $(count_status secure) with secure values it can't compare, $(count_status unchanged) unchanged"
+
   # A pool is infrastructure the deployer neither creates nor checks: an
   # artifact for a missing one fails half-way through the apply
   log_step "Check the pools exist"
@@ -298,22 +360,54 @@ arm_left_to_iac_warn "$WORK_DIR/left-to-iac.jsonl"
 
 log_step "Summary"
 deleted="$(jq length <<< "$deletions")"
+if is_true "$WHAT_IF"; then
+  created="$(count_status create)"
+  modified="$(count_status modify)"
+  unknown="$(count_status unknown)"
+  secured="$(count_status secure)"
+  unchanged="$(count_status unchanged)"
+  nothing_to_change=false
+  if [ $(($(count_changed) + deleted)) -eq 0 ]; then
+    nothing_to_change=true
+  fi
+fi
 {
   skipped_note=""
   if [ "$defaults" -gt 0 ]; then
     skipped_note="${defaults} service default(s) skipped"
   fi
   if is_true "$WHAT_IF"; then
-    echo "### 📋 Plan: deploy ${artifacts} artifact(s) ($(jq length <<< "$new") new${skipped_note:+, $skipped_note}), delete ${deleted}"
+    if [ "$nothing_to_change" = true ] && is_true "$ALWAYS_APPLY"; then
+      echo "### 📋 Plan: no changes, applied anyway (always-apply)"
+    elif [ "$nothing_to_change" = true ]; then
+      echo "### ✅ No changes"
+    else
+      echo "### 📋 Plan: ${created} to create, ${modified} to modify, ${deleted} to delete"
+    fi
   else
     echo "### 📋 Plan: deploy ${artifacts} artifact(s)${skipped_note:+ ($skipped_note)}"
   fi
   echo ""
   context_line
   echo ""
-  echo "Workspace \`${workspace}\` in resource group \`${RESOURCE_GROUP}\`. Every artifact in the template is published again; Synapse has no what-if, so this can't show which ones change."
-  if ! is_true "$WHAT_IF"; then
-    echo "What-if is off, so this doesn't show which artifacts are new$(is_true "$DELETE_ARTIFACTS" && echo ", or which the deployment deletes")."
+  if is_true "$WHAT_IF" && [ "$nothing_to_change" = true ]; then
+    echo "Workspace \`${workspace}\` in \`${RESOURCE_GROUP}\` matches the template (${unchanged} artifact(s) unchanged${skipped_note:+, $skipped_note}). $(is_true "$ALWAYS_APPLY" && echo "Every artifact is published again." || echo "Nothing to deploy.")"
+  elif is_true "$WHAT_IF"; then
+    detail=""
+    if [ "$unknown" -gt 0 ]; then
+      detail="${detail}, ${unknown} the plan can't compare"
+    fi
+    if [ "$secured" -gt 0 ]; then
+      detail="${detail}, ${secured} with secure values the plan can't compare (published again so a new value reaches the workspace)"
+    fi
+    echo "Workspace \`${workspace}\` in resource group \`${RESOURCE_GROUP}\`: ${unchanged} artifact(s) unchanged${detail}${skipped_note:+, $skipped_note}. The apply publishes every artifact again; these are the ones that differ from the workspace."
+    if [ "$compare_failed" = true ]; then
+      echo ""
+      echo "> **Warning:** the comparison failed, so every artifact that exists in the workspace is listed as one the plan can't compare. Re-run the plan; if it fails again, please report it."
+    fi
+  else
+    echo "Workspace \`${workspace}\` in resource group \`${RESOURCE_GROUP}\`. Every artifact in the template is published again; Synapse has no what-if, so this can't show which ones change."
+    echo "What-if is off, so this doesn't show which artifacts differ from the workspace, are new$(is_true "$DELETE_ARTIFACTS" && echo ", or which the deployment deletes")."
   fi
   echo ""
   if [ "$deleted" -gt 0 ]; then
@@ -325,18 +419,35 @@ deleted="$(jq length <<< "$deletions")"
     echo "> **Note:** the tables and relationships that a lake database in the folder no longer has are deleted too. They aren't counted or listed above."
     echo ""
   fi
-  details_open "Artifacts (${total})"
-  echo "| Action | Artifact |"
-  echo "| --- | --- |"
-  jq -rs --argjson new "$new" --arg what_if "$WHAT_IF" '
-    ($new | map(.key)) as $new_keys
-    | sort_by(.type, .name)[]
-    | .key as $key
-    | (if .default then "⚪ skipped (service default)"
-       elif $what_if != "true" then "🔵 publish"
-       elif ($new_keys | index($key)) != null then "🟢 create"
-       else "🟡 update" end) as $action
-    | "| \($action) | `\(.type)/\(.name)` |"' "$WORK_DIR/template.jsonl"
+  if is_true "$WHAT_IF"; then
+    # Rows are the artifacts that differ, are new, or that the plan can't
+    # compare; the unchanged and the service defaults are counted above
+    artifact_rows="$(jq -r '
+      def shown: gsub("\\|"; "\\|") | gsub("`"; "\u0027");
+      def action_label: {modify: "🟡 modify", create: "🟢 create", secure: "🔒 secure, not compared", unknown: "⚪ can\u0027t compare"}[.];
+      def order: {modify: 0, create: 1, secure: 2, unknown: 3}[.];
+      def path_text:
+        (if .change | IN("secure", "not-compared") then "🔒 " else "" end) + "`\(.path | shown)`"
+        + (if .why then " (\(.why | shown))" else "" end);
+      map(select(.status | IN("modify", "create", "secure", "unknown")))
+      | sort_by([(.status | order), .type, .name])
+      | .[]
+      | (.paths | if length > 5 then (.[:5] | map(path_text)) + ["..."] else map(path_text) end | join(", ")) as $paths
+      | "| \(.status | action_label) | `\(.type | shown)/\(.name | shown)` | \($paths) |"' "$WORK_DIR/artifacts.json")"
+    details_open "Artifacts ($(grep -c . <<< "$artifact_rows" || true))"
+    echo "| Action | Artifact | Changed properties |"
+    echo "| --- | --- | --- |"
+    if [ -n "$artifact_rows" ]; then
+      echo "$artifact_rows"
+    fi
+  else
+    details_open "Artifacts (${total})"
+    echo "| Action | Artifact |"
+    echo "| --- | --- |"
+    jq -rs '
+      sort_by(.type, .name)[]
+      | "| \(if .default then "⚪ skipped (service default)" else "🔵 publish" end) | `\(.type)/\(.name)` |"' "$WORK_DIR/template.jsonl"
+  fi
   echo ""
   echo "</details>"
   echo ""
@@ -349,7 +460,15 @@ deleted="$(jq length <<< "$deletions")"
 } > "$SUMMARY_FILE"
 fit_github_body "$SUMMARY_FILE" "the workflow run's job summary"
 
+# Without what-if the plan can't tell, so the apply stays on; with it, a
+# deployment with nothing to create, change or delete skips its apply unless
+# always-apply says otherwise
+has_changes=true
+if is_true "$WHAT_IF" && ! is_true "$ALWAYS_APPLY" && [ "$nothing_to_change" = true ]; then
+  has_changes=false
+fi
+
 plan_sha256="$(arm_plan_sha256 "$PLAN_DIR")"
-set_output has-changes true
+set_output has-changes "$has_changes"
 set_output plan-sha256 "$plan_sha256"
-log_summary "Planned workspace ${workspace} in ${RESOURCE_GROUP} (plan sha256 ${plan_sha256})"
+log_summary "Planned workspace ${workspace} in ${RESOURCE_GROUP} (has changes: ${has_changes}, plan sha256 ${plan_sha256})"

@@ -4,13 +4,18 @@
 # ARM-style template plus a parameters file, and deploy the same template to
 # every environment with different parameters. Sections: deployments,
 # parameters, export bundles, templates, Azure CLI, infrastructure kinds,
-# live state, and plans. Source it after common.sh:
+# live state, comparing with the live definitions, and plans. Source it after
+# common.sh:
 #
 #   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   # shellcheck source=shared/scripts/common.sh
 #   source "$SCRIPT_DIR/../../shared/scripts/common.sh"
 #   # shellcheck source=arm/scripts/arm.sh
 #   source "$SCRIPT_DIR/../../arm/scripts/arm.sh"
+
+# Where synapse-compare.jq is: next to this file (the tests point it elsewhere
+# to make the comparison fail)
+ARM_SCRIPTS_DIR="${ARM_SCRIPTS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
 # --- Deployments --------------------------------------------------------------
 #
@@ -210,7 +215,7 @@ arm_merge_parameters() {
           elif $t == "int" then
             (try ($raw | tonumber) catch null) as $v
             | if $v != null and ($v | floor) == $v then {value: $v}
-              else {error: "\($label): \($n) is an int parameter, but \u0027\($raw)\u0027 isn\u0027t an integer."} end
+              else {error: "\($label): \($n) is an int parameter, but its value isn\u0027t a whole number. Set a whole number, e.g. \($n)=5."} end
           elif $t == "bool" then
             ($raw | ascii_downcase) as $b
             | if $b == "true" then {value: true} elif $b == "false" then {value: false}
@@ -306,7 +311,9 @@ arm_mask_secrets() {
 arm_parameters_with_secrets() {
   local template="$1" parameters="$2" out="$3" result
   arm_mask_secrets
-  result="$(mktemp)"
+  # The merge result holds the secrets: keep it next to the output file,
+  # which every caller puts in its own scratch directory
+  result="$(umask 077 && mktemp "$(dirname "$out")/merge.XXXXXX")"
   (umask 077 && arm_merge_parameters "$template" "$parameters" "$(list_lines "${PARAMETER_SECRETS:-}")" "parameter-secrets" "" > "$result")
   local message failed=false
   while IFS= read -r message; do
@@ -323,11 +330,16 @@ arm_parameters_with_secrets() {
 }
 
 # Print a markdown table of a merge result's parameters: value (secure
-# parameters and secrets hidden) and where each came from.
+# parameters and secrets hidden) and where each came from. When a 🔒 value is
+# listed, a note says where to find it (or that it is never kept), worded
+# for any consumer of the plan, and links the run when it's known.
 # Usage: arm_parameters_markdown <merge result> <template> [secret names]
 arm_parameters_markdown() {
-  local result="$1" template="$2" secrets="${3:-}"
-  jq -r --slurpfile template "$template" --arg secrets "$secrets" '
+  local result="$1" template="$2" secrets="${3:-}" table run_link="the workflow run"
+  if [ -n "${GITHUB_REPOSITORY:-}" ] && [ -n "${GITHUB_RUN_ID:-}" ]; then
+    run_link="[the workflow run](${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+  fi
+  table="$(jq -r --slurpfile template "$template" --arg secrets "$secrets" '
     ($template[0].parameters // {}) as $declared
     | .sources as $sources
     | ($secrets | split("\n") | map(select(length > 0))) as $secret_names
@@ -347,7 +359,12 @@ arm_parameters_markdown() {
          else "`\(.value.value | show)`" end) as $shown
       | (if ($secret_names | index($n)) != null then "parameter-secrets" else ($sources[$n] // "template") end) as $from
       | "| `\($n)` | \($shown) | \(if $from == "template" then "exported" else "`\($from)`" end) |")
-  ' "$result"
+  ' "$result")" || return 1
+  echo "$table"
+  if grep -q '🔒' <<< "$table"; then
+    echo ""
+    echo "🔒 values aren't shown here. Values from files or the \`parameters\` input are in \`deploy/parameters.json\` of the plan artifact of ${run_link} (uploaded when the plan has changes and the apply is on; Key Vault references as vault and secret name); \`parameter-secrets\` are never shown."
+  fi
 }
 
 # --- Export bundles -----------------------------------------------------------
@@ -808,6 +825,10 @@ arm_lake_database() {
 #     the same fields at the top of the item), and false for the others;
 #   - managed private endpoints have a null etag, so they're fingerprinted by
 #     name only.
+# With ARM_LIVE_PROPERTIES=true, each line of a collection also carries the
+# item's definition as "properties" (null when the item has none), for the
+# comparison with the template's. Callers that fingerprint or list names
+# project {type, name, etag}, so the definitions never reach a fingerprint.
 # Usage: arm_live_lines <base url> <api version> <audience or ""> <collection>...
 arm_live_lines() {
   local base="$1" version="$2" audience="$3" collection type items item name
@@ -830,7 +851,8 @@ arm_live_lines() {
       continue
     fi
     arm_rest_list "${base}/${collection}?api-version=${version}" "${options[@]+"${options[@]}"}" |
-      jq -c --arg type "$type" '{type: $type, name: .name, etag: (.etag // "")}' || return 1
+      jq -c --arg type "$type" --arg properties "${ARM_LIVE_PROPERTIES:-false}" \
+        '{type: $type, name: .name, etag: (.etag // "")} + (if $properties == "true" then {properties: (.properties // null)} else {} end)' || return 1
   done
 }
 
@@ -897,7 +919,9 @@ ARM_SYNAPSE_IS_DEFAULT='(if (.type | ascii_downcase) == "linkedservices" then ((
 arm_synapse_fingerprint() {
   local lines
   lines="$(mktemp)"
-  jq -c "select((${ARM_SYNAPSE_IS_DEFAULT} | not) and (.type != \"databases\" or .lake == true))" "$1" > "$lines" || { rm -f "$lines"; return 1; }
+  # Project before writing: with ARM_LIVE_PROPERTIES the lines hold full
+  # definitions, which can contain secure values the service returns
+  jq -c "select((${ARM_SYNAPSE_IS_DEFAULT} | not) and (.type != \"databases\" or .lake == true)) | {type, name, etag}" "$1" > "$lines" || { rm -f "$lines"; return 1; }
   arm_live_fingerprint "$lines" || { rm -f "$lines"; return 1; }
   rm -f "$lines"
 }
@@ -910,6 +934,75 @@ arm_verify_resource_count() {
   local template="$1" expected="$2" actual
   actual="$(jq '.resources | length' "$template" 2> /dev/null)" || return 1
   [ "$actual" = "$expected" ]
+}
+
+# --- Comparing with the live definitions --------------------------------------
+#
+# Properties the service sets itself on publish: never a change. Data
+# Factory's what-if reports them as removed in every plan; the Synapse
+# comparison drops them from both sides.
+ARM_SERVICE_MANAGED_PROPERTIES='["lastPublishTime"]'
+
+# Compare a Synapse template's artifacts with their live definitions, as the
+# deployer would publish them (synapse-compare.jq holds the rules and the
+# deployer's expression grammar). Prints one JSON line per template resource,
+# in the template's order: {key, status, paths: [{path, change, why?}]}. The
+# status is skipped, create, modify, unchanged, unknown (couldn't be
+# compared: counts as a change) or secure (only values the service hides
+# differ). Only paths are printed, never values. <parameters with secrets>
+# is the scratch file of arm_parameters_with_secrets; <entries file> holds
+# the template's {type, name, key, default} lines in the template's order and
+# <live lines file> arm_live_lines' output with ARM_LIVE_PROPERTIES=true.
+# Fails (jq's status) if it can't compare, e.g. when the entries aren't the
+# template's.
+# Usage: arm_synapse_compare <template> <parameters with secrets> <workspace> <entries file> <live lines file>
+arm_synapse_compare() {
+  jq -nc -f "$ARM_SCRIPTS_DIR/synapse-compare.jq" \
+    --slurpfile template "$1" --slurpfile parameters "$2" --arg workspace "$3" \
+    --slurpfile entries "$4" --slurpfile live "$5" \
+    --argjson managed "$ARM_SERVICE_MANAGED_PROPERTIES"
+}
+
+# Print a what-if result (az deployment group what-if --output json) with its
+# secure parameter references resolved: ARM what-if leaves a secure
+# parameter as "[parameters('<name>')]" in a delta's after. Each such delta
+# is compared with the live value (before) using <parameters with secrets>:
+# equal, it is dropped (with a parent whose children all go); different, it
+# gets "secure": "differs"; when the live value is hidden (null, or only
+# asterisks) or the parameter has no plain value (a Key Vault reference), it
+# gets "secure": "not-compared". Values are never printed.
+# Usage: arm_whatif_secure <what-if json> <template> <parameters with secrets>
+arm_whatif_secure() {
+  jq --slurpfile template "$2" --slurpfile parameters "$3" '
+    ([39] | implode) as $q
+    | ([$template[0].parameters // {} | to_entries[]
+        | select((.value.type // "string") | ascii_downcase | IN("securestring", "secureobject"))
+        | .key | ascii_downcase]) as $secure
+    | def reference:
+        if type == "string" then
+          (capture("^\\[\\s*parameters\\(\\s*" + $q + "(?<n>[^" + $q + "]+)" + $q + "\\s*\\)\\s*\\]$") // null)
+          | if . != null and (.n | ascii_downcase | IN($secure[])) then .n else null end
+        else null end;
+      def supplied($n):
+        $parameters[0].parameters // {} | to_entries
+        | map(select(.key | ascii_downcase == ($n | ascii_downcase))) | first;
+      def hidden: . == null or (type == "string" and test("^\\*+$"));
+      def resolve:
+        if (.children | type) == "array" and (.children | length) > 0 then
+          .children |= [.[] | resolve]
+          | if (.children | length) == 0 then empty else . end
+        else
+          (.after | reference) as $n
+          | if $n == null then .
+            elif (.before | hidden) then .secure = "not-compared"
+            else
+              supplied($n) as $p
+              | if $p == null or ($p.value | has("value") | not) then .secure = "not-compared"
+                elif $p.value.value == .before then empty
+                else .secure = "differs" end
+            end
+        end;
+    .changes |= map(if (.delta | type) == "array" then .delta |= [.[] | resolve] else . end)' "$1"
 }
 
 # --- Refusing an apply --------------------------------------------------------

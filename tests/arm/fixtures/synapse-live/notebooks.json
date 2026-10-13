@@ -1,0 +1,13 @@
+{
+  "value": [
+    {
+      "name": "nb_load",
+      "etag": "n1",
+      "properties": {
+        "description": null,
+        "bigDataPool": { "referenceName": "spark", "type": "BigDataPoolReference" },
+        "sessionProperties": { "runAsWorkspaceSystemIdentity": false }
+      }
+    }
+  ]
+}

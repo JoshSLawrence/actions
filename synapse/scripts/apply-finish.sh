@@ -30,7 +30,9 @@ source "$SCRIPT_DIR/../../shared/scripts/common.sh"
 source "$SCRIPT_DIR/../../arm/scripts/arm.sh"
 
 require_env STATE_DIR
-trap 'rm -f "$STATE_DIR/parameters.json"' EXIT
+# merge.* is arm_parameters_with_secrets' intermediate, which an apply-prepare
+# cancelled mid-merge leaves behind; it holds the secret parameters too
+trap 'rm -f "$STATE_DIR/parameters.json" "$STATE_DIR"/merge.*' EXIT
 
 ensure_mise
 require_tool jq
