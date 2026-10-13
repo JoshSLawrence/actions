@@ -42,9 +42,9 @@
 #                       out of the template, and the integration runtimes
 #                       are left out of the deletions.
 #   ALWAYS_APPLY      - "true": has-changes is true even when the what-if
-#                       found nothing to change (to push a rotated secret
-#                       the factory hides, or to deploy again after a change
-#                       in the portal). Default false.
+#                       found nothing to change (to redeploy everything,
+#                       e.g. after a change the what-if can't see). Default
+#                       false.
 #   PRE_POST_SCRIPT   - "true" (default) if the apply runs the
 #                       pre/post-deployment script, which deletes resources
 #                       that are no longer in the folder

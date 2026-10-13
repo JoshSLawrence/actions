@@ -15,8 +15,9 @@
 # - apply: only when the plan has changes (always-apply: always). Waits for
 #   the apply environment's approval, checks the plan is still current, then
 #   deploys exactly that plan: stop started triggers, publish every artifact
-#   with the Synapse workspace deployer, start triggers. By default it deploys from the PR before merge, so the default
-#   branch only ever holds a workspace that deployed successfully.
+#   with the Synapse workspace deployer, start triggers. By default it
+#   deploys from the PR before merge, so the default branch only ever holds a
+#   workspace that deployed successfully.
 #
 # Synapse artifacts are deployed through the workspace's development
 # endpoint (https://<workspace>.dev.azuresynapse.net), not ARM: a workspace
@@ -123,10 +124,11 @@ on:
       always-apply:
         description: >-
           Apply a deployment whose plan found nothing to change, too (false =
-          its apply and approval are skipped). Use it to push a rotated
-          parameter-secret, or to deploy again after a change in the portal
-          that the plan can't see. Without what-if every deployment is
-          applied anyway.
+          its apply and approval are skipped). Use it to republish everything,
+          e.g. after a change the comparison's normalization can't see, or to
+          restore drift the plan doesn't compare (lake databases, and
+          endpoints and runtimes when they aren't deployed). Without what-if
+          every deployment is applied anyway.
         type: boolean
         default: false
 

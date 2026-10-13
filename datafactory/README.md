@@ -291,7 +291,7 @@ accept spaces or newlines. `{deployment}` is replaced where noted.
 | `plan-retention-days` | `7` | Plan (and template) artifact retention |
 | `pr-comment` | `true` | Comment the plan and apply result on the PR |
 | `what-if` | `true` | Preview with what-if and list deletions (needs Azure access) |
-| `always-apply` | `false` | Apply a deployment even when its plan found nothing to change (to push a rotated `parameter-secrets` value the factory hides, or after a change in the portal). Without `what-if` every deployment is applied anyway |
+| `always-apply` | `false` | Apply a deployment even when its plan found nothing to change (to redeploy everything, e.g. after a change the what-if can't see). Without `what-if` every deployment is applied anyway |
 | `apply` | `true` | Include the apply job (`false` = plan only) |
 | `apply-from-pr` | `true` | Deploy from the PR before merge; `false` = on the default branch only |
 | `apply-environment` | none | Environment with required reviewers; `{deployment}`. Required with `apply` |
@@ -401,7 +401,7 @@ WORKING_DIR=adf TEMPLATE_DIR=/tmp/datafactory-template PARAMETER_FILES=deploymen
   never shown). One it hides (`**********`, or omitted), or whose parameter
   is a Key Vault reference, is listed as "secure, not compared" and counts
   as a change for `has-changes`, so a rotated secret still reaches the
-  factory. Set `always-apply` to deploy a plan with nothing else to change.
+  factory.
 - **A plan made before another PR applied is refused.** The apply's live
   check compares etags, so a change made in the portal (or a trigger
   started there) also makes the next apply ask for a new plan.

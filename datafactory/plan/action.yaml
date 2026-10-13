@@ -47,8 +47,7 @@ inputs:
   always-apply:
     description: >-
       Make has-changes true even when the what-if found nothing to change (to
-      push a rotated parameter-secret the factory hides, or to deploy again
-      after a change in the portal).
+      redeploy everything, e.g. after a change the what-if can't see).
     required: false
     default: "false"
   pre-post-script:

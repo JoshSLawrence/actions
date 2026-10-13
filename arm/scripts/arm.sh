@@ -215,7 +215,7 @@ arm_merge_parameters() {
           elif $t == "int" then
             (try ($raw | tonumber) catch null) as $v
             | if $v != null and ($v | floor) == $v then {value: $v}
-              else {error: "\($label): \($n) is an int parameter, but \u0027\($raw)\u0027 isn\u0027t an integer."} end
+              else {error: "\($label): \($n) is an int parameter, but its value isn\u0027t a whole number. Set a whole number, e.g. \($n)=5."} end
           elif $t == "bool" then
             ($raw | ascii_downcase) as $b
             | if $b == "true" then {value: true} elif $b == "false" then {value: false}
@@ -309,9 +309,12 @@ arm_mask_secrets() {
 # az/deployer call. Owner-only, and the caller deletes it.
 # Usage: arm_parameters_with_secrets <template> <parameters file> <out file>
 arm_parameters_with_secrets() {
-  local template="$1" parameters="$2" out="$3" result
+  local template="$1" parameters="$2" out="$3" result scratch="${WORK_DIR:-}"
   arm_mask_secrets
-  result="$(mktemp)"
+  # The merge result holds the secrets: keep it in the caller's scratch
+  # directory (deleted when the plan or apply ends) when it has one
+  [ -d "$scratch" ] || scratch="${TMPDIR:-/tmp}"
+  result="$(umask 077 && mktemp "${scratch}/merge.XXXXXX")"
   (umask 077 && arm_merge_parameters "$template" "$parameters" "$(list_lines "${PARAMETER_SECRETS:-}")" "parameter-secrets" "" > "$result")
   local message failed=false
   while IFS= read -r message; do
@@ -361,7 +364,7 @@ arm_parameters_markdown() {
   echo "$table"
   if grep -q '🔒' <<< "$table"; then
     echo ""
-    echo "🔒 values aren't shown here. Values from files or the \`parameters\` input are in \`deploy/parameters.json\` of the plan artifact of ${run_link} (Key Vault references as vault and secret name); \`parameter-secrets\` are never shown."
+    echo "🔒 values aren't shown here. Values from files or the \`parameters\` input are in \`deploy/parameters.json\` of the plan artifact of ${run_link} (uploaded when the plan has changes and the apply is on; Key Vault references as vault and secret name); \`parameter-secrets\` are never shown."
   fi
 }
 
@@ -917,7 +920,9 @@ ARM_SYNAPSE_IS_DEFAULT='(if (.type | ascii_downcase) == "linkedservices" then ((
 arm_synapse_fingerprint() {
   local lines
   lines="$(mktemp)"
-  jq -c "select((${ARM_SYNAPSE_IS_DEFAULT} | not) and (.type != \"databases\" or .lake == true))" "$1" > "$lines" || { rm -f "$lines"; return 1; }
+  # Project before writing: with ARM_LIVE_PROPERTIES the lines hold full
+  # definitions, which can contain secure values the service returns
+  jq -c "select((${ARM_SYNAPSE_IS_DEFAULT} | not) and (.type != \"databases\" or .lake == true)) | {type, name, etag}" "$1" > "$lines" || { rm -f "$lines"; return 1; }
   arm_live_fingerprint "$lines" || { rm -f "$lines"; return 1; }
   rm -f "$lines"
 }

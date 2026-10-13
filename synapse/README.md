@@ -267,7 +267,7 @@ with these differences:
 | `working-directory` | `.` | The Synapse workspace's Git root folder |
 | `workspace-name` | from `*-WorkspaceDefaultStorage` | Development workspace's name, for the template's defaults (instead of `factory-name`) |
 | `what-if` | `true` | Compare each artifact with its live definition, list new artifacts and deletions, check the pools exist (needs network access, Synapse Artifact User and Reader) |
-| `always-apply` | `false` | Apply a deployment even when its plan found nothing to change (to push a rotated `parameter-secrets` value, or after a change in the portal). Without `what-if` every deployment is applied anyway |
+| `always-apply` | `false` | Apply a deployment even when its plan found nothing to change (to republish everything, e.g. after a change the normalization can't see, or to restore drift the plan doesn't compare: lake databases, and endpoints and runtimes when they aren't deployed). Without `what-if` every deployment is applied anyway |
 | `delete-artifacts` | `true` | Delete artifacts that aren't in the template |
 | `deploy-managed-private-endpoints` | `false` | Deploy the folder's managed private endpoints; `false` leaves them to infrastructure as code. `true` also deletes endpoints not in the folder |
 | `deploy-integration-runtimes` | `false` | Deploy the folder's integration runtimes; `false` leaves them to infrastructure as code. Synapse never deletes them |
@@ -378,7 +378,9 @@ input.
   compares it with what the workspace returns, ignoring what the service
   adds or rewrites: nulls and empty lists and objects, `lastPublishTime`, a
   notebook's `kernelspec`, `a365ComputeOptions` and
-  `runAsWorkspaceSystemIdentity: false`, and a trigger's `runtimeState`.
+  `runAsWorkspaceSystemIdentity: false`, and a trigger's `runtimeState`
+  when the template doesn't set it (when it does, say `Started`, a live
+  trigger in another state is a change, because the apply starts it).
   Anything else counts, so a new kind of noise shows as a change (an extra
   approval, never a skipped one); report it as an issue in this
   repository. Things the plan can't read or evaluate are listed as "can't
@@ -389,10 +391,11 @@ input.
   is compared with the live value when the workspace returns it (the value
   is never shown). A value it hides (`**********`, or omitted) is listed as
   "secure, not compared" and counts as a change, so a rotated secret still
-  reaches the workspace; use `always-apply` to be sure.
-- **A change in the portal** (or a trigger started there) changes etags, so
-  the next apply asks for a new plan, and the next plan shows the
-  difference as a change.
+  reaches the workspace.
+- **A change in the portal** changes etags, so the next apply asks for a new
+  plan, and the next plan shows the difference as a change. A trigger
+  started or stopped there is a change only if the template sets its
+  `runtimeState`.
 - **The apply's inputs must be the plan's.** An apply given a different
   `delete-artifacts` or `deploy-managed-private-endpoints` is refused, with
   the reason in the PR comment, so it can't delete what the plan never

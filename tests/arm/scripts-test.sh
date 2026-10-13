@@ -1333,6 +1333,83 @@ expect_file_has "parameters: ... and that parameter-secrets are never shown" "$P
 factory_plan WHAT_IF=true
 expect_file_lacks "parameters: no note without a 🔒 value" "$PLAN/summary.md" "values aren't shown here"
 
+# --- Review fixes: triggers, supplied values, secure wrappers, the position join --------------
+
+# A trigger's runtimeState counts when the template sets it: the apply starts the triggers it marks Started
+expect "compare: a trigger the template starts and the workspace has stopped is a change" "modify properties.runtimeState:modified" "$(compare_summary triggers '{"a": 1, "runtimeState": "Started"}' '{"a": 1, "runtimeState": "Stopped"}')"
+expect "compare: ... and the reverse is too" "modify properties.runtimeState:modified" "$(compare_summary triggers '{"a": 1, "runtimeState": "Stopped"}' '{"a": 1, "runtimeState": "Started"}')"
+expect "compare: ... equal states are unchanged" "unchanged" "$(compare_summary triggers '{"a": 1, "runtimeState": "Started"}' '{"a": 1, "runtimeState": "Started"}')"
+expect "compare: ... a template without runtimeState doesn't compare it" "unchanged" "$(compare_summary triggers '{"a": 1}' '{"a": 1, "runtimeState": "Stopped"}')"
+
+# A supplied value is used as it is (the deployer's Scope), never evaluated
+LITERAL_DECL='{"u": {"type": "string"}}'
+expect "compare: a supplied value that looks like an expression stays literal text" "unchanged" "$(compare_summary pipelines '{"a": "[parameters('"'"'u'"'"')]"}' '{"a": "[concat('"'"'a'"'"','"'"'b'"'"')]"}' "$LITERAL_DECL" '{"u": "[concat('"'"'a'"'"','"'"'b'"'"')]"}')"
+expect "compare: ... so what it would evaluate to is a change" "modify properties.a:modified" "$(compare_summary pipelines '{"a": "[parameters('"'"'u'"'"')]"}' '{"a": "ab"}' "$LITERAL_DECL" '{"u": "[concat('"'"'a'"'"','"'"'b'"'"')]"}')"
+
+# The folder emptying a value the workspace has is a change, not an absence
+expect "compare: [] in the folder against a live list is a change" "modify properties.annotations:removed" "$(compare_summary pipelines '{"a": 1, "annotations": []}' '{"a": 1, "annotations": ["x"]}')"
+expect "compare: {} in the folder against a live object is a change" "modify properties.folder:removed" "$(compare_summary pipelines '{"a": 1, "folder": {}}' '{"a": 1, "folder": {"name": "x"}}')"
+expect "compare: null in the folder against a live value is a change" "modify properties.description:removed" "$(compare_summary pipelines '{"a": 1, "description": null}' '{"a": 1, "description": "x"}')"
+
+# A secure value the service omits together with its wrapper
+expect "compare: a secure wrapper the service omits is secure, not compared" "secure properties.password:not-compared" "$(compare_summary linkedServices '{"user": "u", "password": {"type": "SecureString", "value": "[parameters('"'"'s'"'"')]"}}' '{"user": "u"}' "$SECURE_DECL" '{"s": "placeholder-secret"}')"
+
+# dependsOn strings are remapped like the deployer does (last segment, linked services only)
+expect "compare: a dependsOn path to another workspace's default linked service is the target's" "unchanged" "$(compare_summary pipelines '{"dependsOn": ["a/linkedServices/ws-dev-WorkspaceDefaultStorage"]}' '{"dependsOn": ["a/linkedServices/ws-test-WorkspaceDefaultStorage"]}')"
+expect "compare: ... but a pipeline named like one keeps its name" "modify properties.dependsOn:modified" "$(compare_summary pipelines '{"dependsOn": ["a/pipelines/ws-dev-WorkspaceDefaultStorage"]}' '{"dependsOn": ["a/pipelines/ws-test-WorkspaceDefaultStorage"]}')"
+
+# A deletion alone is a change
+compare_live
+jq '.value += [{name: "pl_old", etag: "p2", properties: {}}]' "$STUB_LIVE/pipelines.json" > "$WORK/pl.json" && mv "$WORK/pl.json" "$STUB_LIVE/pipelines.json"
+workspace_plan WHAT_IF=true
+expect "synapse compare: a deletion alone is a change" "true" "$(output has-changes)"
+expect_file_has "synapse compare: ... in the heading" "$PLAN/summary.md" "### 📋 Plan: 0 to create, 0 to modify, 1 to delete"
+
+# Rows name the right artifacts when service defaults sit between modified ones
+DEFAULTS_BETWEEN="$WORK/syn-defaults-between"
+mkdir -p "$DEFAULTS_BETWEEN"
+cp "$WORKSPACE_TEMPLATE/TemplateParametersForWorkspace.json" "$DEFAULTS_BETWEEN/"
+jq '.resources |= (map(select(.name | contains("nb_load"))) + [
+  {name: "[concat(parameters(\u0027workspaceName\u0027), \u0027/syn-dev-WorkspaceDefaultStorage\u0027)]", type: "Microsoft.Synapse/workspaces/linkedServices", properties: {}, dependsOn: []},
+  {name: "[concat(parameters(\u0027workspaceName\u0027), \u0027/WorkspaceSystemIdentity\u0027)]", type: "Microsoft.Synapse/workspaces/credentials", properties: {}, dependsOn: []}] + map(select(.name | contains("nb_load") | not)))' "$SYN" > "$DEFAULTS_BETWEEN/TemplateForWorkspace.json"
+compare_live
+jq '.value[0].properties.bigDataPool.referenceName = "spark_big"' "$STUB_LIVE/notebooks.json" > "$WORK/nb.json" && mv "$WORK/nb.json" "$STUB_LIVE/notebooks.json"
+jq '.value[0].properties.activities[0].name = "other"' "$STUB_LIVE/pipelines.json" > "$WORK/pl.json" && mv "$WORK/pl.json" "$STUB_LIVE/pipelines.json"
+workspace_plan WHAT_IF=true TEMPLATE_DIR="$DEFAULTS_BETWEEN"
+expect_file_has "synapse compare: a modified artifact before the defaults is named right" "$PLAN/summary.md" "| 🟡 modify | \`notebooks/nb_load\` | \`properties.bigDataPool.referenceName\` |"
+expect_file_has "synapse compare: ... and one after them" "$PLAN/summary.md" "| 🟡 modify | \`pipelines/pl_wait\` | \`properties.activities[0].name\` |"
+expect_file_lacks "synapse compare: ... and a default is not a row" "$PLAN/summary.md" "WorkspaceDefaultStorage\` |"
+
+# A result that isn't one line per artifact counts every existing artifact as changed
+compare_live
+mkdir -p "$WORK/short-jq"
+echo '{key: "x", status: "unchanged", paths: []}' > "$WORK/short-jq/synapse-compare.jq"
+workspace_plan WHAT_IF=true ARM_SCRIPTS_DIR="$WORK/short-jq"
+expect "synapse compare: a result of the wrong length doesn't fail the plan" "0" "$status"
+expect_log "synapse compare: ... it warns" "Couldn't compare the artifacts with workspace syn-test"
+expect "synapse compare: ... and every existing artifact is one the plan can't compare" "4" "$(grep -c "⚪ can't compare" "$PLAN/summary.md")"
+expect "synapse compare: ... so has-changes is true" "true" "$(output has-changes)"
+
+# The note under the parameters table is true whether or not the plan is uploaded
+workspace_plan WHAT_IF=true TEMPLATE_DIR="$SECURE_WS_TEMPLATE" PARAMETERS="ls_secret=placeholder-parameter"
+expect_file_has "parameters: the note says when the plan artifact exists" "$PLAN/summary.md" "uploaded when the plan has changes and the apply is on"
+
+# An invalid int never echoes the value
+INT_WS_TEMPLATE="$WORK/workspace-template-int"
+mkdir -p "$INT_WS_TEMPLATE"
+jq '.parameters.retries = {type: "int", defaultValue: 1}' "$SYN" > "$INT_WS_TEMPLATE/TemplateForWorkspace.json"
+cp "$WORKSPACE_TEMPLATE/TemplateParametersForWorkspace.json" "$INT_WS_TEMPLATE/"
+workspace_plan TEMPLATE_DIR="$INT_WS_TEMPLATE" PARAMETERS="retries=placeholder-text"
+expect "parameters: a non-integer int fails the plan" "1" "$status"
+expect_file_has "parameters: ... naming the parameter and what to do" "$PLAN/summary.md" "retries is an int parameter, but its value isn't a whole number. Set a whole number"
+expect "parameters: ... without the value, in the summary or the log" "0" "$( (grep -r placeholder-text "$PLAN" "$WORK/log" || true) | wc -l | tr -d ' ')"
+workspace_plan WHAT_IF=true TEMPLATE_DIR="$INT_WS_TEMPLATE" PARAMETER_SECRETS="retries=placeholder-text"
+expect "parameters: a non-integer int in parameter-secrets fails the plan" "1" "$status"
+expect "parameters: ... without the value, in the summary or the log" "0" "$( (grep -r placeholder-text "$PLAN" "$WORK/log" || true) | wc -l | tr -d ' ')"
+
+# The fingerprint's temporary file holds no definitions
+expect "fingerprint: the projection drops the definitions" "0" "$(printf '%s\n' '{"type":"notebooks","name":"nb","etag":"e","properties":{"password":"placeholder-secret"}}' | jq -c '{type, name, etag}' | grep -c placeholder-secret || true)"
+
 if [ "$failures" -gt 0 ]; then
   log_error "${failures} of ${cases} test(s) failed"
   exit 1

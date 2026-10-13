@@ -41,9 +41,10 @@
 #                       signed in, and network access to the workspace's
 #                       development endpoint). Default false.
 #   ALWAYS_APPLY      - "true": has-changes is true even when the comparison
-#                       found nothing to change (to push a rotated secret,
-#                       or to publish again after a change in the portal
-#                       that the plan can't see). Default false.
+#                       found nothing to change (to republish everything, e.g.
+#                       after a change the normalization can't see, or to
+#                       restore drift the plan doesn't compare). Default
+#                       false.
 #   DELETE_ARTIFACTS  - "true" (default) if the apply deletes artifacts that
 #                       aren't in the template
 #   DEPLOY_MANAGED_PRIVATE_ENDPOINTS, DEPLOY_INTEGRATION_RUNTIMES
@@ -213,6 +214,12 @@ total="$(wc -l < "$WORK_DIR/template.jsonl" | tr -d ' ')"
 defaults="$(jq -s 'map(select(.default)) | length' "$WORK_DIR/template.jsonl")"
 artifacts=$((total - defaults))
 
+# Number of artifacts the comparison found to differ in any way (anything
+# but unchanged and a skipped service default)
+count_changed() {
+  jq -s 'map(select(.status != "skipped" and .status != "unchanged")) | length' "$WORK_DIR/compare.jsonl"
+}
+
 # Number of artifacts with a status in the comparison
 # Usage: count_status <status>
 count_status() {
@@ -297,7 +304,18 @@ if is_true "$WHAT_IF"; then
   secret_parameters="$WORK_DIR/parameters-with-secrets.json"
   arm_parameters_with_secrets "$TEMPLATE" "$PARAMETERS_FILE" "$secret_parameters" 2> "$WORK_DIR/parameters.log" ||
     { cat "$WORK_DIR/parameters.log" >&2; fail "parameter-secrets is invalid." "$WORK_DIR/parameters.log"; }
-  if ! arm_synapse_compare "$TEMPLATE" "$secret_parameters" "$workspace" "$WORK_DIR/template.jsonl" "$WORK_DIR/live.jsonl" > "$WORK_DIR/compare.jsonl" 2> "$WORK_DIR/compare.log"; then
+  # The summary joins the result to the template's artifacts by position, so
+  # a result that isn't one line per artifact, in the template's order, is as
+  # good as a failed comparison
+  compare_ok=false
+  if arm_synapse_compare "$TEMPLATE" "$secret_parameters" "$workspace" "$WORK_DIR/template.jsonl" "$WORK_DIR/live.jsonl" > "$WORK_DIR/compare.jsonl" 2> "$WORK_DIR/compare.log"; then
+    if [ "$(jq -s --slurpfile entries "$WORK_DIR/template.jsonl" '[.[].key] == [$entries[].key]' "$WORK_DIR/compare.jsonl" 2> /dev/null)" = true ]; then
+      compare_ok=true
+    else
+      echo "The comparison didn't return one result per artifact of the template." >> "$WORK_DIR/compare.log"
+    fi
+  fi
+  if [ "$compare_ok" != true ]; then
     cat "$WORK_DIR/compare.log" >&2
     log_warn "Couldn't compare the artifacts with workspace ${workspace}, so the plan counts every one that exists there as changed. Please report it at https://github.com/JoshSLawrence/actions/issues."
     jq -c --argjson new "$new" '
@@ -350,7 +368,7 @@ if is_true "$WHAT_IF"; then
   secured="$(count_status secure)"
   unchanged="$(count_status unchanged)"
   nothing_to_change=false
-  if [ $((created + modified + unknown + secured + deleted)) -eq 0 ]; then
+  if [ $(($(count_changed) + deleted)) -eq 0 ]; then
     nothing_to_change=true
   fi
 fi

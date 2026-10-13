@@ -9,15 +9,16 @@
 #
 # - plan: renders the deployment's parameters and, with what-if, previews it
 #   against the live factory (a secure parameter's value is compared with the
-#   live one where the factory returns it). Uploads the plan (template + parameters +
-#   target, no secrets) as an artifact, and comments the summary on the PR.
-#   Skipped for fork PRs, which get no OIDC token/secrets.
-# - apply: only when the plan has changes (always-apply: always). Waits for the apply environment's
-#   approval, checks the plan is still current, then deploys exactly that
-#   plan: pre-deployment script (stop triggers), incremental ARM deployment,
-#   post-deployment script (delete removed resources, start triggers). By
-#   default it deploys from the PR before merge, so the default branch only
-#   ever holds a factory that deployed successfully.
+#   live one where the factory returns it). Uploads the plan (template +
+#   parameters + target, no secrets) as an artifact, and comments the summary
+#   on the PR. Skipped for fork PRs, which get no OIDC token/secrets.
+# - apply: only when the plan has changes (always-apply: always). Waits for
+#   the apply environment's approval, checks the plan is still current, then
+#   deploys exactly that plan: pre-deployment script (stop triggers),
+#   incremental ARM deployment, post-deployment script (delete removed
+#   resources, start triggers). By default it deploys from the PR before
+#   merge, so the default branch only ever holds a factory that deployed
+#   successfully.
 #
 # Runners: every runs-on input is a label, or JSON when it starts with { or
 # [ -- an array of labels or a runner group -- which each job's runs-on
@@ -117,10 +118,11 @@ on:
       always-apply:
         description: >-
           Apply a deployment whose plan found nothing to change, too (false =
-          its apply and approval are skipped). Use it to push a rotated
-          parameter-secret, or to deploy again after a change in the portal
-          that the plan can't see. Without what-if every deployment is
-          applied anyway.
+          its apply and approval are skipped). Use it to republish everything,
+          e.g. after a change the comparison's normalization can't see, or to
+          restore drift the plan doesn't compare (lake databases, and
+          endpoints and runtimes when they aren't deployed). Without what-if
+          every deployment is applied anyway.
         type: boolean
         default: false
 

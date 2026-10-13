@@ -139,6 +139,16 @@ def remap_name:
   | if $m == null or ($m.w | ascii_downcase) == ($workspace | ascii_downcase) then .
     else "\($workspace)-WorkspaceDefault\(if ($m.s | ascii_downcase) == "storage" then "Storage" else "SqlServer" end)" end;
 
+# remapDependency: the last segment of a dependsOn string, when the segment
+# before it is linkedServices (a pipeline named like a default keeps its name)
+def remap_dependency:
+  if contains("/") then
+    rindex("/") as $i
+    | if (.[:$i] | split("/") | last | ascii_downcase) == "linkedservices"
+      then .[:$i + 1] + (.[$i + 1:] | remap_name)
+      else . end
+  else . end;
+
 def remap_references:
   if type == "array" then map(remap_references)
   elif type == "object" and (marked | not) then
@@ -146,6 +156,8 @@ def remap_references:
     | with_entries(
         if .key == "referenceName" and (.value | type) == "string" and $o.type == "LinkedServiceReference"
         then .value |= remap_name
+        elif .key == "dependsOn" and (.value | type) == "array"
+        then .value |= map(if type == "string" then remap_dependency else remap_references end)
         else .value |= remap_references end)
   else . end;
 
@@ -167,7 +179,6 @@ def normalize($kind):
   | if $kind == "notebooks" then
       del(.metadata.kernelspec, .metadata.a365ComputeOptions)
       | if .sessionProperties.runAsWorkspaceSystemIdentity == false then del(.sessionProperties.runAsWorkspaceSystemIdentity) else . end
-    elif $kind == "triggers" then del(.runtimeState)
     else . end
   | tidy;
 
@@ -192,6 +203,10 @@ def diff($a; $b; $p):
       elif ($a | has($k)) then
         (if ($a[$k] | is_unknown) then {path: ($p + [$k]), change: "unknown", why: $a[$k].why}
          elif ($a[$k] | is_secure) then {path: ($p + [$k]), change: "not-compared"}
+         elif ($a[$k] | any(.. ; type == "object" and .__plan == "unknown")) then
+           {path: ($p + [$k]), change: "unknown", why: ([$a[$k] | .. | select(type == "object" and .__plan == "unknown") | .why] | first)}
+         elif ($a[$k] | any(.. ; type == "object" and .__plan == "secure")) then
+           {path: ($p + [$k]), change: "not-compared"}
          else {path: ($p + [$k]), change: "added"} end)
       else {path: ($p + [$k]), change: "removed"} end
   elif ($a | type) == "array" and ($b | type) == "array" and ($a | length) == ($b | length) then
@@ -218,6 +233,13 @@ def diff($a; $b; $p):
   else
     ($resource.properties // {} | evaluate(0) | remap_references | normalize($kind)) as $mine
     | ($item.properties | normalize($kind)) as $theirs
+    # A trigger's runtimeState is read-only in the REST API, but the apply
+    # starts the triggers the template marks Started (apply-finish.sh): when
+    # the template sets it, a different live state is a change. When it
+    # doesn't, the live state is not compared.
+    | (if $kind == "triggers" and (($mine | type) != "object" or ($mine | has("runtimeState") | not))
+       then [$mine | del(.runtimeState), $theirs | del(.runtimeState)]
+       else [$mine, $theirs] end) as [$mine, $theirs]
     | ([diff($mine; $theirs; []) | .path |= show] | unique_by([.path, .change])) as $paths
     | ($paths | map(.change)) as $changes
     | . + {
