@@ -8,10 +8,11 @@
 # template-artifact.
 #
 # - plan: renders the deployment's parameters and, with what-if, previews it
-#   against the live factory. Uploads the plan (template + parameters +
+#   against the live factory (a secure parameter's value is compared with the
+#   live one where the factory returns it). Uploads the plan (template + parameters +
 #   target, no secrets) as an artifact, and comments the summary on the PR.
 #   Skipped for fork PRs, which get no OIDC token/secrets.
-# - apply: only when the plan has changes. Waits for the apply environment's
+# - apply: only when the plan has changes (always-apply: always). Waits for the apply environment's
 #   approval, checks the plan is still current, then deploys exactly that
 #   plan: pre-deployment script (stop triggers), incremental ARM deployment,
 #   post-deployment script (delete removed resources, start triggers). By
@@ -113,6 +114,15 @@ on:
           no Azure access.
         type: boolean
         default: true
+      always-apply:
+        description: >-
+          Apply a deployment whose plan found nothing to change, too (false =
+          its apply and approval are skipped). Use it to push a rotated
+          parameter-secret, or to deploy again after a change in the portal
+          that the plan can't see. Without what-if every deployment is
+          applied anyway.
+        type: boolean
+        default: false
 
       # --- Apply ------------------------------------------------------------
       apply:
@@ -275,6 +285,7 @@ jobs:
           parameter-secrets: ${{ secrets.parameter-secrets }}
           resource-group: ${{ inputs.resource-group }}
           what-if: ${{ inputs.what-if }}
+          always-apply: ${{ inputs.always-apply }}
           pre-post-script: ${{ inputs.pre-post-script }}
           deploy-managed-private-endpoints: ${{ inputs.deploy-managed-private-endpoints }}
           deploy-integration-runtimes: ${{ inputs.deploy-integration-runtimes }}

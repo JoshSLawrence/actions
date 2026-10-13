@@ -146,12 +146,23 @@ on:
         default: true
       what-if:
         description: >-
-          Compare each deployment with the live workspace in its plan job: new
-          artifacts, and those the deployment deletes. Needs Azure credentials
-          with Synapse Artifact User, and network access to the workspace;
-          false = render parameters only, no Azure access.
+          Compare each deployment with the live workspace in its plan job:
+          which artifacts change, are new or are deleted; a deployment with
+          nothing to change skips its apply. Needs Azure credentials with
+          Synapse Artifact User, and network access to the workspace; false =
+          render parameters only, no Azure access, and every deployment is
+          applied.
         type: boolean
         default: true
+      always-apply:
+        description: >-
+          Apply a deployment whose plan found nothing to change, too (false =
+          its apply and approval are skipped). Use it to push a rotated
+          parameter-secret, or to deploy again after a change in the portal
+          that the plan can't see. Without what-if every deployment is
+          applied anyway.
+        type: boolean
+        default: false
 
       # --- Apply --------------------------------------------------------------
       apply:
@@ -344,6 +355,7 @@ jobs:
       plan-retention-days: ${{ inputs.plan-retention-days }}
       pr-comment: ${{ inputs.pr-comment }}
       what-if: ${{ inputs.what-if }}
+      always-apply: ${{ inputs.always-apply }}
       apply: ${{ inputs.apply }}
       apply-from-pr: ${{ inputs.apply-from-pr }}
       delete-artifacts: ${{ inputs.delete-artifacts }}

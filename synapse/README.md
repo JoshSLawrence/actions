@@ -67,9 +67,13 @@ A complete caller is in [`examples/synapse.yaml`](../examples/synapse.yaml).
   - a workspace without public network access needs `apply-runs-on` (and,
     for `what-if` plans, `plan-runs-on`) to be a runner in its network, or
     `runs-on` for every job;
-  - there's no what-if: every deployment publishes every artifact again.
-    `what-if` instead lists which artifacts are new, which the deployment
-    deletes, and checks that the Spark and SQL pools the artifacts use exist;
+  - there's no what-if, so with `what-if` the plan compares each artifact,
+    as the deployer would publish it, with its live definition, and shows
+    what changes (with the property paths), what's new and what the
+    deployment deletes; it also checks that the Spark and SQL pools the
+    artifacts use exist. The apply still publishes every artifact again, and
+    a deployment with nothing to change skips its apply and approval (unless
+    `always-apply`);
   - Key Vault `reference`s in parameter files don't work (they're an ARM
     feature): use `parameter-secrets`, or a Key Vault linked service.
 - **The deployer is a standalone action.** `synapse/apply` uses
@@ -184,7 +188,11 @@ synapse-deploy.yaml                   plan ──> apply (after approval)
   [Data Factory](../datafactory/README.md#concepts)), optionally compares the
   template with the live workspace and checks its pools exist, records a
   fingerprint of the workspace's current artifacts and their etags, uploads
-  the plan (never secrets) and comments the summary on the PR.
+  the plan (never secrets) and comments the summary on the PR. The
+  comparison evaluates every artifact's expressions the way the deployer
+  does and compares the result with the definition the workspace returns; a
+  plan with nothing to create, change or delete has `has-changes` false and
+  skips the apply.
 - **apply** (per deployment) waits for approval, refuses a stale plan,
   checks the plan's SHA-256, lists the workspace again and refuses if it
   differs from the plan's fingerprint (something else changed it since:
@@ -258,7 +266,8 @@ with these differences:
 | --- | --- | --- |
 | `working-directory` | `.` | The Synapse workspace's Git root folder |
 | `workspace-name` | from `*-WorkspaceDefaultStorage` | Development workspace's name, for the template's defaults (instead of `factory-name`) |
-| `what-if` | `true` | List new artifacts and deletions, check the pools exist (needs network access, Synapse Artifact User and Reader) |
+| `what-if` | `true` | Compare each artifact with its live definition, list new artifacts and deletions, check the pools exist (needs network access, Synapse Artifact User and Reader) |
+| `always-apply` | `false` | Apply a deployment even when its plan found nothing to change (to push a rotated `parameter-secrets` value, or after a change in the portal). Without `what-if` every deployment is applied anyway |
 | `delete-artifacts` | `true` | Delete artifacts that aren't in the template |
 | `deploy-managed-private-endpoints` | `false` | Deploy the folder's managed private endpoints; `false` leaves them to infrastructure as code. `true` also deletes endpoints not in the folder |
 | `deploy-integration-runtimes` | `false` | Deploy the folder's integration runtimes; `false` leaves them to infrastructure as code. Synapse never deletes them |
@@ -363,11 +372,27 @@ input.
   (`main`) to the workspace and may create a `workspace_publish` branch.
   Under the required checks `main` only holds what was reviewed and
   applied, but Publish bypasses the per-environment approval: don't use it.
-- **No "no changes" plan.** Synapse has no what-if, so every deployment a PR
-  runs asks for approval. The live check still refuses an apply when the
-  workspace changed since the plan.
+- **The comparison is the plan's own.** Synapse has no what-if, so the plan
+  evaluates the template like the deployer (`[parameters(...)]`,
+  `[variables(...)]`, `[concat(...)]`, its default-linked-service names) and
+  compares it with what the workspace returns, ignoring what the service
+  adds or rewrites: nulls and empty lists and objects, `lastPublishTime`, a
+  notebook's `kernelspec`, `a365ComputeOptions` and
+  `runAsWorkspaceSystemIdentity: false`, and a trigger's `runtimeState`.
+  Anything else counts, so a new kind of noise shows as a change (an extra
+  approval, never a skipped one); report it as an issue in this
+  repository. Things the plan can't read or evaluate are listed as "can't
+  compare" and count as changes. Lake databases, and endpoints and runtimes
+  when they are deployed, aren't compared, so a folder with them always has
+  changes.
+- **Secure values the service hides aren't compared.** A secure parameter
+  is compared with the live value when the workspace returns it (the value
+  is never shown). A value it hides (`**********`, or omitted) is listed as
+  "secure, not compared" and counts as a change, so a rotated secret still
+  reaches the workspace; use `always-apply` to be sure.
 - **A change in the portal** (or a trigger started there) changes etags, so
-  the next apply asks for a new plan.
+  the next apply asks for a new plan, and the next plan shows the
+  difference as a change.
 - **The apply's inputs must be the plan's.** An apply given a different
   `delete-artifacts` or `deploy-managed-private-endpoints` is refused, with
   the reason in the PR comment, so it can't delete what the plan never

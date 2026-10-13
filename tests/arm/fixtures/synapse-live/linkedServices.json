@@ -1,0 +1,17 @@
+{
+  "value": [
+    {
+      "name": "ls_storage",
+      "etag": "l1",
+      "properties": {
+        "type": "AzureBlobFS",
+        "description": null,
+        "annotations": [],
+        "connectVia": {
+          "referenceName": "AutoResolveIntegrationRuntime",
+          "type": "IntegrationRuntimeReference"
+        }
+      }
+    }
+  ]
+}

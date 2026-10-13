@@ -163,7 +163,10 @@ catalog, layout and principles.
     `synapse/apply`) never deletes managed private endpoints unless it
     deploys them, and its default and lake-database rules are copied into
     `arm.sh` and `synapse/scripts/plan.sh` for the deletion prediction: keep
-    them equal to the deployer's `src/defaults.ts` and `src/lakedb.ts`.
+    them equal to the deployer's `src/defaults.ts` and `src/lakedb.ts`. The
+    comparison's expression grammar and parameter rules are copied into
+    `arm/scripts/synapse-compare.jq`: keep them equal to the deployer's
+    `src/expression.ts` and the parameter rules of `src/template.ts`.
   - A what-if plan records `deploy/live.json` (a fingerprint of the live
     `{type, name, etag}` lines and the kinds listed); the apply lists the
     same kinds and refuses on a difference. The plan's `target.json` records
@@ -171,7 +174,21 @@ catalog, layout and principles.
     `delete-artifacts`), and the apply refuses a different input. Refusals
     are written into the plan's `summary.md` for the PR comment, and advise
     re-running all jobs (re-running failed jobs reuses the refused plan).
-  - `has-changes` stays true for Synapse (no "no changes" diff yet).
+  - **The Synapse plan compares with the live definitions** (decisions in
+    `docs/design/arm-live-comparison.md`). With what-if,
+    `arm/scripts/synapse-compare.jq` (run by `arm_synapse_compare`) evaluates
+    each template artifact as the deployer would publish it and compares it
+    with the definition the plan already lists (`ARM_LIVE_PROPERTIES`). The
+    comparison is exact after the documented normalization; a value it can't
+    read or evaluate, a kind it doesn't compare and a secure value the
+    service hides count as changes, never as "unchanged", and a failed
+    comparison counts every existing artifact as changed. A plan with
+    nothing to create, change or delete has `has-changes` false and skips
+    the apply, unless `always-apply` (an input of all four Data Factory and
+    Synapse workflows and both plan actions). Secure values are compared in
+    jq and never printed; Data Factory's `arm_whatif_secure` resolves the
+    `[parameters('x')]` the what-if leaves for secure parameters the same
+    way.
 - **Paths:** composite action inputs are relative to the workspace, which is
   the repository root; var files are relative to the module.
 - **Every script runs locally too.** Outputs and summaries degrade to
@@ -225,7 +242,8 @@ catalog, layout and principles.
     detection, input validation, the Azure mapping, names);
   - the Data Factory and Synapse script tests (`tests/arm/scripts-test.sh`:
     the infrastructure boundary, template artifact names, stale-plan paths,
-    the live fingerprint, plan and apply with stubbed az and pwsh);
+    the live fingerprint, the comparison with the live definitions, plan and
+    apply with stubbed az and pwsh);
   - the SQL project script tests (`tests/sqlproject/scripts-test.sh`:
     names, input validation, the build's scripts comparison, reports, plan
     and apply with stubbed tools, secret handling);

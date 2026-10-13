@@ -47,7 +47,7 @@ decisions and why.
 | Synapse deletions | The Synapse deployer (`JoshSLawrence/synapse-deploy`) never deletes managed private endpoints unless it deploys them. The plan's deletion list matches its rules: the service's defaults by type, endpoints named `synapse-ws-*`, and only Spark, SyMS lake databases. |
 | Live re-check | A plan records a fingerprint (SHA-256 of the sorted `{type, name, etag}` lines) of the live logic, plus the integration runtimes and endpoints when deployed. The apply lists the same kinds again and refuses on a difference. Without what-if there is no fingerprint and the apply says the check is skipped. |
 | Pool check | With what-if, a Synapse plan fails when a notebook, Spark job definition or generated pool stub names a pool the workspace lacks. |
-| Synapse "no changes" | Deferred. `has-changes` stays true: every Synapse deployment a PR runs asks for approval, as before. The live re-check covers the safety side. |
+| Synapse "no changes" | Decided in v0.8.0: the plan compares each artifact with its live definition, and a deployment with nothing to change has `has-changes` false. See `arm-live-comparison.md`. |
 | Template artifact | Named per call (stack, deployments, parameter files), as the SQL project's dacpac is, so several calls in one run do not overwrite each other's. |
 | Stale-plan paths | A deployment's paths leave out the other deployments' parameters files in its folder, and always include its own and the shared ones, as the SQL project does for profiles. |
 | Apply environment | `apply-environment` is required with `apply`: an apply without an environment has no approval gate. |

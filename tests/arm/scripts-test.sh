@@ -8,7 +8,9 @@
 # rule, the live fingerprint, and the plan and apply scripts of both
 # services: deletion lists, the pool check, the live re-check, and the
 # integration runtimes the Data Factory post-deployment script is told to
-# keep. The deployer, the pre/post-deployment script and what-if need Azure
+# keep, the comparison with the live definitions (the deployer's expressions,
+# the normalization, secure values) and the Data Factory what-if's secure
+# deltas. The deployer, the pre/post-deployment script and what-if need Azure
 # and are not covered. Run by pre-commit and CI. Needs jq.
 #
 
@@ -66,7 +68,8 @@ STUB
 # of the URL>.json (an empty list without one; <name>.2.json for a second
 # page, <name>.404 to answer ResourceNotFound, <name>.400 to answer a
 # workspace without a managed virtual network), so a test sets what a factory
-# or workspace holds by writing those files.
+# or workspace holds by writing those files. `az deployment group what-if`
+# prints $STUB_LIVE/what-if.json when it exists.
 cat > "$STUBS/az" << 'STUB'
 #!/usr/bin/env bash
 echo "az $*" >> "$STUB_LOG/az.log"
@@ -80,7 +83,9 @@ case "$1 $2" in
     ;;
   "account get-access-token") echo "TOKEN" ;;
   "deployment group")
-    [ "$3" != "what-if" ] || echo '{"changes": []}'
+    if [ "$3" = "what-if" ]; then
+      if [ -f "$STUB_LIVE/what-if.json" ]; then cat "$STUB_LIVE/what-if.json"; else echo '{"changes": []}'; fi
+    fi
     ;;
   "synapse trigger") echo "[]" ;;
   rest*)
@@ -584,7 +589,7 @@ expect_file_lacks "synapse plan: endpoints aren't deleted when they belong to in
 expect_file_lacks "synapse plan: runtimes never are" "$PLAN/summary.md" "> - \`integrationRuntimes"
 expect "synapse plan: the target records the boundary" "false" "$(jq -r '.deploy_managed_private_endpoints' "$PLAN/deploy/target.json")"
 expect "synapse plan: the kinds in the fingerprint leave out endpoints and runtimes" "0" "$(jq -r '.kinds[]' "$PLAN/deploy/live.json" | grep -c 'managedPrivateEndpoints\|integrationRuntimes' || true)"
-expect "synapse plan: has-changes stays true" "true" "$(output has-changes)"
+expect "synapse plan: has-changes is true when the live definitions weren't listed (nothing is compared as unchanged)" "true" "$(output has-changes)"
 synapse_first="$(output plan-sha256)"
 live_list linkedServices syn-test-WorkspaceDefaultStorage:d2 ls_storage:l1
 workspace_plan WHAT_IF=true
@@ -1037,11 +1042,11 @@ jq '.resources += [
   {name: "[concat(parameters(\u0027workspaceName\u0027), \u0027/WorkspaceSystemIdentity\u0027)]", type: "Microsoft.Synapse/workspaces/credentials", properties: {}, dependsOn: []}]' "$SYN" > "$WORK/syn-defaults/TemplateForWorkspace.json"
 workspace_plan WHAT_IF=true TEMPLATE_DIR="$WORK/syn-defaults"
 expect "defaults: a plan against another workspace succeeds" "0" "$status"
-expect_file_has "defaults: the heading counts the artifacts that are deployed, and the defaults apart" "$PLAN/summary.md" "### 📋 Plan: deploy 4 artifact(s) (4 new, 3 service default(s) skipped), delete 0"
-expect "defaults: ... each default is shown as skipped" "3" "$(grep -c '⚪ skipped (service default)' "$PLAN/summary.md")"
-expect_file_lacks "defaults: ... never as created or updated" "$PLAN/summary.md" "create | \`linkedServices/syn-dev-WorkspaceDefaultStorage"
-expect_file_lacks "defaults: ... nor as updated" "$PLAN/summary.md" "update | \`credentials/WorkspaceSystemIdentity"
-expect "defaults: has-changes stays true" "true" "$(output has-changes)"
+expect_file_has "defaults: the heading counts what changes, and the defaults apart" "$PLAN/summary.md" "### 📋 Plan: 4 to create, 0 to modify, 0 to delete"
+expect_file_has "defaults: ... and are a count in the sentence" "$PLAN/summary.md" "3 service default(s) skipped"
+expect_file_lacks "defaults: ... never listed as created" "$PLAN/summary.md" "create | \`linkedServices/syn-dev-WorkspaceDefaultStorage"
+expect_file_lacks "defaults: ... nor as modified" "$PLAN/summary.md" "modify | \`credentials/WorkspaceSystemIdentity"
+expect "defaults: has-changes is true (the 4 artifacts are new)" "true" "$(output has-changes)"
 workspace_plan TEMPLATE_DIR="$WORK/syn-defaults"
 expect_file_has "defaults: without what-if the heading says so too" "$PLAN/summary.md" "### 📋 Plan: deploy 4 artifact(s) (3 service default(s) skipped)"
 
@@ -1050,8 +1055,9 @@ mkdir -p "$WORK/syn-only-defaults"
 cp -R "$WORKSPACE_TEMPLATE"/. "$WORK/syn-only-defaults/"
 jq '.resources |= map(select(.name | test("WorkspaceDefault|WorkspaceSystemIdentity")))' "$WORK/syn-defaults/TemplateForWorkspace.json" > "$WORK/syn-only-defaults/TemplateForWorkspace.json"
 workspace_plan WHAT_IF=true TEMPLATE_DIR="$WORK/syn-only-defaults"
-expect_file_has "defaults: with nothing else the heading says 0 are deployed" "$PLAN/summary.md" "### 📋 Plan: deploy 0 artifact(s) (0 new, 3 service default(s) skipped), delete 0"
-expect "defaults: ... and has-changes stays true" "true" "$(output has-changes)"
+expect_file_has "defaults: with nothing else there is nothing to change" "$PLAN/summary.md" "### ✅ No changes"
+expect_file_has "defaults: ... and says the defaults were skipped" "$PLAN/summary.md" "(0 artifact(s) unchanged, 3 service default(s) skipped)"
+expect "defaults: ... so has-changes is false" "false" "$(output has-changes)"
 
 # A user artifact named like a default is not skipped by the deletion list
 live_list pipelines pl_wait:p1
@@ -1059,6 +1065,273 @@ live_list linkedServices syn-test-WorkspaceDefaultStorage:d1 x-WorkspaceDefaultS
 workspace_plan WHAT_IF=true
 expect_file_has "synapse plan: x-WorkspaceDefaultStorage-copy is deleted like any artifact" "$PLAN/summary.md" "> - \`linkedServices/x-WorkspaceDefaultStorage-copy\`"
 expect_file_lacks "synapse plan: ... unlike the real default" "$PLAN/summary.md" "> - \`linkedServices/syn-test-WorkspaceDefaultStorage"
+
+# --- The comparison with the live definitions -----------------------------------------------------
+
+# Compare one template artifact (named res, of a kind) with one live item,
+# as arm_synapse_compare does, and print its result line.
+# Usage: compare_one <kind> '<template properties>' '<live properties>' ['<extra template parameters>' ['<parameter values>' ['<variables>']]]
+compare_one() {
+  local kind="$1" mine="$2" live="$3" decl="${4:-}" given="${5:-}" vars="${6:-}"
+  [ -n "$decl" ] || decl='{}'
+  [ -n "$given" ] || given='{}'
+  [ -n "$vars" ] || vars='{}'
+  jq -n --arg kind "$kind" --argjson props "$mine" --argjson decl "$decl" --argjson vars "$vars" '
+    {parameters: ({workspaceName: {type: "string"}} + $decl), variables: $vars,
+     resources: [{name: "[concat(parameters(\u0027workspaceName\u0027), \u0027/res\u0027)]",
+                  type: "Microsoft.Synapse/workspaces/\($kind)", properties: $props}]}' > "$WORK/cmp-template.json"
+  jq -n --argjson given "$given" '{parameters: ($given | map_values({value: .}))}' > "$WORK/cmp-parameters.json"
+  arm_template_resources "$WORK/cmp-template.json" |
+    jq -c "(.type | ascii_downcase) as \$t | . + {key: \"\(\$t)/\(.name | ascii_downcase)\", default: (${ARM_SYNAPSE_IS_DEFAULT})}" > "$WORK/cmp-entries.jsonl"
+  jq -nc --arg kind "$kind" --argjson live "$live" '{type: ($kind | ascii_downcase), name: "res", etag: "e", properties: $live}' > "$WORK/cmp-live.jsonl"
+  arm_synapse_compare "$WORK/cmp-template.json" "$WORK/cmp-parameters.json" ws-test "$WORK/cmp-entries.jsonl" "$WORK/cmp-live.jsonl"
+}
+
+# The same, as "<status> <path>:<change>,..."
+compare_summary() {
+  compare_one "$@" | jq -r '"\(.status) \(.paths | map("\(.path):\(.change)") | join(","))" | rtrimstr(" ")'
+}
+
+expect "compare: a whole-string parameter is evaluated, whatever the case of its name" "unchanged" "$(compare_summary pipelines '{"a": "[parameters('"'"'U'"'"')]", "b": 2}' '{"a": "https://x", "b": 2}' '{"u": {"type": "string"}}' '{"u": "https://x"}')"
+expect "compare: concat with workspaceName is the target workspace's" "unchanged" "$(compare_summary pipelines '{"a": "[concat('"'"'abc-'"'"', parameters('"'"'workspaceName'"'"'), '"'"'-'"'"', 7)]"}' '{"a": "abc-ws-test-7"}')"
+expect "compare: a default value is evaluated, and so are variables" "unchanged" "$(compare_summary pipelines '{"a": "[variables('"'"'v'"'"')]", "b": "[parameters('"'"'p'"'"')]"}' '{"a": "x-ws-test", "b": "dflt"}' '{"p": {"type": "string", "defaultValue": "dflt"}}' '{}' '{"v": "[concat('"'"'x-'"'"', parameters('"'"'workspaceName'"'"'))]"}')"
+expect "compare: [x].[y], [[x], [toLower('x')] and ['x'] are literal text (the deployer's grammar, not ARM's)" "unchanged" "$(compare_summary pipelines '{"a": "[log].[usp_x]", "b": "[[x]", "c": "[toLower('"'"'x'"'"')]", "d": "['"'"'x'"'"']"}' '{"a": "[log].[usp_x]", "b": "[[x]", "c": "[toLower('"'"'x'"'"')]", "d": "['"'"'x'"'"']"}')"
+expect "compare: ... and a live value ARM would have produced is a change" "modify properties.b:modified" "$(compare_summary pipelines '{"b": "[[x]"}' '{"b": "[x]"}')"
+expect "compare: an undeclared parameter can't be compared" "unknown properties.a:unknown" "$(compare_summary pipelines '{"a": "[parameters('"'"'nope'"'"')]"}' '{"a": "x"}')"
+expect "compare: an expression that doesn't parse can't be compared" "unknown properties.a:unknown" "$(compare_summary pipelines '{"a": "[parameters('"'"'a'"'"']"}' '{"a": "x"}')"
+expect "compare: a nested unsupported function can't be compared" "unknown properties.a:unknown" "$(compare_summary pipelines '{"a": "[concat(toLower('"'"'x'"'"'))]"}' '{"a": "x"}')"
+expect "compare: resourceId in a property can't be compared" "unknown properties.a:unknown" "$(compare_summary pipelines '{"a": "[resourceId('"'"'a'"'"', '"'"'b'"'"')]"}' '{"a": "x"}')"
+expect "compare: concat() with no argument can't be compared" "unknown properties.a:unknown" "$(compare_summary pipelines '{"a": "[concat()]"}' '{"a": "x"}')"
+expect "compare: a parameter without a value can't be compared" "unknown properties.a:unknown" "$(compare_summary pipelines '{"a": "[parameters('"'"'p'"'"')]"}' '{"a": "x"}' '{"p": {"type": "string"}}')"
+expect "compare: a default that refers to itself can't be compared, and doesn't hang" "unknown properties.a:unknown" "$(compare_summary pipelines '{"a": "[parameters('"'"'p'"'"')]"}' '{"a": "x"}' '{"p": {"type": "string", "defaultValue": "[parameters('"'"'p'"'"')]"}}')"
+expect "compare: a definite change wins over a value that can't be evaluated" "modify properties.a:unknown,properties.b:modified" "$(compare_summary pipelines '{"a": "[parameters('"'"'nope'"'"')]", "b": 1}' '{"a": "x", "b": 2}')"
+
+# Normalization: each rule, and what it must not hide
+expect "compare: null is absent" "unchanged" "$(compare_summary pipelines '{"a": 1, "d": null}' '{"a": 1}')"
+expect "compare: ... in either side" "unchanged" "$(compare_summary pipelines '{"a": 1}' '{"a": 1, "d": null}')"
+expect "compare: [] and {} are absent" "unchanged" "$(compare_summary pipelines '{"a": 1, "annotations": [], "typeProperties": {}}' '{"a": 1, "outputs": []}')"
+expect "compare: lastPublishTime is the service's" "unchanged" "$(compare_summary pipelines '{"a": 1, "lastPublishTime": "x"}' '{"a": 1, "lastPublishTime": "y"}')"
+expect "compare: a notebook's kernelspec is only in the template" "unchanged" "$(compare_summary notebooks '{"metadata": {"kernelspec": {"name": "synapse_pyspark"}, "language_info": {"name": "python"}}}' '{"metadata": {"language_info": {"name": "python"}}}')"
+expect "compare: a notebook's runAsWorkspaceSystemIdentity false is the default" "unchanged" "$(compare_summary notebooks '{"a": 1}' '{"a": 1, "sessionProperties": {"runAsWorkspaceSystemIdentity": false}}')"
+expect "compare: ... true is a change" "modify properties.sessionProperties:removed" "$(compare_summary notebooks '{"a": 1}' '{"a": 1, "sessionProperties": {"runAsWorkspaceSystemIdentity": true}}')"
+expect "compare: a notebook's a365ComputeOptions is the workspace's cache of its pool" "unchanged" "$(compare_summary notebooks '{"metadata": {"a365ComputeOptions": {"id": "x"}}}' '{"metadata": {"a365ComputeOptions": {"id": "y"}}}')"
+expect "compare: a trigger's runtimeState is read-only" "unchanged" "$(compare_summary triggers '{"a": 1}' '{"a": 1, "runtimeState": "Started"}')"
+expect "compare: ... but not a pipeline's" "modify properties.runtimeState:removed" "$(compare_summary pipelines '{"a": 1}' '{"a": 1, "runtimeState": "Started"}')"
+
+# What must never be called unchanged
+expect "compare: a key only the live definition has is a change" "modify properties.description:removed" "$(compare_summary pipelines '{"a": 1}' '{"a": 1, "description": "d"}')"
+expect "compare: a key only the template has is a change" "modify properties.description:added" "$(compare_summary pipelines '{"a": 1, "description": "d"}' '{"a": 1}')"
+expect "compare: two activities swapped are a change" "modify properties.activities[0].name:modified,properties.activities[1].name:modified" "$(compare_summary pipelines '{"activities": [{"name": "a"}, {"name": "b"}]}' '{"activities": [{"name": "b"}, {"name": "a"}]}')"
+expect "compare: an activity removed is a change, reported once at the array" "modify properties.activities:modified" "$(compare_summary pipelines '{"activities": [{"name": "a"}]}' '{"activities": [{"name": "a"}, {"name": "b"}]}')"
+expect "compare: a folder moved is a change" "modify properties.folder.name:modified" "$(compare_summary notebooks '{"folder": {"name": "a"}}' '{"folder": {"name": "b"}}')"
+expect "compare: \"2\" is not 2" "modify properties.a:modified" "$(compare_summary pipelines '{"a": "2"}' '{"a": 2}')"
+expect "compare: a key with a dot is shown in brackets" "modify properties.sessionProperties.conf[\"spark.x\"]:modified" "$(compare_summary notebooks '{"sessionProperties": {"conf": {"spark.x": "1"}}}' '{"sessionProperties": {"conf": {"spark.x": "2"}}}')"
+expect "compare: a changed line of a cell's source is reported as the source" "modify properties.cells[0].source:modified" "$(compare_summary notebooks '{"cells": [{"source": ["a", "b"]}]}' '{"cells": [{"source": ["a", "c"]}]}')"
+
+# The deployer points references to another workspace's default linked services at its own
+expect "compare: a reference to another workspace's default storage is the target's" "unchanged" "$(compare_summary datasets '{"linkedServiceName": {"referenceName": "ws-dev-WorkspaceDefaultStorage", "type": "LinkedServiceReference"}}' '{"linkedServiceName": {"referenceName": "ws-test-WorkspaceDefaultStorage", "type": "LinkedServiceReference"}}')"
+expect "compare: ... and the SQL one, whatever the case" "unchanged" "$(compare_summary datasets '{"linkedServiceName": {"referenceName": "other-WORKSPACEDEFAULTSQLSERVER", "type": "LinkedServiceReference"}}' '{"linkedServiceName": {"referenceName": "ws-test-WorkspaceDefaultSqlServer", "type": "LinkedServiceReference"}}')"
+expect "compare: a reference that isn't a linked service's is left alone" "modify properties.pipeline.referenceName:modified" "$(compare_summary pipelines '{"pipeline": {"referenceName": "ws-dev-WorkspaceDefaultStorage", "type": "PipelineReference"}}' '{"pipeline": {"referenceName": "ws-test-WorkspaceDefaultStorage", "type": "PipelineReference"}}')"
+
+# Secure values are compared and never shown
+SECURE_DECL='{"s": {"type": "secureString"}}'
+SECURE_PROPS='{"password": "[parameters('"'"'s'"'"')]", "user": "u"}'
+expect "compare: a secure value equal to the live one is unchanged" "unchanged" "$(compare_summary linkedServices "$SECURE_PROPS" '{"password": "placeholder-secret", "user": "u"}' "$SECURE_DECL" '{"s": "placeholder-secret"}')"
+expect "compare: ... a different readable one is a change" "modify properties.password:secure" "$(compare_summary linkedServices "$SECURE_PROPS" '{"password": "other", "user": "u"}' "$SECURE_DECL" '{"s": "placeholder-secret"}')"
+expect "compare: ... one the service hides (asterisks) is secure, not compared" "secure properties.password:not-compared" "$(compare_summary linkedServices "$SECURE_PROPS" '{"password": "**********", "user": "u"}' "$SECURE_DECL" '{"s": "placeholder-secret"}')"
+expect "compare: ... one the service doesn't return is too" "secure properties.password:not-compared" "$(compare_summary linkedServices "$SECURE_PROPS" '{"user": "u"}' "$SECURE_DECL" '{"s": "placeholder-secret"}')"
+expect "compare: ... but a change elsewhere is a modify" "modify properties.password:not-compared,properties.user:modified" "$(compare_summary linkedServices "$SECURE_PROPS" '{"password": "**********", "user": "v"}' "$SECURE_DECL" '{"s": "placeholder-secret"}')"
+expect "compare: a secure value is not in the output" "0" "$(compare_one linkedServices "$SECURE_PROPS" '{"password": "other-live", "user": "u"}' "$SECURE_DECL" '{"s": "placeholder-secret"}' | grep -c 'placeholder-secret\|other-live' || true)"
+expect "compare: concat with a secure value is secure too" "modify properties.cs:secure" "$(compare_summary linkedServices '{"cs": "[concat('"'"'pwd='"'"', parameters('"'"'s'"'"'))]"}' '{"cs": "pwd=other"}' "$SECURE_DECL" '{"s": "placeholder-secret"}')"
+
+# What can't be compared at all
+expect "compare: a live item without a definition can't be compared" "unknown properties:unknown" "$(compare_summary pipelines '{"a": 1}' 'null')"
+expect "compare: lake databases aren't compared" "unknown properties:unknown" "$(compare_summary databases '{"a": 1}' '{"a": 1}')"
+expect "compare: ... and say why" "databases are not compared" "$(compare_one databases '{"a": 1}' '{"a": 1}' | jq -r '.paths[0].why')"
+cases=$((cases + 1))
+echo '{"parameters": {}, "resources": []}' > "$WORK/cmp-empty.json"
+if arm_synapse_compare "$WORK/cmp-empty.json" "$WORK/cmp-parameters.json" ws-test "$WORK/cmp-entries.jsonl" "$WORK/cmp-live.jsonl" > /dev/null 2>&1; then
+  log_error "compare: entries that aren't the template's should fail"
+  failures=$((failures + 1))
+else
+  log_success "compare: entries that aren't the template's fail"
+fi
+
+# --- Synapse plan: the comparison ------------------------------------------------------
+
+compare_live() {
+  reset_live
+  cp "$CANNED"/synapse-live/*.json "$STUB_LIVE/"
+  live_list bigDataPools spark:b1 spark_big:b2
+  live_list sqlPools dw:q1
+}
+
+compare_live
+workspace_plan WHAT_IF=true
+expect "synapse compare: a workspace that matches the folder plans" "0" "$status"
+expect_file_has "synapse compare: ... with no changes" "$PLAN/summary.md" "### ✅ No changes"
+expect_file_has "synapse compare: ... all four artifacts unchanged" "$PLAN/summary.md" "(4 artifact(s) unchanged)"
+expect_file_lacks "synapse compare: ... nothing is listed as modified" "$PLAN/summary.md" "🟡"
+expect "synapse compare: ... so has-changes is false" "false" "$(output has-changes)"
+expect_file_has "synapse compare: ... and the log says so" "$WORK/log" "has changes: false"
+
+workspace_plan WHAT_IF=true ALWAYS_APPLY=true
+expect "synapse compare: always-apply makes has-changes true" "true" "$(output has-changes)"
+expect_file_has "synapse compare: ... and the heading says so" "$PLAN/summary.md" "### 📋 Plan: no changes, applied anyway (always-apply)"
+expect_file_has "synapse compare: ... and that everything is published again" "$PLAN/summary.md" "Every artifact is published again."
+
+jq '.value[0].properties.bigDataPool.referenceName = "spark_big"' "$STUB_LIVE/notebooks.json" > "$WORK/nb.json" && mv "$WORK/nb.json" "$STUB_LIVE/notebooks.json"
+workspace_plan WHAT_IF=true
+expect_file_has "synapse compare: one changed property is the heading" "$PLAN/summary.md" "### 📋 Plan: 0 to create, 1 to modify, 0 to delete"
+expect_file_has "synapse compare: ... its row names the path" "$PLAN/summary.md" "| 🟡 modify | \`notebooks/nb_load\` | \`properties.bigDataPool.referenceName\` |"
+expect_file_has "synapse compare: ... the others are unchanged" "$PLAN/summary.md" "3 artifact(s) unchanged"
+expect "synapse compare: ... and has-changes is true" "true" "$(output has-changes)"
+
+compare_live
+jq '.value += [{name: "pl_old", etag: "p2", properties: {}}] | .value |= map(select(.name != "pl_wait"))' "$STUB_LIVE/pipelines.json" > "$WORK/pl.json" && mv "$WORK/pl.json" "$STUB_LIVE/pipelines.json"
+workspace_plan WHAT_IF=true
+expect_file_has "synapse compare: an artifact missing live is created" "$PLAN/summary.md" "| 🟢 create | \`pipelines/pl_wait\` |  |"
+expect_file_has "synapse compare: ... and one missing from the folder is deleted" "$PLAN/summary.md" "> - \`pipelines/pl_old\`"
+expect_file_has "synapse compare: ... both in the heading" "$PLAN/summary.md" "### 📋 Plan: 1 to create, 0 to modify, 1 to delete"
+expect "synapse compare: ... and has-changes is true" "true" "$(output has-changes)"
+
+compare_live
+workspace_plan
+expect_file_has "synapse compare: without what-if the rows are published again" "$PLAN/summary.md" "| 🔵 publish | \`pipelines/pl_wait\` |"
+expect "synapse compare: ... and has-changes is true" "true" "$(output has-changes)"
+expect_file_lacks "synapse compare: ... nothing is compared" "$WORK/log" "Compare the artifacts with their live definitions"
+
+# A live list without definitions (the stubs of the other tests): nothing can be called unchanged
+reset_live
+live_list pipelines pl_wait:p1
+live_list linkedServices ls_storage:l1
+live_list notebooks nb_load:n1
+live_list sparkJobDefinitions sjd_run:s1
+live_list bigDataPools spark:b1 spark_big:b2
+live_list sqlPools dw:q1
+workspace_plan WHAT_IF=true
+expect "synapse compare: items without a definition are all artifacts the plan can't compare" "4" "$(grep -c "⚪ can't compare" "$PLAN/summary.md")"
+expect "synapse compare: ... so has-changes is true" "true" "$(output has-changes)"
+
+# A comparison that fails counts every existing artifact as changed
+compare_live
+mkdir -p "$WORK/no-jq-module"
+workspace_plan WHAT_IF=true ARM_SCRIPTS_DIR="$WORK/no-jq-module"
+expect "synapse compare: a failed comparison doesn't fail the plan" "0" "$status"
+expect_log "synapse compare: ... it warns, and says what to do" "Couldn't compare the artifacts with workspace syn-test, so the plan counts every one that exists there as changed. Please report it at https://github.com/JoshSLawrence/actions/issues."
+expect "synapse compare: ... every existing artifact is one the plan can't compare" "4" "$(grep -c "⚪ can't compare" "$PLAN/summary.md")"
+expect_file_has "synapse compare: ... the summary says so" "$PLAN/summary.md" "the comparison failed"
+expect "synapse compare: ... and has-changes is true" "true" "$(output has-changes)"
+
+# The fingerprint doesn't depend on the definitions being listed
+compare_live
+workspace_plan WHAT_IF=true
+with_properties="$(ARM_LIVE_PROPERTIES=true arm_live_lines https://syn-test.dev.azuresynapse.net 2019-06-01-preview https://dev.azuresynapse.net notebooks pipelines linkedServices | arm_live_fingerprint /dev/stdin)"
+without_properties="$(arm_live_lines https://syn-test.dev.azuresynapse.net 2019-06-01-preview https://dev.azuresynapse.net notebooks pipelines linkedServices | arm_live_fingerprint /dev/stdin)"
+expect "synapse compare: the fingerprint is the same with and without the definitions" "$without_properties" "$with_properties"
+expect "synapse compare: ... and lines carry them only on request" "1" "$(arm_live_lines https://syn-test.dev.azuresynapse.net 2019-06-01-preview https://dev.azuresynapse.net notebooks | jq -s '[.[] | has("properties")] | any | not | if . then 1 else 0 end')"
+workspace_prepare
+expect "synapse compare: the apply accepts a plan made with the definitions listed" "0" "$status"
+
+# Secure parameters are compared with the live ones, in a scratch file
+SECURE_WS_TEMPLATE="$WORK/workspace-template-secure"
+mkdir -p "$SECURE_WS_TEMPLATE"
+jq '.parameters.ls_secret = {type: "secureString"}
+  | .resources += [{"name": "[concat(parameters(\u0027workspaceName\u0027), \u0027/ls_sql\u0027)]", "type": "Microsoft.Synapse/workspaces/linkedServices", "apiVersion": "2019-06-01-preview", "properties": {"type": "AzureSqlDatabase", "typeProperties": {"password": "[parameters(\u0027ls_secret\u0027)]"}}, "dependsOn": []}]' "$SYN" > "$SECURE_WS_TEMPLATE/TemplateForWorkspace.json"
+echo '{"parameters": {"workspaceName": {"value": "syn-dev"}}}' > "$SECURE_WS_TEMPLATE/TemplateParametersForWorkspace.json"
+compare_live
+jq '.value += [{name: "ls_sql", etag: "l2", properties: {type: "AzureSqlDatabase", typeProperties: {password: "placeholder-secret"}}}]' "$STUB_LIVE/linkedServices.json" > "$WORK/ls.json" && mv "$WORK/ls.json" "$STUB_LIVE/linkedServices.json"
+workspace_plan WHAT_IF=true TEMPLATE_DIR="$SECURE_WS_TEMPLATE" PARAMETER_SECRETS="ls_secret=placeholder-secret"
+expect "synapse secure: a secure value equal to the live one is no change" "false" "$(output has-changes)"
+expect "synapse secure: ... the plan, its summary and the log never hold it" "0" "$( (grep -r placeholder-secret "$PLAN" "$WORK/log" || true) | wc -l | tr -d ' ')"
+expect "synapse secure: ... and the scratch directory is deleted" "no" "$([ -e "$WORK/plan-work" ] && echo yes || echo no)"
+workspace_plan WHAT_IF=true TEMPLATE_DIR="$SECURE_WS_TEMPLATE" PARAMETER_SECRETS="ls_secret=rotated-placeholder"
+expect_file_has "synapse secure: a different value is a modify, with the path marked and no value" "$PLAN/summary.md" "| 🟡 modify | \`linkedServices/ls_sql\` | 🔒 \`properties.typeProperties.password\` |"
+expect "synapse secure: ... the new value isn't kept" "0" "$( (grep -r rotated-placeholder "$PLAN" "$WORK/log" || true) | wc -l | tr -d ' ')"
+workspace_plan WHAT_IF=true TEMPLATE_DIR="$SECURE_WS_TEMPLATE" PARAMETERS="ls_secret=placeholder-parameter"
+expect_file_has "synapse secure: a 🔒 parameter in the table comes with a note on where its value is" "$PLAN/summary.md" "🔒 values aren't shown here."
+expect "synapse secure: ... and neither the note nor the table shows a value" "0" "$( (grep 'placeholder' "$PLAN/summary.md" || true) | wc -l | tr -d ' ')"
+jq '(.value[] | select(.name == "ls_sql") | .properties.typeProperties.password) = "**********"' "$STUB_LIVE/linkedServices.json" > "$WORK/ls.json" && mv "$WORK/ls.json" "$STUB_LIVE/linkedServices.json"
+workspace_plan WHAT_IF=true TEMPLATE_DIR="$SECURE_WS_TEMPLATE" PARAMETER_SECRETS="ls_secret=placeholder-secret"
+expect_file_has "synapse secure: a value the service hides is secure, not compared" "$PLAN/summary.md" "| 🔒 secure, not compared | \`linkedServices/ls_sql\` | 🔒 \`properties.typeProperties.password\` |"
+expect_file_has "synapse secure: ... counted in the sentence" "$PLAN/summary.md" "1 with secure values the plan can't compare"
+expect "synapse secure: ... as a change" "true" "$(output has-changes)"
+
+# --- Data Factory plan: secure parameters in the what-if --------------------------------------
+
+SECURE_FACTORY_TEMPLATE="$WORK/factory-template-secure"
+mkdir -p "$SECURE_FACTORY_TEMPLATE"
+jq '.parameters.ls_secret = {type: "secureString"}
+  | .resources += [{"name": "[concat(parameters(\u0027factoryName\u0027), \u0027/ls_sql\u0027)]", "type": "Microsoft.DataFactory/factories/linkedServices", "apiVersion": "2018-06-01", "properties": {"type": "AzureSqlDatabase", "typeProperties": {"connectionString": "[parameters(\u0027ls_secret\u0027)]"}}, "dependsOn": []}]' "$ADF" > "$SECURE_FACTORY_TEMPLATE/ARMTemplateForFactory.json"
+jq '{parameters: (.parameters | with_entries(select(.value.defaultValue != null) | .value |= {value: .defaultValue}))}' "$SECURE_FACTORY_TEMPLATE/ARMTemplateForFactory.json" > "$SECURE_FACTORY_TEMPLATE/ARMTemplateParametersForFactory.json"
+
+# A canned what-if with one change to ls_sql's connection string
+# Usage: whatif_secure <before as JSON> [<after as JSON>]
+whatif_secure() {
+  jq -n --argjson before "$1" --argjson after "${2:-\"[parameters('ls_secret')]\"}" '
+    {changes: [{resourceId: "/subscriptions/sub-1/resourceGroups/rg-dev/providers/Microsoft.DataFactory/factories/adf-test/linkedServices/ls_sql",
+                changeType: "Modify",
+                delta: [{path: "properties.typeProperties.connectionString", propertyChangeType: "Modify", before: $before, after: $after}]}]}' > "$STUB_LIVE/what-if.json"
+}
+secure_factory_plan() {
+  factory_plan WHAT_IF=true TEMPLATE_DIR="$SECURE_FACTORY_TEMPLATE" PARAMETER_SECRETS="ls_secret=placeholder-secret" "$@"
+}
+
+reset_live
+whatif_secure '"placeholder-secret"'
+secure_factory_plan
+expect "adf secure: a secure delta equal to the parameter's value succeeds" "0" "$status"
+expect_file_has "adf secure: ... and is no change" "$PLAN/summary.md" "### ✅ No changes"
+expect "adf secure: ... so has-changes is false" "false" "$(output has-changes)"
+expect "adf secure: ... and the value is nowhere" "0" "$( (grep -r placeholder-secret "$PLAN" "$WORK/log" || true) | wc -l | tr -d ' ')"
+secure_factory_plan ALWAYS_APPLY=true
+expect "adf secure: always-apply makes has-changes true" "true" "$(output has-changes)"
+expect_file_has "adf secure: ... and the heading says so" "$PLAN/summary.md" "### 📋 Plan: no changes, applied anyway (always-apply)"
+
+whatif_secure '"another-placeholder"'
+secure_factory_plan
+expect_file_has "adf secure: a different readable value is a modify with the path marked" "$PLAN/summary.md" "| 🟡 modify | \`linkedServices/ls_sql\` | 🔒 \`properties.typeProperties.connectionString\` |"
+expect "adf secure: ... neither value is shown" "0" "$( (grep -r 'another-placeholder\|placeholder-secret' "$PLAN" "$WORK/log" || true) | wc -l | tr -d ' ')"
+expect "adf secure: ... has-changes is true" "true" "$(output has-changes)"
+
+whatif_secure '"**********"'
+secure_factory_plan
+expect_file_has "adf secure: a value the factory hides is secure, not compared" "$PLAN/summary.md" "| 🔒 secure, not compared | \`linkedServices/ls_sql\` | 🔒 \`properties.typeProperties.connectionString\` |"
+expect_file_has "adf secure: ... counted in the sentence" "$PLAN/summary.md" "1 with secure values the what-if can't compare"
+expect "adf secure: ... as a change" "true" "$(output has-changes)"
+expect_file_has "adf secure: ... the heading still counts nothing to modify" "$PLAN/summary.md" "### 📋 Plan: 0 to create, 0 to modify, 0 to delete"
+
+whatif_secure 'null'
+secure_factory_plan
+expect_file_has "adf secure: a value the factory doesn't return is not compared either" "$PLAN/summary.md" "🔒 secure, not compared"
+
+whatif_secure '"placeholder-secret"' "\"[parameters('ls_secret')]\""
+jq '.changes[0].delta[0] |= {path: "properties.typeProperties", propertyChangeType: "Modify", children: [{path: "connectionString", propertyChangeType: "Modify", before: "placeholder-secret", after: "[parameters('"'"'ls_secret'"'"')]"}]}' "$STUB_LIVE/what-if.json" > "$WORK/wi.json" && mv "$WORK/wi.json" "$STUB_LIVE/what-if.json"
+secure_factory_plan
+expect_file_has "adf secure: a child delta that resolves equal takes its parent with it" "$PLAN/summary.md" "### ✅ No changes"
+
+# A parameter whose value is a Key Vault reference has no plain value to compare
+jq '.changes[0].delta[0] |= {path: "properties.typeProperties.connectionString", propertyChangeType: "Modify", before: "live", after: "[parameters('"'"'ls_secret'"'"')]"}' "$STUB_LIVE/what-if.json" > "$WORK/wi.json" && mv "$WORK/wi.json" "$STUB_LIVE/what-if.json"
+printf '%s\n' '{"parameters": {"factoryName": {"value": "adf-test"}, "ls_secret": {"reference": {"keyVault": {"id": "/subscriptions/sub-1/vaults/kv"}, "secretName": "s"}}}}' > "$WORK/secret-reference.json"
+cp "$WORK/secret-reference.json" "$REPO/factory/deployments/kv.json"
+factory_plan WHAT_IF=true TEMPLATE_DIR="$SECURE_FACTORY_TEMPLATE" PARAMETER_FILES=deployments/kv.json
+expect_file_has "adf secure: a Key Vault reference can't be compared" "$PLAN/summary.md" "🔒 secure, not compared"
+
+reset_live
+whatif_secure '"x"' '"https://example.net/"'
+secure_factory_plan
+expect_file_has "adf secure: a delta that isn't a secure reference is untouched" "$PLAN/summary.md" "| 🟡 modify | \`linkedServices/ls_sql\` | \`properties.typeProperties.connectionString\` |"
+jq -n '{changes: [{resourceId: "/subscriptions/sub-1/resourceGroups/rg-dev/providers/Microsoft.DataFactory/factories/adf-test/pipelines/pl_wait", changeType: "Modify", delta: [{path: "properties.lastPublishTime", propertyChangeType: "Delete", before: "2000-01-01T00:00:00Z"}]}]}' > "$STUB_LIVE/what-if.json"
+secure_factory_plan
+expect "adf secure: lastPublishTime is still the service's" "false" "$(output has-changes)"
+rm -f "$STUB_LIVE/what-if.json"
+
+# The note under the parameters table
+factory_plan WHAT_IF=true TEMPLATE_DIR="$SECURE_FACTORY_TEMPLATE" PARAMETERS="ls_secret=placeholder-parameter"
+expect_file_has "parameters: the 🔒 note says where the values are" "$PLAN/summary.md" "are in \`deploy/parameters.json\` of the plan artifact"
+expect_file_has "parameters: ... and that parameter-secrets are never shown" "$PLAN/summary.md" "\`parameter-secrets\` are never shown."
+factory_plan WHAT_IF=true
+expect_file_lacks "parameters: no note without a 🔒 value" "$PLAN/summary.md" "values aren't shown here"
 
 if [ "$failures" -gt 0 ]; then
   log_error "${failures} of ${cases} test(s) failed"
