@@ -238,7 +238,7 @@ def diff($a; $b; $p):
     # the template sets it, a different live state is a change. When it
     # doesn't, the live state is not compared.
     | (if $kind == "triggers" and (($mine | type) != "object" or ($mine | has("runtimeState") | not))
-       then [$mine | del(.runtimeState), $theirs | del(.runtimeState)]
+       then [($mine | del(.runtimeState)), ($theirs | del(.runtimeState))]
        else [$mine, $theirs] end) as [$mine, $theirs]
     | ([diff($mine; $theirs; []) | .path |= show] | unique_by([.path, .change])) as $paths
     | ($paths | map(.change)) as $changes

@@ -267,7 +267,7 @@ with these differences:
 | `working-directory` | `.` | The Synapse workspace's Git root folder |
 | `workspace-name` | from `*-WorkspaceDefaultStorage` | Development workspace's name, for the template's defaults (instead of `factory-name`) |
 | `what-if` | `true` | Compare each artifact with its live definition, list new artifacts and deletions, check the pools exist (needs network access, Synapse Artifact User and Reader) |
-| `always-apply` | `false` | Apply a deployment even when its plan found nothing to change (to republish everything, e.g. after a change the normalization can't see, or to restore drift the plan doesn't compare: lake databases, and endpoints and runtimes when they aren't deployed). Without `what-if` every deployment is applied anyway |
+| `always-apply` | `false` | Apply a deployment even when its plan found nothing to change (to deploy everything anyway, e.g. after a change in the portal that the comparison ignores or can't see). Without `what-if` every deployment is applied anyway |
 | `delete-artifacts` | `true` | Delete artifacts that aren't in the template |
 | `deploy-managed-private-endpoints` | `false` | Deploy the folder's managed private endpoints; `false` leaves them to infrastructure as code. `true` also deletes endpoints not in the folder |
 | `deploy-integration-runtimes` | `false` | Deploy the folder's integration runtimes; `false` leaves them to infrastructure as code. Synapse never deletes them |
@@ -380,7 +380,10 @@ input.
   notebook's `kernelspec`, `a365ComputeOptions` and
   `runAsWorkspaceSystemIdentity: false`, and a trigger's `runtimeState`
   when the template doesn't set it (when it does, say `Started`, a live
-  trigger in another state is a change, because the apply starts it).
+  trigger in another state is a change, because the apply starts it). With
+  `manage-triggers: false` the apply doesn't start or stop triggers (the
+  deployer ignores `runtimeState`), so such a trigger shows as a change in
+  every plan until you align it by hand.
   Anything else counts, so a new kind of noise shows as a change (an extra
   approval, never a skipped one); report it as an issue in this
   repository. Things the plan can't read or evaluate are listed as "can't

@@ -150,11 +150,9 @@ on:
       always-apply:
         description: >-
           Apply a deployment whose plan found nothing to change, too (false =
-          its apply and approval are skipped). Use it to republish everything,
-          e.g. after a change the comparison's normalization can't see, or to
-          restore drift the plan doesn't compare (lake databases, and
-          endpoints and runtimes when they aren't deployed). Without what-if
-          every deployment is applied anyway.
+          its apply and approval are skipped). Use it to deploy everything
+          anyway, e.g. after a change in the portal that the plan ignores or
+          can't see. Without what-if every deployment is applied anyway.
         type: boolean
         default: false
 

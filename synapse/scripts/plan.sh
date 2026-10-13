@@ -41,10 +41,9 @@
 #                       signed in, and network access to the workspace's
 #                       development endpoint). Default false.
 #   ALWAYS_APPLY      - "true": has-changes is true even when the comparison
-#                       found nothing to change (to republish everything, e.g.
-#                       after a change the normalization can't see, or to
-#                       restore drift the plan doesn't compare). Default
-#                       false.
+#                       found nothing to change (to deploy everything
+#                       anyway, e.g. after a change in the portal that the
+#                       comparison ignores or can't see). Default false.
 #   DELETE_ARTIFACTS  - "true" (default) if the apply deletes artifacts that
 #                       aren't in the template
 #   DEPLOY_MANAGED_PRIVATE_ENDPOINTS, DEPLOY_INTEGRATION_RUNTIMES

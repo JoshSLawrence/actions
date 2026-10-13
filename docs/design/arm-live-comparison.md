@@ -36,7 +36,7 @@ its folder showed exactly the pull requests it had not applied.
 | Topic | Decision |
 | --- | --- |
 | Synapse "no changes" | A plan with nothing to create, change or delete sets `has-changes` false. This is breaking: callers that relied on every run applying see the apply skipped. |
-| Opt-out | `always-apply` (boolean, default false), defined identically in all four Data Factory and Synapse workflows and both plan actions, makes `has-changes` true and the heading say "applied anyway". It forces a republish of everything, for example after a change the normalization cannot see, or to restore drift the plan does not compare (lake databases, and endpoints and runtimes when they are not deployed). A secure value the service hides already counts as a change, so a rotated secret needs no opt-out. |
+| Opt-out | `always-apply` (boolean, default false), defined identically in all four Data Factory and Synapse workflows and both plan actions, makes `has-changes` true and the heading say "applied anyway". It deploys everything anyway, for example after a change in the portal that the plan ignores or cannot see. A secure value the service hides already counts as a change, so a rotated secret needs no opt-out. |
 | Comparison rule | Exact equality after the normalization below. Comparing only what the template defines was rejected: a property removed in the folder (a description, a detached pool) would never be reported, and with the apply skipped it would never reach the workspace. |
 | Never "unchanged" by accident | A value the plan cannot read or evaluate, a live item without a definition, a kind that is not compared and a secure value the service hides all count as changes. If the comparison itself fails, the plan warns, counts every existing artifact as changed and does not fail. |
 | Secure values | Compared where the service returns them, and never shown: only property paths reach the output. A readable difference is a modify with the path marked 🔒. A value the service hides (`**********`, null or omitted), or a Key Vault reference, is "🔒 secure, not compared" and counts as a change. |
@@ -115,7 +115,9 @@ something the service adds, drops or rewrites.
 7. A trigger's `runtimeState` when the template does not set it. It is
    read-only in the REST API, but the apply starts the triggers the template
    marks `Started`, so when the template sets it a different live state is a
-   change (in both directions).
+   change (in both directions). With `manage-triggers: false` the apply does
+   not start or stop triggers, so such a trigger shows as a change in every
+   plan until it is aligned by hand; the plan does not know that input.
 
 Not normalized, on purpose: `folder`, `execution_count`, array order, value
 types (`"2"` is not `2`) and cell outputs. Arrays of different length are

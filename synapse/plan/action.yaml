@@ -55,9 +55,8 @@ inputs:
   always-apply:
     description: >-
       Make has-changes true even when the comparison found nothing to change
-      (to republish everything, e.g. after a change the comparison's
-      normalization can't see, or to restore drift the plan doesn't compare:
-      lake databases, and endpoints and runtimes when they aren't deployed).
+      (to deploy everything anyway, e.g. after a change in the portal that
+      the comparison ignores or can't see).
     required: false
     default: "false"
   delete-artifacts:

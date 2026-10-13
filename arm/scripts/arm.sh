@@ -309,12 +309,11 @@ arm_mask_secrets() {
 # az/deployer call. Owner-only, and the caller deletes it.
 # Usage: arm_parameters_with_secrets <template> <parameters file> <out file>
 arm_parameters_with_secrets() {
-  local template="$1" parameters="$2" out="$3" result scratch="${WORK_DIR:-}"
+  local template="$1" parameters="$2" out="$3" result
   arm_mask_secrets
-  # The merge result holds the secrets: keep it in the caller's scratch
-  # directory (deleted when the plan or apply ends) when it has one
-  [ -d "$scratch" ] || scratch="${TMPDIR:-/tmp}"
-  result="$(umask 077 && mktemp "${scratch}/merge.XXXXXX")"
+  # The merge result holds the secrets: keep it next to the output file,
+  # which every caller puts in its own scratch directory
+  result="$(umask 077 && mktemp "$(dirname "$out")/merge.XXXXXX")"
   (umask 077 && arm_merge_parameters "$template" "$parameters" "$(list_lines "${PARAMETER_SECRETS:-}")" "parameter-secrets" "" > "$result")
   local message failed=false
   while IFS= read -r message; do

@@ -1408,7 +1408,37 @@ expect "parameters: a non-integer int in parameter-secrets fails the plan" "1" "
 expect "parameters: ... without the value, in the summary or the log" "0" "$( (grep -r placeholder-text "$PLAN" "$WORK/log" || true) | wc -l | tr -d ' ')"
 
 # The fingerprint's temporary file holds no definitions
-expect "fingerprint: the projection drops the definitions" "0" "$(printf '%s\n' '{"type":"notebooks","name":"nb","etag":"e","properties":{"password":"placeholder-secret"}}' | jq -c '{type, name, etag}' | grep -c placeholder-secret || true)"
+printf '%s\n' '{"type":"notebooks","name":"nb","etag":"e","properties":{"password":"placeholder-secret"}}' > "$WORK/fp-input.jsonl"
+(
+  arm_live_fingerprint() { cp "$1" "$WORK/fp-lines"; }
+  arm_synapse_fingerprint "$WORK/fp-input.jsonl"
+)
+expect "fingerprint: the file it fingerprints keeps the line" "1" "$(grep -c '"name":"nb"' "$WORK/fp-lines")"
+expect "fingerprint: ... without the definition" "0" "$(grep -c placeholder-secret "$WORK/fp-lines" || true)"
+
+# The secrets merge is written next to the output file, nowhere else
+mkdir -p "$WORK/merge-out" "$WORK/merge-tmp"
+echo '{"parameters": {"workspaceName": {"value": "ws-test"}}}' > "$WORK/merge-parameters.json"
+(
+  export TMPDIR="$WORK/merge-tmp" PARAMETER_SECRETS="ls_secret=placeholder-secret"
+  unset WORK_DIR
+  arm_parameters_with_secrets "$SECURE_WS_TEMPLATE/TemplateForWorkspace.json" "$WORK/merge-parameters.json" "$WORK/merge-out/parameters.json"
+) > "$WORK/log" 2>&1
+expect "secrets merge: the output has the secret" "1" "$(grep -c placeholder-secret "$WORK/merge-out/parameters.json")"
+expect "secrets merge: ... the temporary directory stays empty" "0" "$(find "$WORK/merge-tmp" -type f | wc -l | tr -d ' ')"
+expect "secrets merge: ... and the intermediate file is removed from beside the output" "parameters.json" "$(ls "$WORK/merge-out")"
+
+# A result with the right length but the wrong order is a failed comparison too
+compare_live
+mkdir -p "$WORK/reversed-jq"
+cat > "$WORK/reversed-jq/synapse-compare.jq" << 'JQ'
+$entries | reverse | .[] | {key, status: "unchanged", paths: []}
+JQ
+workspace_plan WHAT_IF=true ARM_SCRIPTS_DIR="$WORK/reversed-jq"
+expect "synapse compare: a result in another order doesn't fail the plan" "0" "$status"
+expect_log "synapse compare: ... it warns" "Couldn't compare the artifacts with workspace syn-test"
+expect "synapse compare: ... and every existing artifact is one the plan can't compare" "4" "$(grep -c "⚪ can't compare" "$PLAN/summary.md")"
+expect "synapse compare: ... so has-changes is true" "true" "$(output has-changes)"
 
 if [ "$failures" -gt 0 ]; then
   log_error "${failures} of ${cases} test(s) failed"
