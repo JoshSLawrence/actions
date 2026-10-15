@@ -29,11 +29,12 @@
 #   comments on the PR, waits for approval and publishes on its own.
 # - result: one stable check for the project.
 #
-# Callers run it on pull_request and workflow_dispatch. There is no
-# apply-after-merge mode: a PR's plans apply from the PR (so the default
-# branch only holds what was applied, under a required check), and a run on
-# the default branch plans, and applies after approval only if something
-# changed.
+# Callers run it on pull_request and workflow_dispatch. By default
+# (apply-from-pr) a PR's plans apply from the PR, so the default branch only
+# holds what was applied, under a required check. With apply-from-pr false a
+# PR only plans; add a push trigger on the default branch, which plans and
+# applies after merge. A run on the default branch plans, and applies after
+# approval only if something changed.
 #
 # Runners: every runs-on input is a label, or JSON when it starts with { or
 # [ -- an array of labels or a runner group -- which each job's runs-on
@@ -120,8 +121,8 @@ on:
         description: >-
           When pre- and post-deployment scripts alone make a plan a change: changed
           (they differ from what is deployed: the base commit's build on a pull
-          request, always on a dispatch) or always (every plan of a project that has
-          them).
+          request, the previous commit's on a push with apply-from-pr false,
+          always otherwise) or always (every plan of a project that has them).
         type: string
         default: changed
       properties:
@@ -167,6 +168,12 @@ on:
       # --- Apply ----------------------------------------------------------------
       apply:
         description: Include the apply job at all. false = plan only.
+        type: boolean
+        default: true
+      apply-from-pr:
+        description: >-
+          Apply the reviewed plan from the PR, before merge. false = PRs only
+          plan; applies happen on push/dispatch runs on the default branch.
         type: boolean
         default: true
       apply-environment:
@@ -252,10 +259,17 @@ jobs:
           deployment-scripts: ${{ inputs.deployment-scripts }}
           deployments: ${{ inputs.deployments }}
           target-dacpac: ${{ inputs.target-dacpac }}
-          # Pull requests apply before they merge, so the base commit is what
-          # is deployed; other runs have nothing to compare with
+          # What is deployed: on a pull request the base commit (PRs apply
+          # before merge, or the base was applied after its own merge); on a
+          # push that applies after merge, the previous commit (none for a
+          # new branch). Other runs have nothing to compare with.
           scripts-base: >-
-            ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || 'none' }}
+            ${{
+              github.event_name == 'pull_request' && github.event.pull_request.base.sha ||
+              github.event_name == 'push' && !inputs.apply-from-pr &&
+                github.event.before != '0000000000000000000000000000000000000000' && github.event.before ||
+              'none'
+            }}
 
       - name: Upload dacpac
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -345,6 +359,7 @@ jobs:
       target-dacpac: ${{ inputs.target-dacpac }}
       allow-data-loss: ${{ inputs.allow-data-loss }}
       apply: ${{ inputs.apply }}
+      apply-from-pr: ${{ inputs.apply-from-pr }}
       azure-client-id: ${{ inputs.azure-client-id }}
       apply-azure-client-id: ${{ inputs.apply-azure-client-id }}
       azure-tenant-id: ${{ inputs.azure-tenant-id }}
