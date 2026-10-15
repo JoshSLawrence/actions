@@ -139,7 +139,7 @@ Lists take one item per line, or items separated by spaces. Without
 | `azure-use-azuread`                | `true`               | Microsoft Entra ID (RBAC) auth for storage: state and data plane       |
 | **Checks**                         |                      |                                                                        |
 | `checks`                           | `true`               | Run the checks job at all; `false` skips every check below             |
-| `checks-on-push`                   | `true`               | `false`: a PR's merge skips what the PR checked on the same content    |
+| `checks-on-push`                   | `always`             | On default-branch pushes: `always`, `never` or `unchecked` (below)     |
 | `fmt`                              | `true`               | `tofu fmt -check -recursive`                                           |
 | `validate`                         | `true`               | `tofu init -backend=false` and `tofu validate`                         |
 | `tflint`                           | `true`               | TFLint, recursive, with the call's var files                           |
@@ -262,21 +262,23 @@ way leaves its required checks pending forever.
   don't depend on variables.
 - **`checks: false`** skips the checks job entirely, without turning each
   check off.
-- **`checks-on-push: false`** skips the checks and integration tests on a
-  push to the default branch that merges a PR which already ran them on
-  the same content: with `apply-from-pr: false`, the merge then only plans
-  and applies. The prepare job skips them only when all of these hold, and
-  runs them otherwise:
-  - the push is the PR's merge commit (merge, squash or rebase), not a
-    direct push;
-  - the PR's latest run of the workflow on its head commit succeeded;
-  - every watched path (see [Change detection](#change-detection)) has the
-    same content in the merge as in the PR's head. A PR merged while behind
-    the default branch, which changed a watched path in the meantime, is
-    checked again, so up-to-date branches aren't required.
+- **`checks-on-push`** decides whether a push to the default branch (with
+  `apply-from-pr: false`, the merge that applies) runs the checks and
+  integration tests again. Dispatch and scheduled runs always run them.
+  - `always` (the default) runs them.
+  - `never` skips them.
+  - `unchecked` skips them when the PR the push merged already ran them on
+    the same content, and runs them otherwise. The prepare job checks that:
+    - the push is the PR's merge commit (merge, squash or rebase), not a
+      direct push;
+    - the PR's latest run of the workflow on its head commit succeeded;
+    - every watched path (see [Change detection](#change-detection)) has
+      the same content in the merge as in the PR's head. A PR merged while
+      behind the default branch, which changed a watched path in the
+      meantime, is checked again, so up-to-date branches aren't required.
 
-  Integration tests still run after a fork's or Dependabot's PR, which
-  couldn't run them. Dispatch and scheduled runs always run everything.
+    Integration tests still run after a fork's or Dependabot's PR, which
+    couldn't run them.
 - **`test-filter`** selects test files, as OpenTofu's `-filter` does
   (`tests/unit/*.tftest.hcl`), not test or run block names.
 - **`docs`** is on by default: the module needs `terraform-docs` pinned and

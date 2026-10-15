@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # Decides whether a push to the default branch skips the checks and the
-# integration tests (checks-on-push: false) because the PR it merged already
-# ran them on the same content. It skips only when all of these hold, and
-# runs them otherwise:
+# integration tests (checks-on-push). always runs them; never skips them;
+# unchecked skips them only when the PR the push merged already ran them on
+# the same content, which is when all of these hold:
 #
 # - the pushed commit is a PR's merge into the default branch (its
 #   merge_commit_sha: a merge, squash or rebase merge), not a direct push;
@@ -19,8 +19,7 @@
 # them.
 #
 # Environment variables:
-#   CHECKS_ON_PUSH    - "false" to skip what the PR already ran (default:
-#                       true, which always runs them)
+#   CHECKS_ON_PUSH    - always (default), never or unchecked
 #   EVENT_NAME        - github.event_name
 #   REF               - github.ref
 #   DEFAULT_BRANCH    - the repository's default branch
@@ -35,7 +34,7 @@
 # Outputs:
 #   skip-checks            - "true" to skip the checks job
 #   skip-integration-tests - "true" to skip the integration tests
-#   pr                     - the merged PR's number, when they're skipped
+#   note                   - what was skipped and why, when anything was
 #
 
 set -euo pipefail
@@ -44,7 +43,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=opentofu/scripts/common.sh
 source "$SCRIPT_DIR/common.sh"
 
-CHECKS_ON_PUSH="${CHECKS_ON_PUSH:-true}"
+CHECKS_ON_PUSH="${CHECKS_ON_PUSH:-always}"
 log_config CHECKS_ON_PUSH EVENT_NAME REF DEFAULT_BRANCH SHA PATHS
 
 # Usage: decide <skip-checks> <skip-integration-tests>
@@ -53,7 +52,16 @@ decide() {
   set_output skip-integration-tests "$2"
 }
 
-if is_true "$CHECKS_ON_PUSH"; then
+# Usage: skip <skip-integration-tests> "<note>"
+skip() {
+  decide true "$1"
+  set_output note "$2"
+  log_notice "$2"
+  echo "**checks-on-push:** $2" | append_step_summary
+  exit 0
+}
+
+if [ "$CHECKS_ON_PUSH" = always ]; then
   decide false false
   exit 0
 fi
@@ -61,6 +69,9 @@ if [ "${EVENT_NAME:-}" != push ] || [ "${REF:-}" != "refs/heads/${DEFAULT_BRANCH
   log_info "Not a push to the default branch, so the checks run"
   decide false false
   exit 0
+fi
+if [ "$CHECKS_ON_PUSH" = never ]; then
+  skip true "checks-on-push is never, so this push skipped the checks and integration tests."
 fi
 
 require_tool gh "GitHub CLI (gh)"
@@ -144,15 +155,9 @@ done <<< "$differ"
 
 # --- Skip -----------------------------------------------------------------------
 
-set_output pr "$pr"
-log_success "PR #${pr} checked this content: its run on ${head:0:7} passed, and nothing watched differs. Skipping the checks."
-what="the checks"
+# PRs from forks and Dependabot couldn't run the integration tests
 if [ "$(jq -r '.head.repo.full_name // ""' "$WORK_DIR/pr.json")" != "$GITHUB_REPOSITORY" ] ||
   [ "$(jq -r .user.login "$WORK_DIR/pr.json")" = "dependabot[bot]" ]; then
-  log_info "PR #${pr} is from a fork or Dependabot, which can't run integration tests, so they run here"
-  decide true false
-else
-  decide true true
-  what="the checks and integration tests"
+  skip false "PR #${pr} checked the same content (${head:0:7}), so this push skipped the checks. It's from a fork or Dependabot, which can't run integration tests, so they run here."
 fi
-echo "**checks-on-push:** skips ${what}: PR #${pr} ran them on the same content (${head:0:7})" | append_step_summary
+skip true "PR #${pr} checked the same content (${head:0:7}), so this push skipped the checks and integration tests."

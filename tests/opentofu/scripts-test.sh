@@ -290,6 +290,9 @@ valid() {
 }
 expect "valid inputs pass, named after the last var file" prod "$(valid)"
 expect "the name input wins" eastus "$(valid NAME=eastus)"
+expect "checks-on-push takes unchecked" prod "$(valid CHECKS_ON_PUSH=unchecked)"
+expect_refused "...but not a boolean" "checks-on-push 'false' isn't valid" validate-inputs.sh \
+  WORKING_DIR=iac/app VAR_FILES=deployments/prod.tfvars APPLY_ENVIRONMENT=prod CHECKS_ON_PUSH=false
 expect "no var files, no name" "" "$(valid VAR_FILES=)"
 
 expect_refused "a missing module" "working-directory 'iac/nope' doesn't exist" \
@@ -1161,7 +1164,7 @@ pr_edit() {
 pr_checked() {
   : > "$WORK/output"
   env PATH="$WORK/prbin:$PATH" GH_STUB_DIR="$WORK/pr" GITHUB_OUTPUT="$WORK/output" \
-    GH_TOKEN=t GITHUB_REPOSITORY=org/repo GITHUB_RUN_ID=9 CHECKS_ON_PUSH=false \
+    GH_TOKEN=t GITHUB_REPOSITORY=org/repo GITHUB_RUN_ID=9 CHECKS_ON_PUSH=unchecked \
     EVENT_NAME=push REF=refs/heads/main DEFAULT_BRANCH=main SHA=push1 \
     PATHS='iac/app !iac/app/**/*.tfvars iac/app/deployments/prod.tfvars .github/workflows/tofu.yaml' \
     "$@" "$SCRIPTS/pr-checked.sh" > "$WORK/log" 2>&1 || return 1
@@ -1169,10 +1172,13 @@ pr_checked() {
 }
 
 pr_fixture
-expect "checks-on-push: the merge of a PR that checked the same content skips both" \
+expect "checks-on-push unchecked: the merge of a PR that checked the same content skips both" \
   "checks=true tests=true" "$(pr_checked)"
-expect "...and names the PR" 5 "$(sed -n 's/^pr=//p' "$WORK/output")"
-expect "checks-on-push true always checks" "checks=false tests=false" "$(pr_checked CHECKS_ON_PUSH=true)"
+expect "...and notes the PR" "PR #5 checked" "$(sed -n 's/^note=\(PR #5 checked\).*/\1/p' "$WORK/output")"
+expect "always checks" "checks=false tests=false" "$(pr_checked CHECKS_ON_PUSH=always)"
+expect "never skips both, without asking the API" "checks=true tests=true" \
+  "$(pr_checked CHECKS_ON_PUSH=never GH_STUB_FAIL=repos/)"
+expect "...but not on a dispatch" "checks=false tests=false" "$(pr_checked CHECKS_ON_PUSH=never EVENT_NAME=workflow_dispatch)"
 expect "a push to another branch checks" "checks=false tests=false" "$(pr_checked REF=refs/heads/feature)"
 expect "a dispatch checks" "checks=false tests=false" "$(pr_checked EVENT_NAME=workflow_dispatch)"
 

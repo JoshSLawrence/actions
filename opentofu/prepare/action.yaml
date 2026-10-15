@@ -38,11 +38,11 @@ inputs:
     default: opentofu-drift
   checks-on-push:
     description: >-
-      "false" to skip the checks (and integration tests) on a push to the
-      default branch that merges a PR whose run checked the same content.
-      Needs pull-requests read.
+      Checks and integration tests on pushes to the default branch: always,
+      never, or unchecked (skipped when the merged PR's run checked the same
+      content; needs pull-requests read).
     required: false
-    default: "true"
+    default: always
   changed-only:
     description: '"true" to plan only when a watched path changed.'
     required: false
@@ -175,9 +175,9 @@ outputs:
   skip-integration-tests:
     description: "'true' if this push skips the integration tests: its PR ran them on the same content."
     value: ${{ steps.pr-checked.outputs.skip-integration-tests }}
-  checked-pr:
-    description: The number of the PR that checked this push's content, when anything is skipped.
-    value: ${{ steps.pr-checked.outputs.pr }}
+  skip-note:
+    description: What this push skipped and why, when it skipped anything.
+    value: ${{ steps.pr-checked.outputs.note }}
 
 runs:
   using: composite
@@ -196,6 +196,7 @@ runs:
         APPLY_ENVIRONMENT: ${{ inputs.apply-environment }}
         EXTRA_PATHS: ${{ inputs.extra-paths }}
         CHECKS: ${{ inputs.checks }}
+        CHECKS_ON_PUSH: ${{ inputs.checks-on-push }}
         TESTS: ${{ inputs.tests }}
         TEST_FILTER: ${{ inputs.test-filter }}
         INTEGRATION_TESTS: ${{ inputs.integration-tests }}
@@ -263,7 +264,7 @@ runs:
     # Uses the watched paths, so after change detection
     - name: Check what the PR already checked
       id: pr-checked
-      if: inputs.drift != 'true' && inputs.checks-on-push != 'true' && github.event_name == 'push'
+      if: inputs.drift != 'true' && inputs.checks-on-push != 'always' && github.event_name == 'push'
       shell: bash
       run: '"${GITHUB_ACTION_PATH}/../scripts/pr-checked.sh"'
       env:

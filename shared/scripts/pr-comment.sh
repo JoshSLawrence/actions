@@ -99,7 +99,7 @@ apply_section() {
     after-merge)
       echo "### ⏭️ Apply: after merge"
       echo ""
-      echo "This plan is for review only: \`apply-from-pr\` is off, so nothing is applied from this PR. After merge, a run on \`${GITHUB_BASE_REF:-main}\` plans again and applies${ENVIRONMENT:+ after approval of the \`${ENVIRONMENT}\` deployment}: the push, if the calling workflow has a \`push\` trigger for that branch, or a manual run (\`workflow_dispatch\`)."
+      echo "Review only: this PR doesn't apply. After merge, a \`push\` or manual run on \`${GITHUB_BASE_REF:-main}\` plans and applies it${ENVIRONMENT:+ (after \`${ENVIRONMENT}\` approval)}."
       ;;
     blocked)
       echo "### 🚫 Apply: blocked"

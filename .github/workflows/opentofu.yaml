@@ -15,8 +15,8 @@
 #   and decides whether this run plans (a watched path changed).
 # - checks: fmt, validate, TFLint, Trivy, terraform-docs and tofu test, with
 #   the call's var files. No cloud credentials, so fork and Dependabot PRs
-#   can run it. checks-on-push: false skips it, and the integration tests,
-#   on a push that merges a PR whose run checked the same content.
+#   can run it. checks-on-push can skip it, and the integration tests, on
+#   pushes to the default branch.
 # - integration-tests (opt-in): tofu test with credentials.
 # - plan: plans to a file, uploads it, comments the summary on the PR.
 # - apply: waits for the apply environment's approval, refuses a stale
@@ -120,12 +120,11 @@ on:
         default: true
       checks-on-push:
         description: >-
-          Run the checks and integration tests on pushes to the default branch
-          too. false skips them on a push that merges a PR whose run passed on
-          the same content (the watched paths), e.g. the merge with
-          apply-from-pr false. Other runs still run them.
-        type: boolean
-        default: true
+          Checks and integration tests on pushes to the default branch: always,
+          never, or unchecked (skipped when the merged PR's run passed on the
+          same watched content). Other runs always run them.
+        type: string
+        default: always
       fmt:
         description: Check formatting (tofu fmt -check -recursive).
         type: boolean
@@ -312,7 +311,7 @@ jobs:
       paths: ${{ steps.prepare.outputs.paths }}
       skip-checks: ${{ steps.prepare.outputs.skip-checks }}
       skip-integration-tests: ${{ steps.prepare.outputs.skip-integration-tests }}
-      checked-pr: ${{ steps.prepare.outputs.checked-pr }}
+      skip-note: ${{ steps.prepare.outputs.skip-note }}
     steps:
       # Full history: changes are diffed against the PR base / push before
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -376,8 +375,7 @@ jobs:
   checks:
     name: Checks
     needs: prepare
-    # skip-checks: checks-on-push is false and this push merges a PR that
-    # checked the same content
+    # skip-checks: checks-on-push on a push to the default branch
     if: inputs.checks && needs.prepare.outputs.skip-checks != 'true'
     runs-on: >-
       ${{
@@ -434,8 +432,7 @@ jobs:
     needs: [prepare, checks]
     # !cancelled(): checks may be skipped (checks false), which would
     # otherwise skip this too. Fork and Dependabot PRs get no OIDC token or
-    # secrets. skip-integration-tests: as skip-checks, when the PR could run
-    # them.
+    # secrets. skip-integration-tests: checks-on-push, as for skip-checks.
     if: >-
       !cancelled() &&
       inputs.integration-tests &&
@@ -747,9 +744,5 @@ jobs:
             ${{
               github.event_name == 'pull_request' && github.actor == 'dependabot[bot]' &&
               'This PR comes from Dependabot, which gets no secrets or OIDC token, so it was checked but not planned. The push after merge plans it.' ||
-              needs.prepare.outputs.skip-checks == 'true' &&
-              format('checks-on-push is false and PR #{0} checked the same content, so this push skipped the checks{1}.',
-                needs.prepare.outputs.checked-pr,
-                needs.prepare.outputs.skip-integration-tests == 'true' && ' and integration tests' || '') ||
-              ''
+              needs.prepare.outputs.skip-note
             }}

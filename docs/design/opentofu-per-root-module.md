@@ -373,7 +373,7 @@ Without `var-files`, the module uses its defaults (and its
 | `azure-use-azuread`                | `true`               | Microsoft Entra ID (RBAC) auth for storage: state and data plane       |
 | **Checks**                         |                      |                                                                        |
 | `checks`                           | `true`               | Run the checks job at all; `false` skips every check below             |
-| `checks-on-push`                   | `true`               | `false`: a PR's merge skips what the PR checked on the same content    |
+| `checks-on-push`                   | `always`             | On default-branch pushes: `always`, `never` or `unchecked` (below)     |
 | `fmt`                              | `true`               | `tofu fmt -check -recursive`                                           |
 | `validate`                         | `true`               | `tofu init -backend=false` and `tofu validate`                         |
 | `tflint`                           | `true`               | TFLint, recursive, with the call's var files                           |
@@ -572,9 +572,12 @@ deployment's variables can trip a check the module's defaults don't:
 - fmt, validate and terraform-docs don't depend on variables.
 - `checks: false` skips the checks job entirely, for a call that only
   needs to plan and apply, without turning each check off.
-- `checks-on-push: false` skips the checks and integration tests on a push
-  that merges a PR whose run already passed on the same content: with
-  `apply-from-pr: false`, the merge doesn't test again before it applies.
+- `checks-on-push` decides whether a push to the default branch runs the
+  checks and integration tests again: `always` (the default), `never`, or
+  `unchecked`, which skips them on a push that merges a PR whose run
+  already passed on the same content. With `apply-from-pr: false`, the
+  merge then doesn't test again before it applies. Three values rather
+  than a boolean, because some callers want to skip them outright.
   `opentofu/scripts/pr-checked.sh` decides, in the prepare job: the pushed
   commit must be the PR's `merge_commit_sha`, the PR's latest run of the
   calling workflow on its head commit must have succeeded, and every
@@ -589,8 +592,8 @@ deployment's variables can trip a check the module's defaults don't:
   callers already grant. The comparison is with the PR's head, not the test
   merge commit the PR's run checked out, which GitHub doesn't keep; the two
   differ only if the default branch changed a watched path and changed it
-  back while the PR was open. It stays on (`true`) by default: skipping is
-  an opt-in.
+  back while the PR was open. `always` stays the default: skipping is an
+  opt-in.
 - `test-filter` selects test files, as OpenTofu's `-filter` does
   (`tests/unit/*.tftest.hcl`), not test or run block names.
 - `docs` is on by default, so a module needs `terraform-docs` pinned and a

@@ -12,7 +12,8 @@
 #                   the drift job's environment (optional). Also read in
 #                   this mode: ISSUES and ISSUE_LABELS.
 #   WORKING_DIR, VAR_FILES, NAME, APPLY_ENVIRONMENT, EXTRA_PATHS
-#   CHECKS, TESTS, TEST_FILTER, INTEGRATION_TESTS, INTEGRATION_TEST_FILTER
+#   CHECKS, CHECKS_ON_PUSH, TESTS, TEST_FILTER, INTEGRATION_TESTS,
+#   INTEGRATION_TEST_FILTER
 #   POLICY, POLICY_PATH, POLICY_SOURCE, COST_ESTIMATE
 #   AZURE_CLIENT_ID, AZURE_TENANT_ID, PLAN_AZURE_CLIENT_ID, PLAN_ENVIRONMENT
 #   INTEGRATION_TEST_AZURE_CLIENT_ID, INTEGRATION_TEST_ENVIRONMENT
@@ -119,6 +120,11 @@ if [ "$drift" = false ] && [ -z "${APPLY_ENVIRONMENT:-}" ]; then
 fi
 
 # --- Checks and tests ------------------------------------------------------------
+
+case "${CHECKS_ON_PUSH:-always}" in
+  always | never | unchecked) ;;
+  *) problem "checks-on-push '${CHECKS_ON_PUSH}' isn't valid. Use always, never (skip them on pushes to the default branch) or unchecked (skip what the merged PR checked)." ;;
+esac
 
 if [ "$module_ok" = true ]; then
   if is_true "${CHECKS:-true}" && is_true "${TESTS:-true}" && [ -n "${TEST_FILTER:-}" ]; then
