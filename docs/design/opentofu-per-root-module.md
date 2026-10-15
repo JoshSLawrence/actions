@@ -373,6 +373,7 @@ Without `var-files`, the module uses its defaults (and its
 | `azure-use-azuread`                | `true`               | Microsoft Entra ID (RBAC) auth for storage: state and data plane       |
 | **Checks**                         |                      |                                                                        |
 | `checks`                           | `true`               | Run the checks job at all; `false` skips every check below             |
+| `checks-on-push`                   | `always`             | On default-branch pushes: `always`, `never` or `unchecked` (below)     |
 | `fmt`                              | `true`               | `tofu fmt -check -recursive`                                           |
 | `validate`                         | `true`               | `tofu init -backend=false` and `tofu validate`                         |
 | `tflint`                           | `true`               | TFLint, recursive, with the call's var files                           |
@@ -571,6 +572,28 @@ deployment's variables can trip a check the module's defaults don't:
 - fmt, validate and terraform-docs don't depend on variables.
 - `checks: false` skips the checks job entirely, for a call that only
   needs to plan and apply, without turning each check off.
+- `checks-on-push` decides whether a push to the default branch runs the
+  checks and integration tests again: `always` (the default), `never`, or
+  `unchecked`, which skips them on a push that merges a PR whose run
+  already passed on the same content. With `apply-from-pr: false`, the
+  merge then doesn't test again before it applies. Three values rather
+  than a boolean, because some callers want to skip them outright.
+  `opentofu/scripts/pr-checked.sh` decides, in the prepare job: the pushed
+  commit must be the PR's `merge_commit_sha`, the PR's latest run of the
+  calling workflow on its head commit must have succeeded, and every
+  watched path must have the same blob in the merge as in the PR's head
+  (the git trees API: a squash merge's head isn't in the default branch's
+  history). A PR merged while behind the default branch, which changed a
+  watched path since, merges content nothing checked, so that push checks;
+  requiring up-to-date branches isn't needed. Integration tests still run
+  after a fork's or Dependabot's PR, which couldn't run them. Anything it
+  can't establish (a direct push, an API error, a tree too large for the
+  API) runs everything. The prepare job gets `pull-requests: read`, which
+  callers already grant. The comparison is with the PR's head, not the test
+  merge commit the PR's run checked out, which GitHub doesn't keep; the two
+  differ only if the default branch changed a watched path and changed it
+  back while the PR was open. `always` stays the default: skipping is an
+  opt-in.
 - `test-filter` selects test files, as OpenTofu's `-filter` does
   (`tests/unit/*.tftest.hcl`), not test or run block names.
 - `docs` is on by default, so a module needs `terraform-docs` pinned and a

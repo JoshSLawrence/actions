@@ -20,6 +20,7 @@
 #   APPLY_STATUS      - none, awaiting-approval, after-merge, blocked,
 #                       succeeded, or failed
 #   APPLY_ENVIRONMENT - GitHub environment the apply runs in (for the text)
+#   GITHUB_BASE_REF   - the PR's target branch (set by Actions; for the text)
 #   BLOCKED_REASON    - with APPLY_STATUS blocked: the text saying why.
 #                       Default: the policy check text (OpenTofu's).
 #   COMMENT_AUTHOR    - login the comment is posted as (default:
@@ -98,7 +99,7 @@ apply_section() {
     after-merge)
       echo "### ⏭️ Apply: after merge"
       echo ""
-      echo "This plan is for review only. Once the PR merges, the target branch is planned again and applied${ENVIRONMENT:+ after approval of the \`${ENVIRONMENT}\` deployment}."
+      echo "Review only: this PR doesn't apply. After merge, a \`push\` or manual run on \`${GITHUB_BASE_REF:-main}\` plans and applies it${ENVIRONMENT:+ (after \`${ENVIRONMENT}\` approval)}."
       ;;
     blocked)
       echo "### 🚫 Apply: blocked"

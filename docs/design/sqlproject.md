@@ -38,7 +38,7 @@ this document records the decisions and why.
 | Possible data loss | `DataIssue` alerts block the plan unless `allow-data-loss` is on; then Publish uses `BlockOnPossibleDataLoss=False`. |
 | Auth | `azure/login` (OIDC), then `az account get-access-token --resource https://database.windows.net/`, passed as `/AccessToken` inside a mode-600 response file, never on a command line. |
 | Tools | Pinned in the project folder's `mise.toml`: `dotnet`, `"dotnet:microsoft.sqlpackage"` (mise's dotnet backend), `yq`, plus `azure-cli` and `uv` for online plans. |
-| Triggers | `pull_request` and `workflow_dispatch` only; no push trigger. |
+| Triggers | `pull_request` and `workflow_dispatch`; `push` to the default branch only with `apply-from-pr: false`. |
 | Drift detection | Deferred. Every PR plan already shows drift (the kept list), and the apply refuses if the database changed after the plan. |
 
 <!-- markdownlint-enable MD013 -->
@@ -72,9 +72,11 @@ later is an informed, reviewed one-line change.
 - **When it applies.** A pull request run plans, then applies from the PR
   after approval (`apply: false`: plan only). Any other run on the default
   branch plans and applies after approval only if something changed; other
-  branches only plan. There is no apply-after-merge mode: under a required
-  check, the default branch only holds what was applied, so a push run
-  would plan again for nothing.
+  branches only plan. `apply-from-pr: false` (as for OpenTofu, Data Factory
+  and Synapse) makes a pull request run plan only and leaves the apply to a
+  push trigger on the default branch, after merge. Applying from the PR
+  stays the default: under a required check, the default branch only holds
+  what was applied, so there is no push run to plan again for nothing.
 - **Token lifetime.** Entra tokens last about an hour and SqlClient cannot
   refresh an `/AccessToken`; a publish that runs longer may fail on
   reconnect. A later version can switch to SqlClient's
@@ -92,8 +94,11 @@ the scripts, so:
   deployment scripts and they count as changed;
 - `deployment-scripts: changed` compares them with **what is deployed**,
   which the model makes knowable: on a pull request, a build of the PR's
-  base commit (PRs apply before merge under a required check); on a
-  dispatch, nothing, so they count (a manual run is a request to deploy);
+  base commit (PRs apply before merge under a required check; with
+  `apply-from-pr: false` the base was applied after its own merge); on a
+  push with `apply-from-pr: false`, a build of the commit before the push
+  (each push applies); on a dispatch, nothing, so they count (a manual run
+  is a request to deploy);
 - `always` makes every plan of a project with scripts a change.
 
 The comparison builds the base commit with the target branch's own code in
@@ -169,5 +174,7 @@ they are easy to get wrong:
   changes, no stale-plan protection.
 - **Comparing the dacpac only (a model diff):** says nothing about the live
   database, so drift and out-of-band changes would be invisible.
-- **A push trigger with apply-after-merge:** with a required check that
-  applies from the PR, it would plan again for nothing.
+- **Apply-after-merge as the default:** with a required check that
+  applies from the PR, a push run would plan again for nothing. It is
+  available as `apply-from-pr: false`, for teams that would rather merge
+  first, as in the other areas.

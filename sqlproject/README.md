@@ -68,8 +68,10 @@ jobs:
 The caller must grant the four permissions shown: a reusable workflow's jobs
 can only narrow them. There is no `push` trigger: a PR's plans are applied
 from the PR (before merge, under a required check), so the default branch
-only holds what was applied. A complete caller, with the setup it needs, is
-in [`examples/sqlproject.yaml`](../examples/sqlproject.yaml).
+only holds what was applied. To apply after merge instead, set
+`apply-from-pr: false` and add a `push` trigger for the default branch
+(below). A complete caller, with the setup it needs, is in
+[`examples/sqlproject.yaml`](../examples/sqlproject.yaml).
 
 ## Concepts
 
@@ -135,7 +137,10 @@ sqlproject-deploy.yaml                   plan ──> apply (after approval)
 - **result** rolls everything up into one check to require in branch
   protection: `<caller job> / Result`.
 
-A pull request run applies from the PR, after approval. A
+By default (`apply-from-pr: true`) a pull request run applies from the PR,
+after approval, before merge. With `apply-from-pr: false` a pull request run
+only plans, and the comment says the apply happens after merge: add a
+`push` trigger for the default branch, whose run plans and applies. A push,
 `workflow_dispatch` (or any other run) on the default branch plans and
 applies after approval only if something changed; other branches only plan.
 One publish runs at a time per database, from whichever workflow or PR.
@@ -201,6 +206,7 @@ accept spaces or newlines. `{deployment}` is replaced where noted.
 | `target-dacpac` | none | Plan against this dacpac instead of the database: no Azure access; needs `apply: false` |
 | `allow-data-loss` | `false` | Let a plan with possible data loss be applied |
 | `apply` | `true` | Include the apply job (`false` = plan only) |
+| `apply-from-pr` | `true` | Publish from the PR before merge; `false` = on the default branch only (add a `push` trigger) |
 | `apply-environment` | none | Environment with required reviewers; `{deployment}`; required with `apply` |
 | `preflight-paths` | working directory | What plans depend on; each profile is added, the others left out |
 | `runs-on` | `ubuntu-latest` | Runner of every job without its own: a label, or JSON (below) |
@@ -278,7 +284,8 @@ when the project has deployment scripts that count as changed:
 
 | Run | `deployment-scripts: changed` compares them with | Why |
 | --- | --- | --- |
-| Pull request | A build of the PR's base commit | PRs apply before merge under a required check, so the base is what is deployed |
+| Pull request | A build of the PR's base commit | PRs apply before merge under a required check (or, with `apply-from-pr: false`, the base was applied after its merge), so the base is what is deployed |
+| Push, with `apply-from-pr: false` | A build of the commit before the push | Each push applies after merge, so the previous commit is what is deployed |
 | Dispatch (and anything else) | Nothing: they count | A manual run is a request to deploy |
 
 <!-- markdownlint-enable MD013 -->

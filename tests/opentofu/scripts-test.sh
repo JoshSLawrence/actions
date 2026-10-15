@@ -8,7 +8,8 @@
 # the plan names (names.sh), and the drift report (drift-report.sh, with a
 # stubbed gh), plus two shared helpers the
 # OpenTofu workflow depends on: the apply preflight's git fallback
-# (apply-preflight.sh, with a stubbed gh) and scope_mise_to_module. Change
+# (apply-preflight.sh, with a stubbed gh) and scope_mise_to_module, and
+# what a push skips with checks-on-push (pr-checked.sh, with a stubbed gh). Change
 # detection and the preflight run in throwaway Git repositories, the way a
 # pull_request run does. Run by pre-commit and CI.
 # Needs git, jq.
@@ -289,6 +290,9 @@ valid() {
 }
 expect "valid inputs pass, named after the last var file" prod "$(valid)"
 expect "the name input wins" eastus "$(valid NAME=eastus)"
+expect "checks-on-push takes unchecked" prod "$(valid CHECKS_ON_PUSH=unchecked)"
+expect_refused "...but not a boolean" "checks-on-push 'false' isn't valid" validate-inputs.sh \
+  WORKING_DIR=iac/app VAR_FILES=deployments/prod.tfvars APPLY_ENVIRONMENT=prod CHECKS_ON_PUSH=false
 expect "no var files, no name" "" "$(valid VAR_FILES=)"
 
 expect_refused "a missing module" "working-directory 'iac/nope' doesn't exist" \
@@ -1105,6 +1109,122 @@ else
   sed 's/^/    /' "$WORK/log" >&2
   failures=$((failures + 1))
 fi
+
+# --- checks-on-push ----------------------------------------------------------------
+
+# A stub gh that answers pr-checked.sh's reads from files in $GH_STUB_DIR:
+# the PRs of the pushed commit, this run (workflow 77), the PR's runs and
+# the two trees. GH_STUB_FAIL=<text> fails the calls whose path has it.
+mkdir -p "$WORK/prbin" "$WORK/pr"
+cat > "$WORK/prbin/gh" << 'STUB'
+#!/usr/bin/env bash
+if [ -n "${GH_STUB_FAIL:-}" ] && [[ "$*" == *"$GH_STUB_FAIL"* ]]; then
+  echo "gh: HTTP 403" >&2
+  exit 1
+fi
+case "$*" in
+  *"/commits/"*"/pulls"*) file=pulls ;;
+  *"/actions/workflows/77/runs"*"head_sha=head1"*) file=runs ;;
+  *"/actions/runs/9"*) file=run ;;
+  *"/git/trees/"*) file="tree-$(sed 's|.*/git/trees/\([^?]*\).*|\1|' <<< "$*")" ;;
+  *) echo "gh stub: unexpected call: $*" >&2; exit 1 ;;
+esac
+cat "$GH_STUB_DIR/$file.json"
+STUB
+chmod +x "$WORK/prbin/gh"
+
+# The merge of PR #5 (head1) as push1, its passing run, and the same tree
+# in both, with one file outside the watched paths
+pr_fixture() {
+  jq -n '[{number: 5, merged_at: "2026-10-01T00:00:00Z", merge_commit_sha: "push1",
+    base: {ref: "main"}, head: {sha: "head1", repo: {full_name: "org/repo"}}, user: {login: "alice"}}]' \
+    > "$WORK/pr/pulls.json"
+  echo '{"workflow_id": 77}' > "$WORK/pr/run.json"
+  jq -n '{workflow_runs: [{created_at: "2026-10-01T01:00:00Z", conclusion: "failure"},
+    {created_at: "2026-10-01T02:00:00Z", conclusion: "success"}]}' > "$WORK/pr/runs.json"
+  jq -n '{truncated: false, tree: [
+    {path: "iac", type: "tree", sha: "t1"},
+    {path: "iac/app/main.tf", type: "blob", sha: "a1"},
+    {path: "iac/app/deployments/prod.tfvars", type: "blob", sha: "b1"},
+    {path: "iac/app/deployments/stg.tfvars", type: "blob", sha: "c1"},
+    {path: ".github/workflows/tofu.yaml", type: "blob", sha: "d1"},
+    {path: "docs/readme.md", type: "blob", sha: "e1"}]}' > "$WORK/pr/tree-head1.json"
+  cp "$WORK/pr/tree-head1.json" "$WORK/pr/tree-push1.json"
+}
+
+# Usage: pr_edit <file> '<jq filter>'
+pr_edit() {
+  jq "$2" "$WORK/pr/$1.json" > "$WORK/pr/edit.json"
+  mv "$WORK/pr/edit.json" "$WORK/pr/$1.json"
+}
+
+# Run pr-checked.sh as the merge's push run would; print its outputs as
+# "checks=<skip-checks> tests=<skip-integration-tests>". Fails if it did.
+# Usage: pr_checked [VAR=value ...]
+pr_checked() {
+  : > "$WORK/output"
+  env PATH="$WORK/prbin:$PATH" GH_STUB_DIR="$WORK/pr" GITHUB_OUTPUT="$WORK/output" \
+    GH_TOKEN=t GITHUB_REPOSITORY=org/repo GITHUB_RUN_ID=9 CHECKS_ON_PUSH=unchecked \
+    EVENT_NAME=push REF=refs/heads/main DEFAULT_BRANCH=main SHA=push1 \
+    PATHS='iac/app !iac/app/**/*.tfvars iac/app/deployments/prod.tfvars .github/workflows/tofu.yaml' \
+    "$@" "$SCRIPTS/pr-checked.sh" > "$WORK/log" 2>&1 || return 1
+  echo "checks=$(sed -n 's/^skip-checks=//p' "$WORK/output") tests=$(sed -n 's/^skip-integration-tests=//p' "$WORK/output")"
+}
+
+pr_fixture
+expect "checks-on-push unchecked: the merge of a PR that checked the same content skips both" \
+  "checks=true tests=true" "$(pr_checked)"
+expect "...and notes the PR" "PR #5 checked" "$(sed -n 's/^note=\(PR #5 checked\).*/\1/p' "$WORK/output")"
+expect "always checks" "checks=false tests=false" "$(pr_checked CHECKS_ON_PUSH=always)"
+expect "never skips both, without asking the API" "checks=true tests=true" \
+  "$(pr_checked CHECKS_ON_PUSH=never GH_STUB_FAIL=repos/)"
+expect "...but not on a dispatch" "checks=false tests=false" "$(pr_checked CHECKS_ON_PUSH=never EVENT_NAME=workflow_dispatch)"
+expect "a push to another branch checks" "checks=false tests=false" "$(pr_checked REF=refs/heads/feature)"
+expect "a dispatch checks" "checks=false tests=false" "$(pr_checked EVENT_NAME=workflow_dispatch)"
+
+pr_edit tree-push1 '(.tree[] | select(.path == "docs/readme.md")).sha = "e2"'
+expect "an unwatched file the default branch changed still skips" "checks=true tests=true" "$(pr_checked)"
+pr_edit tree-push1 '(.tree[] | select(.path == "iac/app/deployments/stg.tfvars")).sha = "c2"'
+expect "...and so does another deployment's var file" "checks=true tests=true" "$(pr_checked)"
+pr_edit tree-push1 '(.tree[] | select(.path == "iac/app/main.tf")).sha = "a2"'
+expect "a watched file the default branch changed under the PR checks" "checks=false tests=false" "$(pr_checked)"
+pr_fixture
+pr_edit tree-push1 '.tree += [{path: "iac/app/new.tf", type: "blob", sha: "f1"}]'
+expect "...and so does a watched file only the merge has" "checks=false tests=false" "$(pr_checked)"
+pr_fixture
+pr_edit tree-push1 '(.tree[] | select(.path == "iac/app/deployments/prod.tfvars")).sha = "b2"'
+expect "...and so does the call's own var file" "checks=false tests=false" "$(pr_checked)"
+
+pr_fixture
+pr_edit pulls '.[0].merge_commit_sha = "other"'
+expect "a direct push (not a PR's merge) checks" "checks=false tests=false" "$(pr_checked)"
+pr_fixture
+pr_edit pulls '.[0].base.ref = "release"'
+expect "...and so does a PR merged into another branch" "checks=false tests=false" "$(pr_checked)"
+pr_fixture
+pr_edit runs '.workflow_runs[0].created_at = "2026-10-01T03:00:00Z"'
+expect "a PR whose latest run failed checks" "checks=false tests=false" "$(pr_checked)"
+pr_fixture
+pr_edit runs '.workflow_runs = []'
+expect "...and so does a PR with no run of the workflow" "checks=false tests=false" "$(pr_checked)"
+pr_fixture
+pr_edit tree-push1 '.truncated = true'
+expect "a tree too large for the API checks" "checks=false tests=false" "$(pr_checked)"
+
+pr_fixture
+pr_edit pulls '.[0].head.repo.full_name = "fork/repo"'
+expect "a fork's PR skips the checks, not the integration tests it couldn't run" \
+  "checks=true tests=false" "$(pr_checked)"
+pr_edit pulls '.[0].head.repo = null'
+expect "...nor when the fork is gone" "checks=true tests=false" "$(pr_checked)"
+pr_fixture
+pr_edit pulls '.[0].user.login = "dependabot[bot]"'
+expect "...and the same for Dependabot" "checks=true tests=false" "$(pr_checked)"
+
+pr_fixture
+expect "the PRs can't be looked up: it checks, without failing" "checks=false tests=false" "$(pr_checked GH_STUB_FAIL=/pulls)"
+expect "...the runs can't be listed" "checks=false tests=false" "$(pr_checked GH_STUB_FAIL=/actions/)"
+expect "...a tree can't be read" "checks=false tests=false" "$(pr_checked GH_STUB_FAIL=/git/trees/push1)"
 
 # details_open: the summary, a <br> for a line of space, then a blank line
 # (newlines shown as |, since $(...) would drop the trailing ones)
