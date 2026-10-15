@@ -36,6 +36,13 @@ inputs:
     description: Labels of the drift call's issues (drift only).
     required: false
     default: opentofu-drift
+  checks-on-push:
+    description: >-
+      "false" to skip the checks (and integration tests) on a push to the
+      default branch that merges a PR whose run checked the same content.
+      Needs pull-requests read.
+    required: false
+    default: "true"
   changed-only:
     description: '"true" to plan only when a watched path changed.'
     required: false
@@ -141,7 +148,9 @@ inputs:
     required: false
     default: ""
   github-token:
-    description: "Token to check the environments exist with (needs actions: read)."
+    description: >-
+      Token to check the environments exist with (needs actions read), and
+      for checks-on-push (also pull-requests read).
     required: false
     default: ${{ github.token }}
 
@@ -160,6 +169,15 @@ outputs:
   paths:
     description: The watched paths, space-separated and in order, with ! entries (for the apply preflight).
     value: ${{ steps.changes.outputs.paths }}
+  skip-checks:
+    description: "'true' if this push skips the checks: its PR checked the same content (checks-on-push)."
+    value: ${{ steps.pr-checked.outputs.skip-checks }}
+  skip-integration-tests:
+    description: "'true' if this push skips the integration tests: its PR ran them on the same content."
+    value: ${{ steps.pr-checked.outputs.skip-integration-tests }}
+  checked-pr:
+    description: The number of the PR that checked this push's content, when anything is skipped.
+    value: ${{ steps.pr-checked.outputs.pr }}
 
 runs:
   using: composite
@@ -241,3 +259,18 @@ runs:
         EVENT_NAME: ${{ github.event_name }}
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
         BEFORE_SHA: ${{ github.event.before }}
+
+    # Uses the watched paths, so after change detection
+    - name: Check what the PR already checked
+      id: pr-checked
+      if: inputs.drift != 'true' && inputs.checks-on-push != 'true' && github.event_name == 'push'
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/pr-checked.sh"'
+      env:
+        CHECKS_ON_PUSH: ${{ inputs.checks-on-push }}
+        EVENT_NAME: ${{ github.event_name }}
+        REF: ${{ github.ref }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        SHA: ${{ github.sha }}
+        PATHS: ${{ steps.changes.outputs.paths }}
+        GH_TOKEN: ${{ inputs.github-token }}

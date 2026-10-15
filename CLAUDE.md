@@ -239,7 +239,8 @@ catalog, layout and principles.
     markdownlint;
   - the workflow input sync check and the no-inline-scripts check;
   - the OpenTofu script tests (`tests/opentofu/scripts-test.sh`: change
-    detection, input validation, the Azure mapping, names);
+    detection, input validation, the Azure mapping, names, what a push
+    skips with `checks-on-push`);
   - the Data Factory and Synapse script tests (`tests/arm/scripts-test.sh`:
     the infrastructure boundary, template artifact names, stale-plan paths,
     the live fingerprint, the comparison with the live definitions, plan and

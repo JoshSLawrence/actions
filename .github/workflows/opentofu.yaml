@@ -16,7 +16,7 @@
 # - checks: fmt, validate, TFLint, Trivy, terraform-docs and tofu test, with
 #   the call's var files. No cloud credentials, so fork and Dependabot PRs
 #   can run it. checks-on-push: false skips it, and the integration tests,
-#   on pushes to the default branch, whose PR ran them.
+#   on a push that merges a PR whose run checked the same content.
 # - integration-tests (opt-in): tofu test with credentials.
 # - plan: plans to a file, uploads it, comments the summary on the PR.
 # - apply: waits for the apply environment's approval, refuses a stale
@@ -121,9 +121,9 @@ on:
       checks-on-push:
         description: >-
           Run the checks and integration tests on pushes to the default branch
-          too. false skips them there (e.g. the merge, with apply-from-pr
-          false): the PR already ran them. Dispatch and scheduled runs still
-          run them.
+          too. false skips them on a push that merges a PR whose run passed on
+          the same content (the watched paths), e.g. the merge with
+          apply-from-pr false. Other runs still run them.
         type: boolean
         default: true
       fmt:
@@ -302,13 +302,17 @@ jobs:
     runs-on: ${{ (startsWith(inputs.runs-on, '{') || startsWith(inputs.runs-on, '[')) && fromJSON(inputs.runs-on) || inputs.runs-on }}
     timeout-minutes: 10
     permissions:
-      actions: read # check the environments exist
+      actions: read # check the environments exist; checks-on-push: the PR's run
       contents: read
+      pull-requests: read # checks-on-push: the PR a push merged
     outputs:
       name: ${{ steps.prepare.outputs.name }}
       key: ${{ steps.prepare.outputs.key }}
       changed: ${{ steps.prepare.outputs.changed }}
       paths: ${{ steps.prepare.outputs.paths }}
+      skip-checks: ${{ steps.prepare.outputs.skip-checks }}
+      skip-integration-tests: ${{ steps.prepare.outputs.skip-integration-tests }}
+      checked-pr: ${{ steps.prepare.outputs.checked-pr }}
     steps:
       # Full history: changes are diffed against the PR base / push before
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -323,6 +327,7 @@ jobs:
           working-directory: ${{ inputs.working-directory }}
           var-files: ${{ inputs.var-files }}
           name: ${{ inputs.name }}
+          checks-on-push: ${{ inputs.checks-on-push }}
           changed-only: ${{ inputs.changed-only }}
           extra-paths: ${{ inputs.extra-paths }}
           apply-environment: ${{ inputs.apply-environment }}
@@ -371,11 +376,9 @@ jobs:
   checks:
     name: Checks
     needs: prepare
-    # checks-on-push false: a push to the default branch was checked in its PR
-    if: >-
-      inputs.checks &&
-      (inputs.checks-on-push || github.event_name != 'push' ||
-        github.ref != format('refs/heads/{0}', github.event.repository.default_branch))
+    # skip-checks: checks-on-push is false and this push merges a PR that
+    # checked the same content
+    if: inputs.checks && needs.prepare.outputs.skip-checks != 'true'
     runs-on: >-
       ${{
         (startsWith(inputs.checks-runs-on || inputs.runs-on, '{') || startsWith(inputs.checks-runs-on || inputs.runs-on, '['))
@@ -431,13 +434,12 @@ jobs:
     needs: [prepare, checks]
     # !cancelled(): checks may be skipped (checks false), which would
     # otherwise skip this too. Fork and Dependabot PRs get no OIDC token or
-    # secrets. checks-on-push false: a push to the default branch was tested
-    # in its PR.
+    # secrets. skip-integration-tests: as skip-checks, when the PR could run
+    # them.
     if: >-
       !cancelled() &&
       inputs.integration-tests &&
-      (inputs.checks-on-push || github.event_name != 'push' ||
-        github.ref != format('refs/heads/{0}', github.event.repository.default_branch)) &&
+      needs.prepare.outputs.skip-integration-tests != 'true' &&
       needs.prepare.result == 'success' &&
       needs.prepare.outputs.changed == 'true' &&
       (needs.checks.result == 'success' || needs.checks.result == 'skipped') &&
@@ -745,8 +747,9 @@ jobs:
             ${{
               github.event_name == 'pull_request' && github.actor == 'dependabot[bot]' &&
               'This PR comes from Dependabot, which gets no secrets or OIDC token, so it was checked but not planned. The push after merge plans it.' ||
-              !inputs.checks-on-push && github.event_name == 'push' &&
-              github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
-              'checks-on-push is false, so this push to the default branch skipped the checks and integration tests: its PR ran them.' ||
+              needs.prepare.outputs.skip-checks == 'true' &&
+              format('checks-on-push is false and PR #{0} checked the same content, so this push skipped the checks{1}.',
+                needs.prepare.outputs.checked-pr,
+                needs.prepare.outputs.skip-integration-tests == 'true' && ' and integration tests' || '') ||
               ''
             }}
