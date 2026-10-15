@@ -139,6 +139,7 @@ Lists take one item per line, or items separated by spaces. Without
 | `azure-use-azuread`                | `true`               | Microsoft Entra ID (RBAC) auth for storage: state and data plane       |
 | **Checks**                         |                      |                                                                        |
 | `checks`                           | `true`               | Run the checks job at all; `false` skips every check below             |
+| `checks-on-push`                   | `true`               | Checks and integration tests on pushes to the default branch too       |
 | `fmt`                              | `true`               | `tofu fmt -check -recursive`                                           |
 | `validate`                         | `true`               | `tofu init -backend=false` and `tofu validate`                         |
 | `tflint`                           | `true`               | TFLint, recursive, with the call's var files                           |
@@ -261,6 +262,11 @@ way leaves its required checks pending forever.
   don't depend on variables.
 - **`checks: false`** skips the checks job entirely, without turning each
   check off.
+- **`checks-on-push: false`** skips the checks and integration tests on
+  pushes to the default branch, which their PR already ran: with
+  `apply-from-pr: false`, the merge then only plans and applies. Require
+  branches to be up to date before merging, or the merged code is not what
+  the PR checked. Dispatch and scheduled runs still run them.
 - **`test-filter`** selects test files, as OpenTofu's `-filter` does
   (`tests/unit/*.tftest.hcl`), not test or run block names.
 - **`docs`** is on by default: the module needs `terraform-docs` pinned and

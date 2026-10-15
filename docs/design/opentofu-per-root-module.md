@@ -373,6 +373,7 @@ Without `var-files`, the module uses its defaults (and its
 | `azure-use-azuread`                | `true`               | Microsoft Entra ID (RBAC) auth for storage: state and data plane       |
 | **Checks**                         |                      |                                                                        |
 | `checks`                           | `true`               | Run the checks job at all; `false` skips every check below             |
+| `checks-on-push`                   | `true`               | Checks and integration tests on pushes to the default branch too       |
 | `fmt`                              | `true`               | `tofu fmt -check -recursive`                                           |
 | `validate`                         | `true`               | `tofu init -backend=false` and `tofu validate`                         |
 | `tflint`                           | `true`               | TFLint, recursive, with the call's var files                           |
@@ -571,6 +572,12 @@ deployment's variables can trip a check the module's defaults don't:
 - fmt, validate and terraform-docs don't depend on variables.
 - `checks: false` skips the checks job entirely, for a call that only
   needs to plan and apply, without turning each check off.
+- `checks-on-push: false` skips the checks and integration tests on pushes
+  to the default branch, whose PR already ran them: with
+  `apply-from-pr: false`, the merge doesn't test again before it applies.
+  It is on by default because a PR that wasn't up to date merges code that
+  nothing checked; requiring up-to-date branches closes that gap. Dispatch
+  and scheduled runs always check.
 - `test-filter` selects test files, as OpenTofu's `-filter` does
   (`tests/unit/*.tftest.hcl`), not test or run block names.
 - `docs` is on by default, so a module needs `terraform-docs` pinned and a
