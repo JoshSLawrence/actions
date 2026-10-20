@@ -104,7 +104,8 @@ prepare ──> checks ──> integration-tests ──> plan ──> apply ─�
   [When it applies](#when-it-applies)), after the apply environment's
   reviewers approve. It refuses a stale plan (the PR moved on, or a watched
   path changed on the target branch since), checks the plan file's
-  SHA-256, applies exactly that plan, and updates the PR comment.
+  SHA-256, marks the PR comment as applying, applies exactly that plan, and
+  updates the PR comment with the result.
 - **result** is the call's one check (see
   [Branch protection](#branch-protection)).
 
@@ -727,9 +728,13 @@ Before any job runs, the prepare job checks:
   says which call applies in which environment, e.g.
   OpenTofu: `iac/identity` · `prod-eastus` → `prod`.
   - **Contents:** the plan summary, the cost and policy sections, the
-    checks' results, and where the apply stands: awaiting approval,
-    applying after merge, blocked by policy, applied (and by whose
+    checks' results, and where the apply stands: awaiting approval, to
+    apply after merge, blocked by policy, applying, applied (and by whose
     approval), or failed.
+  - **Applying:** with `apply-from-pr`, once the apply is approved and the
+    plan is confirmed current (not stale, same digest), the comment says
+    it's applying, until the result replaces it. A comment that can't be
+    updated never stops the apply.
   - **History:** earlier versions stay in the comment's edit history (its
     **edited** menu).
   - **Out-of-order runs:** a run for an outdated PR head leaves the comment

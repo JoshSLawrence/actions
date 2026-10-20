@@ -18,7 +18,8 @@
 #   SUMMARY_FILE      - plan summary markdown. If missing (the run failed
 #                       before planning), a pointer to the run log is posted.
 #   APPLY_STATUS      - none, awaiting-approval, after-merge, blocked,
-#                       succeeded, or failed
+#                       applying (approved and about to apply), succeeded,
+#                       or failed
 #   APPLY_ENVIRONMENT - GitHub environment the apply runs in (for the text)
 #   GITHUB_BASE_REF   - the PR's target branch (set by Actions; for the text)
 #   BLOCKED_REASON    - with APPLY_STATUS blocked: the text saying why.
@@ -48,9 +49,9 @@ require_env COMMENT_KEY
 require_env APPLY_STATUS
 
 case "$APPLY_STATUS" in
-  none | awaiting-approval | after-merge | blocked | succeeded | failed) ;;
+  none | awaiting-approval | after-merge | blocked | applying | succeeded | failed) ;;
   *)
-    log_error "Unknown APPLY_STATUS '${APPLY_STATUS}'. Use none, awaiting-approval, after-merge, blocked, succeeded, or failed."
+    log_error "Unknown APPLY_STATUS '${APPLY_STATUS}'. Use none, awaiting-approval, after-merge, blocked, applying, succeeded, or failed."
     exit 1
     ;;
 esac
@@ -109,6 +110,11 @@ apply_section() {
       else
         echo "The policy check failed, so this plan wasn't saved and can't be applied. Fix the violations above and push to plan again."
       fi
+      ;;
+    applying)
+      echo "### ⏳ Applying"
+      echo ""
+      echo "Applying this plan${ENVIRONMENT:+ to \`${ENVIRONMENT}\`} now. Follow along on the [workflow run](${RUN_URL})."
       ;;
     succeeded)
       local by

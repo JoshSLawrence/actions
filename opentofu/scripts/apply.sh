@@ -27,27 +27,14 @@ source "$SCRIPT_DIR/common.sh"
 ensure_mise
 
 PLAN_DIR="${PLAN_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/tofu-plan}"
-if is_github_actions; then
-  require_env PLAN_SHA256 "It comes from the plan job's plan-sha256 output; check the workflow passes it to the apply action."
-fi
 
 log_config WORKING_DIR PLAN_DIR PLAN_SHA256 VAR_FILES
 
-if [ ! -f "$PLAN_DIR/tfplan" ]; then
-  log_error "No plan file at ${PLAN_DIR}/tfplan. Plan artifacts expire (plan-retention-days); re-run the whole workflow to plan again."
-  exit 1
-fi
+# check-plan.sh has checked it already in the apply action; check again here,
+# right before applying, so this script never applies another plan on its own
+check_saved_plan "$PLAN_DIR"
 PLAN_DIR="$(cd "$PLAN_DIR" && pwd)"
 PLAN_FILE="$PLAN_DIR/tfplan"
-
-if [ -n "${PLAN_SHA256:-}" ]; then
-  actual_sha256="$(file_sha256 "$PLAN_FILE")"
-  if [ "$actual_sha256" != "$PLAN_SHA256" ]; then
-    log_error "tfplan's sha256 is ${actual_sha256}, but the plan job produced ${PLAN_SHA256}. Refusing to apply a plan that isn't the one that was reviewed; re-run the whole workflow."
-    exit 1
-  fi
-  log_success "tfplan matches the reviewed plan (sha256 ${PLAN_SHA256})"
-fi
 
 cd_working_dir
 require_mise_tool opentofu

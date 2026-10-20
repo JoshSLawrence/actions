@@ -9,7 +9,9 @@
 # stubbed gh), plus two shared helpers the
 # OpenTofu workflow depends on: the apply preflight's git fallback
 # (apply-preflight.sh, with a stubbed gh) and scope_mise_to_module, and
-# what a push skips with checks-on-push (pr-checked.sh, with a stubbed gh). Change
+# what a push skips with checks-on-push (pr-checked.sh, with a stubbed gh),
+# the plan check before an apply (check-plan.sh) and the PR comment's
+# applying status (shared/scripts/pr-comment.sh, with a stubbed gh). Change
 # detection and the preflight run in throwaway Git repositories, the way a
 # pull_request run does. Run by pre-commit and CI.
 # Needs git, jq.
@@ -1109,6 +1111,54 @@ else
   sed 's/^/    /' "$WORK/log" >&2
   failures=$((failures + 1))
 fi
+
+# --- The plan check and the applying comment ----------------------------------------
+
+# check-plan.sh runs before the PR comment says it's applying: the plan must
+# be there and be the one the plan job made
+mkdir -p "$WORK/saved-plan"
+echo plan > "$WORK/saved-plan/tfplan"
+saved_sha="$(file_sha256 "$WORK/saved-plan/tfplan")"
+expect "check-plan: the reviewed plan passes" passed \
+  "$(output_of nothing check-plan.sh PLAN_DIR="$WORK/saved-plan" PLAN_SHA256="$saved_sha" && echo passed)"
+expect_refused "check-plan: another plan is refused" "Refusing to apply a plan that isn't the one that was reviewed" \
+  check-plan.sh PLAN_DIR="$WORK/saved-plan" PLAN_SHA256=0000
+expect_refused "check-plan: a missing plan is refused" "Plan artifacts expire" \
+  check-plan.sh PLAN_DIR="$WORK/no-plan" PLAN_SHA256="$saved_sha"
+expect_refused "check-plan: Actions runs need the digest" "PLAN_SHA256 is not set" \
+  check-plan.sh PLAN_DIR="$WORK/saved-plan" PLAN_SHA256= GITHUB_ACTIONS=true
+
+# A stub gh for shared/scripts/pr-comment.sh: the PR's head is abc1234def,
+# there's no comment yet, and the body posted is saved to $GH_STUB_BODY
+mkdir -p "$WORK/commentbin"
+cat > "$WORK/commentbin/gh" << 'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"pulls/"*"--jq .head.sha"*) echo "abc1234def" ;;
+  *"--paginate"*) ;;
+  *"--input -"*) jq -r .body > "$GH_STUB_BODY" ;;
+esac
+STUB
+chmod +x "$WORK/commentbin/gh"
+printf '### Plan: 1 to add\n' > "$WORK/comment-summary.md"
+
+# Usage: comment_body [VAR=value ...]   (prints the comment posted)
+comment_body() {
+  : > "$WORK/comment-body.md"
+  env PATH="$WORK/commentbin:$PATH" GH_STUB_BODY="$WORK/comment-body.md" \
+    GH_TOKEN=t GITHUB_REPOSITORY=org/repo GITHUB_RUN_ID=9 PR_NUMBER=7 HEAD_SHA=abc1234def \
+    COMMENT_KEY=k TITLE="OpenTofu: \`iac/app\` · \`prod\`" SUMMARY_FILE="$WORK/comment-summary.md" \
+    "$@" "$REPO_ROOT/shared/scripts/pr-comment.sh" > "$WORK/log" 2>&1 || return 1
+  cat "$WORK/comment-body.md"
+}
+
+expect "pr-comment: applying shows the status, the environment and the run" \
+  "### ⏳ Applying||Applying this plan to \`prod\` now. Follow along on the [workflow run](https://github.com/org/repo/actions/runs/9)." \
+  "$(comment_body APPLY_STATUS=applying APPLY_ENVIRONMENT=prod | sed -n '/^### ⏳/,/^Applying/p' | tr '\n' '|' | sed 's/|$//')"
+expect "pr-comment: ...below the plan, which is still shown" "1" \
+  "$(comment_body APPLY_STATUS=applying APPLY_ENVIRONMENT=prod | grep -c '^### Plan: 1 to add$')"
+expect "pr-comment: ...and without an environment, just that it's applying" "1" \
+  "$(comment_body APPLY_STATUS=applying | grep -c '^Applying this plan now. Follow along')"
 
 # --- checks-on-push ----------------------------------------------------------------
 

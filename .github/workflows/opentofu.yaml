@@ -20,7 +20,8 @@
 # - integration-tests (opt-in): tofu test with credentials.
 # - plan: plans to a file, uploads it, comments the summary on the PR.
 # - apply: waits for the apply environment's approval, refuses a stale
-#   plan, checks its digest, then applies exactly that plan.
+#   plan, checks its digest, marks the PR comment as applying, then applies
+#   exactly that plan.
 # - result: the call's one check, for branch protection.
 #
 # Providers: every job that runs tofu init restores a provider cache keyed on
@@ -662,7 +663,7 @@ jobs:
       actions: read # environment protection rules; who approved, for the PR comment
       contents: read
       id-token: write # cloud OIDC
-      pull-requests: write # apply result comment
+      pull-requests: write # applying and apply result comment
     outputs:
       applied: ${{ steps.apply.outcome == 'success' }}
     steps:
@@ -712,6 +713,9 @@ jobs:
           var-files: ${{ inputs.var-files }}
           preflight-paths: ${{ needs.prepare.outputs.paths }}
           modules-token: ${{ secrets.modules-token }}
+          # The same comment the next step updates with the result
+          comment-key: ${{ inputs.pr-comment && needs.plan.outputs.comment-key || '' }}
+          comment-title: ${{ needs.plan.outputs.title }}
 
       - name: Comment apply result on PR
         if: ${{ !cancelled() && github.event_name == 'pull_request' && inputs.pr-comment }}

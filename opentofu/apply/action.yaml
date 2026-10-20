@@ -2,10 +2,10 @@ name: OpenTofu apply
 description: >-
   Applies a saved plan from opentofu/plan -- exactly that plan, never a fresh
   one. First refuses a stale plan (the PR moved on, or the module changed on
-  the target branch since it was planned), then checks the plan file's digest
-  and applies it. Download the plan artifact into plan-dir and run
-  shared/setup first. Gate the job with an environment that requires
-  reviewers.
+  the target branch since it was planned), then checks the plan file's
+  digest, marks the PR comment as applying (with comment-key, on a PR) and
+  applies it. Download the plan artifact into plan-dir and run shared/setup
+  first. Gate the job with an environment that requires reviewers.
 
 inputs:
   working-directory:
@@ -43,8 +43,20 @@ inputs:
       matches; the last entry that matches a file decides.
     required: false
     default: ""
+  comment-key:
+    description: >-
+      The PR comment to mark as applying once the checks pass (the plan
+      action's key output, as given to shared/pr-comment). Empty: no
+      comment. Needs pull-requests: write. Best effort: a comment that
+      can't be updated doesn't stop the apply.
+    required: false
+    default: ""
+  comment-title:
+    description: The PR comment's heading (the plan action's title output).
+    required: false
+    default: Plan
   github-token:
-    description: Token for the preflight's GitHub API calls, and the default for module sources.
+    description: Token for the preflight's and the PR comment's GitHub API calls, and the default for module sources.
     required: false
     default: ${{ github.token }}
   modules-token:
@@ -73,6 +85,31 @@ runs:
         HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         TARGET_BRANCH: ${{ github.event.pull_request.base.ref || github.ref_name }}
         TARGET_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+
+    - name: Check the plan's digest
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../scripts/check-plan.sh"'
+      env:
+        PLAN_DIR: ${{ inputs.plan-dir || format('{0}/tofu-plan', runner.temp) }}
+        PLAN_SHA256: ${{ inputs.plan-sha256 }}
+
+    # Approved and confirmed current: say so on the PR before the apply,
+    # which can take a while. The comment is only feedback, so a failure
+    # here never stops the apply.
+    - name: Comment applying on PR
+      if: inputs.comment-key != '' && github.event_name == 'pull_request'
+      continue-on-error: true
+      shell: bash
+      run: '"${GITHUB_ACTION_PATH}/../../shared/scripts/pr-comment.sh"'
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        COMMENT_KEY: ${{ inputs.comment-key }}
+        TITLE: ${{ inputs.comment-title }}
+        SUMMARY_FILE: ${{ format('{0}/summary.md', inputs.plan-dir || format('{0}/tofu-plan', runner.temp)) }}
+        APPLY_STATUS: applying
+        APPLY_ENVIRONMENT: ${{ inputs.environment }}
 
     - name: Apply
       shell: bash

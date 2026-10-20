@@ -228,8 +228,9 @@ prepare ──> checks ──> integration-tests ──> plan ──> apply ─�
   summary (with optional policy and cost), uploads the plan, comments on
   the PR. Skipped for PRs from forks and Dependabot.
 - **apply:** in `apply-environment`, after its reviewers approve; refuses a
-  stale plan, checks the plan's digest, applies exactly that plan, updates
-  the PR comment (see [When it applies](#when-it-applies)).
+  stale plan, checks the plan's digest, marks the PR comment as applying,
+  applies exactly that plan, updates the PR comment with the result (see
+  [When it applies](#when-it-applies)).
 - **result:** one check per call, for branch protection.
 
 Every job that runs `tofu init` (checks, integration-tests, plan, apply)
