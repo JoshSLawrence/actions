@@ -717,15 +717,29 @@ jobs:
           comment-key: ${{ inputs.pr-comment && needs.plan.outputs.comment-key || '' }}
           comment-title: ${{ needs.plan.outputs.title }}
 
+      # Also runs when the job is cancelled or times out once the apply step
+      # has started, so the comment never stays at "Applying": an apply step
+      # that was cancelled part way posts cancelled. A job cancelled before
+      # the apply step never marked the comment as applying, so it's left
+      # alone.
       - name: Comment apply result on PR
-        if: ${{ !cancelled() && github.event_name == 'pull_request' && inputs.pr-comment }}
+        if: >-
+          ${{
+            always() && github.event_name == 'pull_request' && inputs.pr-comment &&
+            (!cancelled() || contains(fromJSON('["success", "failure", "cancelled"]'), steps.apply.outcome))
+          }}
         uses: $/shared/pr-comment
         with:
           comment-key: ${{ needs.plan.outputs.comment-key }}
           title: ${{ needs.plan.outputs.title }}
           summary-file: ${{ runner.temp }}/tofu-plan/summary.md
           apply-environment: ${{ inputs.apply-environment }}
-          apply-status: ${{ steps.apply.outcome == 'success' && 'succeeded' || 'failed' }}
+          apply-status: >-
+            ${{
+              steps.apply.outcome == 'success' && 'succeeded' ||
+              steps.apply.outcome == 'cancelled' && 'cancelled' ||
+              'failed'
+            }}
 
   # The call's one check: every job succeeded, or was skipped for a reason
   # (nothing changed, checks off, plan only, a fork or Dependabot PR)

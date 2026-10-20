@@ -11,9 +11,9 @@
 # (apply-preflight.sh, with a stubbed gh) and scope_mise_to_module, and
 # what a push skips with checks-on-push (pr-checked.sh, with a stubbed gh),
 # the plan check before an apply (check-plan.sh) and the PR comment's
-# applying status (shared/scripts/pr-comment.sh, with a stubbed gh). Change
-# detection and the preflight run in throwaway Git repositories, the way a
-# pull_request run does. Run by pre-commit and CI.
+# applying and cancelled statuses (shared/scripts/pr-comment.sh, with a
+# stubbed gh). Change detection and the preflight run in throwaway Git
+# repositories, the way a pull_request run does. Run by pre-commit and CI.
 # Needs git, jq.
 #
 
@@ -1173,6 +1173,17 @@ expect "pr-comment: ...below the plan, which is still shown" "1" \
   "$(comment_body APPLY_STATUS=applying APPLY_ENVIRONMENT=prod | grep -c '^### Plan: 1 to add$')"
 expect "pr-comment: ...and without an environment, just that it's applying" "1" \
   "$(comment_body APPLY_STATUS=applying | grep -c '^Applying this plan now. Follow along')"
+
+# A run cancelled or timed out while applying replaces "Applying" with what
+# to check before running again
+expect "pr-comment: cancelled says the run stopped while applying and what to check" \
+  "### ⚠️ Apply cancelled||The [workflow run](https://github.com/org/repo/actions/runs/9) was cancelled or timed out while applying this plan to \`prod\`, so some changes may already be live and the state may still be locked: check the state (release a leftover lock with \`tofu force-unlock\`) before running it again." \
+  "$(comment_body APPLY_STATUS=cancelled APPLY_ENVIRONMENT=prod | sed -n '/^### ⚠️/,/^The \[workflow run\]/p' | tr '\n' '|' | sed 's/|$//')"
+expect "pr-comment: ...below the plan, and no longer says it's applying" "1 0" \
+  "$(body="$(comment_body APPLY_STATUS=cancelled APPLY_ENVIRONMENT=prod)"
+    echo "$(grep -c '^### Plan: 1 to add$' <<< "$body") $(grep -c 'Applying' <<< "$body")")"
+expect "pr-comment: ...and without an environment, just this plan" "1" \
+  "$(comment_body APPLY_STATUS=cancelled | grep -c 'timed out while applying this plan, so some changes')"
 
 # --- checks-on-push ----------------------------------------------------------------
 

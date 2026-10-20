@@ -229,7 +229,8 @@ prepare ──> checks ──> integration-tests ──> plan ──> apply ─�
   the PR. Skipped for PRs from forks and Dependabot.
 - **apply:** in `apply-environment`, after its reviewers approve; refuses a
   stale plan, checks the plan's digest, marks the PR comment as applying,
-  applies exactly that plan, updates the PR comment with the result (see
+  applies exactly that plan, updates the PR comment with the result, or
+  that it was cancelled or timed out while applying (see
   [When it applies](#when-it-applies)).
 - **result:** one check per call, for branch protection.
 

@@ -730,11 +730,14 @@ Before any job runs, the prepare job checks:
   - **Contents:** the plan summary, the cost and policy sections, the
     checks' results, and where the apply stands: awaiting approval, to
     apply after merge, blocked by policy, applying, applied (and by whose
-    approval), or failed.
+    approval), failed, or cancelled while applying.
   - **Applying:** with `apply-from-pr`, once the apply is approved and the
     plan is confirmed current (not stale, same digest), the comment says
     it's applying, until the result replaces it. A comment that can't be
     updated never stops the apply.
+  - **Cancelled:** a run cancelled or timed out during the apply says so
+    instead: some changes may be live and the state may still be locked
+    (`tofu force-unlock`), so check it before running again.
   - **History:** earlier versions stay in the comment's edit history (its
     **edited** menu).
   - **Out-of-order runs:** a run for an outdated PR head leaves the comment

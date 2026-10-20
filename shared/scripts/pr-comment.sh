@@ -19,7 +19,9 @@
 #                       before planning), a pointer to the run log is posted.
 #   APPLY_STATUS      - none, awaiting-approval, after-merge, blocked,
 #                       applying (approved and about to apply), succeeded,
-#                       or failed
+#                       failed, or cancelled (the run was cancelled or timed
+#                       out while applying; the text is OpenTofu's: its state
+#                       and lock)
 #   APPLY_ENVIRONMENT - GitHub environment the apply runs in (for the text)
 #   GITHUB_BASE_REF   - the PR's target branch (set by Actions; for the text)
 #   BLOCKED_REASON    - with APPLY_STATUS blocked: the text saying why.
@@ -49,9 +51,9 @@ require_env COMMENT_KEY
 require_env APPLY_STATUS
 
 case "$APPLY_STATUS" in
-  none | awaiting-approval | after-merge | blocked | applying | succeeded | failed) ;;
+  none | awaiting-approval | after-merge | blocked | applying | succeeded | failed | cancelled) ;;
   *)
-    log_error "Unknown APPLY_STATUS '${APPLY_STATUS}'. Use none, awaiting-approval, after-merge, blocked, applying, succeeded, or failed."
+    log_error "Unknown APPLY_STATUS '${APPLY_STATUS}'. Use none, awaiting-approval, after-merge, blocked, applying, succeeded, failed, or cancelled."
     exit 1
     ;;
 esac
@@ -127,6 +129,11 @@ apply_section() {
       echo "### ❌ Apply failed"
       echo ""
       echo "See the [workflow run](${RUN_URL}) log. If the apply started, some changes may already be live: fix the problem and push to plan again, or roll back by running the workflow on the target branch. If the plan was refused as out of date, nothing was applied."
+      ;;
+    cancelled)
+      echo "### ⚠️ Apply cancelled"
+      echo ""
+      echo "The [workflow run](${RUN_URL}) was cancelled or timed out while applying this plan${ENVIRONMENT:+ to \`${ENVIRONMENT}\`}, so some changes may already be live and the state may still be locked: check the state (release a leftover lock with \`tofu force-unlock\`) before running it again."
       ;;
   esac
 }
