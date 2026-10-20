@@ -27,6 +27,12 @@ source "$SCRIPTS/common.sh"
 require_tool git
 require_tool jq
 
+# Never inherit a repository from a caller (a pre-commit hook sets GIT_DIR and
+# friends): every git command below must act on a throwaway repository
+while IFS= read -r git_var; do
+  unset "$git_var"
+done < <(git rev-parse --local-env-vars)
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 failures=0
@@ -90,6 +96,14 @@ make_repo() {
   mkdir -p "$WORK/repo"
   cd "$WORK/repo"
   git init -q -b main
+  # Refuse to configure or commit anywhere but the throwaway repository
+  case "$(git rev-parse --absolute-git-dir)" in
+    "$(cd "$WORK" && pwd -P)"/*) ;;
+    *)
+      log_error "make_repo: git would act on $(git rev-parse --absolute-git-dir), outside ${WORK}. Aborting before touching its config."
+      exit 1
+      ;;
+  esac
   git config user.email test@example.com
   git config user.name test
   mkdir -p .github/workflows iac/app/deployments iac/app/modules/label iac/modules/shared iac/other
