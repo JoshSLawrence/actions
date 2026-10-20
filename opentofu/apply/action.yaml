@@ -21,9 +21,9 @@ inputs:
     required: true
   environment:
     description: >-
-      The job's GitHub environment. Only used to warn when it has no required
+      The job's GitHub environment. Used to warn when it has no required
       reviewers (GitHub silently creates unprotected environments on first
-      use), which needs actions: read.
+      use), which needs actions: read, and named in the applying PR comment.
     required: false
     default: ""
   var-files:
@@ -55,6 +55,13 @@ inputs:
     description: The PR comment's heading (the plan action's title output).
     required: false
     default: Plan
+  comment-author:
+    description: >-
+      Login that posts the PR comment; only its comments are edited. Change
+      it when github-token is a GitHub App token (e.g. my-app[bot]), as for
+      shared/pr-comment.
+    required: false
+    default: github-actions[bot]
   github-token:
     description: Token for the preflight's and the PR comment's GitHub API calls, and the default for module sources.
     required: false
@@ -110,6 +117,7 @@ runs:
         SUMMARY_FILE: ${{ format('{0}/summary.md', inputs.plan-dir || format('{0}/tofu-plan', runner.temp)) }}
         APPLY_STATUS: applying
         APPLY_ENVIRONMENT: ${{ inputs.environment }}
+        COMMENT_AUTHOR: ${{ inputs.comment-author }}
 
     - name: Apply
       shell: bash
