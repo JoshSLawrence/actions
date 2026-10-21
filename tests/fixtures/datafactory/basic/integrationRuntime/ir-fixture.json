@@ -1,5 +1,5 @@
 {
-	"name": "ir_fixture",
+	"name": "ir-fixture",
 	"properties": {
 		"type": "Managed",
 		"typeProperties": {
