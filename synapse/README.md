@@ -193,12 +193,13 @@ synapse-deploy.yaml                   plan ──> apply (after approval)
   does and compares the result with the definition the workspace returns; a
   plan with nothing to create, change or delete has `has-changes` false and
   skips the apply.
-- **apply** (per deployment) waits for approval, refuses a stale plan,
-  checks the plan's SHA-256, lists the workspace again and refuses if it
-  differs from the plan's fingerprint (something else changed it since:
-  re-run all jobs of the workflow to plan again, not just the failed one,
-  which would reuse the old plan), then stops triggers, runs the deployer
-  and starts triggers.
+- **apply** (per deployment) waits for approval, refuses a stale plan (the
+  PR moved on, the folder changed on the target branch since, or that branch
+  was rewritten), checks the plan's SHA-256, lists the workspace again and
+  refuses if it differs from the plan's fingerprint (something else changed
+  it since: re-run all jobs of the workflow to plan again, not just the
+  failed one, which would reuse the old plan), then stops triggers, runs the
+  deployer and starts triggers.
 - **result** is the single check to require: `<caller job> / Result`.
 
 ## Setup

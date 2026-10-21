@@ -129,7 +129,7 @@ sqlproject-deploy.yaml                   plan ──> apply (after approval)
   it:
   1. refuses a stale plan: the PR moved on, or the project's files changed
      on the target branch since (a sibling deployment's profile does not
-     count);
+     count), or the target branch was rewritten;
   2. checks the plan's SHA-256;
   3. plans again against the live database and refuses if the report is not
      the reviewed one: someone changed the database after the plan;

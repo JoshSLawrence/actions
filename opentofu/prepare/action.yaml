@@ -39,8 +39,8 @@ inputs:
   checks-on-push:
     description: >-
       Checks and integration tests on pushes to the default branch: always,
-      never, or unchecked (skipped when the merged PR's run checked the same
-      content; needs pull-requests read).
+      never, or unchecked (each skipped when the merged PR's passing run ran
+      it on the same content; needs pull-requests and actions read).
     required: false
     default: always
   changed-only:
@@ -274,4 +274,5 @@ runs:
         DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         SHA: ${{ github.sha }}
         PATHS: ${{ steps.changes.outputs.paths }}
+        JOB_CHECK_RUN_ID: ${{ job.check_run_id }}
         GH_TOKEN: ${{ inputs.github-token }}

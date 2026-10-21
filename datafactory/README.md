@@ -191,7 +191,8 @@ datafactory-deploy.yaml                   plan ──> apply (after approval)
 - **apply** (per deployment) waits for the `apply-environment`'s reviewers,
   then:
   1. refuses a stale plan: the PR moved on, or the folder or its parameter
-     files changed on the target branch since;
+     files changed on the target branch since, or that branch was
+     rewritten;
   2. checks the plan's SHA-256, and deploys to the factory and resource group
      the plan names;
   3. lists the factory again and refuses if it differs from the plan's

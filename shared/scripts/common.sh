@@ -530,8 +530,7 @@ context_line() {
   # PR runs plan GitHub's test merge of the PR head into the target branch,
   # not the PR branch on its own -- say so, since that's what an apply would
   # deploy. TARGET_SHA is the target branch's commit the PR was merged with,
-  # so word it as what the plan is against, not as a merge that happened
-  # (matching pipeline-templates).
+  # so word it as what the plan is against, not as a merge that happened.
   if [ -n "${PR_NUMBER:-}" ] && [ -n "${TARGET_SHA:-}" ]; then
     parts+=("against \`${TARGET_BRANCH:-main}\` at $(commit_ref "$TARGET_SHA")")
   fi

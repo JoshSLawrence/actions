@@ -84,6 +84,31 @@ warn_if_no_lock_file() {
   fi
 }
 
+# Exit with an error unless the saved plan in the directory is there and is
+# exactly the one the plan job made: its digest must equal PLAN_SHA256, which
+# GitHub Actions runs must set (local runs may leave it empty to skip the
+# comparison). Used by check-plan.sh, before the PR comment says it's
+# applying, and again by apply.sh.
+# Usage: check_saved_plan <plan dir>
+check_saved_plan() {
+  local plan_file="$1/tfplan" actual_sha256
+  if is_github_actions; then
+    require_env PLAN_SHA256 "It comes from the plan job's plan-sha256 output; check the workflow passes it to the apply action."
+  fi
+  if [ ! -f "$plan_file" ]; then
+    log_error "No plan file at ${plan_file}. Plan artifacts expire (plan-retention-days); re-run the whole workflow to plan again."
+    exit 1
+  fi
+  if [ -n "${PLAN_SHA256:-}" ]; then
+    actual_sha256="$(file_sha256 "$plan_file")"
+    if [ "$actual_sha256" != "$PLAN_SHA256" ]; then
+      log_error "tfplan's sha256 is ${actual_sha256}, but the plan job produced ${PLAN_SHA256}. Refusing to apply a plan that isn't the one that was reviewed; re-run the whole workflow."
+      exit 1
+    fi
+    log_success "tfplan matches the reviewed plan (sha256 ${PLAN_SHA256})"
+  fi
+}
+
 # --- Azure credentials ----------------------------------------------------------
 #
 # The workflow's azure-* inputs and secrets, mapped to the azurerm provider's

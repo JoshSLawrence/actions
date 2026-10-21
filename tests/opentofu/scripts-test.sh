@@ -7,11 +7,14 @@
 # credentials mapping (azure-env.sh), the provider cache (provider-cache.sh),
 # the plan names (names.sh), and the drift report (drift-report.sh, with a
 # stubbed gh), plus two shared helpers the
-# OpenTofu workflow depends on: the apply preflight's git fallback
-# (apply-preflight.sh, with a stubbed gh) and scope_mise_to_module, and
-# what a push skips with checks-on-push (pr-checked.sh, with a stubbed gh). Change
-# detection and the preflight run in throwaway Git repositories, the way a
-# pull_request run does. Run by pre-commit and CI.
+# OpenTofu workflow depends on: the apply preflight's git fallback and
+# incomplete comparisons (apply-preflight.sh, with a stubbed gh) and
+# scope_mise_to_module, and
+# what a push skips with checks-on-push (pr-checked.sh, with a stubbed gh),
+# the plan check before an apply (check-plan.sh) and the PR comment's
+# applying and cancelled statuses (shared/scripts/pr-comment.sh, with a
+# stubbed gh). Change detection and the preflight run in throwaway Git
+# repositories, the way a pull_request run does. Run by pre-commit and CI.
 # Needs git, jq.
 #
 
@@ -24,6 +27,12 @@ source "$SCRIPTS/common.sh"
 
 require_tool git
 require_tool jq
+
+# Never inherit a repository from a caller (a pre-commit hook sets GIT_DIR and
+# friends): every git command below must act on a throwaway repository
+while IFS= read -r git_var; do
+  unset "$git_var"
+done < <(git rev-parse --local-env-vars)
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -88,6 +97,14 @@ make_repo() {
   mkdir -p "$WORK/repo"
   cd "$WORK/repo"
   git init -q -b main
+  # Refuse to configure or commit anywhere but the throwaway repository
+  case "$(git rev-parse --absolute-git-dir)" in
+    "$(cd "$WORK" && pwd -P)"/*) ;;
+    *)
+      log_error "make_repo: git would act on $(git rev-parse --absolute-git-dir), outside ${WORK}. Aborting before touching its config."
+      exit 1
+      ;;
+  esac
   git config user.email test@example.com
   git config user.name test
   mkdir -p .github/workflows iac/app/deployments iac/app/modules/label iac/modules/shared iac/other
@@ -958,7 +975,7 @@ make_origin() {
 }
 
 compare_response() {
-  jq -n --argjson n "$1" '{ahead_by: 1, files: [range($n) | {filename: "unrelated/f\(.).txt"}]}' > "$WORK/compare.json"
+  jq -n --argjson n "$1" '{status: "ahead", ahead_by: 1, behind_by: 0, files: [range($n) | {filename: "unrelated/f\(.).txt"}]}' > "$WORK/compare.json"
 }
 
 # Usage: preflight [VAR=value ...]
@@ -982,7 +999,7 @@ fi
 
 # Usage: compare_files <file>...   (the compare API's answer listing them)
 compare_files() {
-  jq -n '{ahead_by: 1, files: [$ARGS.positional[] | {filename: .}]}' --args "$@" > "$WORK/compare.json"
+  jq -n '{status: "ahead", ahead_by: 1, behind_by: 0, files: [$ARGS.positional[] | {filename: .}]}' --args "$@" > "$WORK/compare.json"
 }
 OWN_VAR_FILE_ONLY='iac/app !iac/app/**/*.tfvars iac/app/deployments/prod.tfvars'
 
@@ -1001,10 +1018,55 @@ expect_refused "...but a file included again after the exclusion does" "(iac/app
   ../../shared/scripts/apply-preflight.sh PATH="$WORK/bin:$PATH" GH_STUB_RESPONSE="$WORK/compare.json" \
   GH_TOKEN=secret-token GITHUB_REPOSITORY=org/repo TARGET_BRANCH=main TARGET_SHA="$BASE" PREFLIGHT_PATHS="$OWN_VAR_FILE_ONLY"
 
-jq -n '{ahead_by: 1, files: [{filename: "iac/other/main.tf", previous_filename: "iac/app/main.tf", status: "renamed"}]}' > "$WORK/compare.json"
+jq -n '{status: "ahead", ahead_by: 1, behind_by: 0, files: [{filename: "iac/other/main.tf", previous_filename: "iac/app/main.tf", status: "renamed"}]}' > "$WORK/compare.json"
 expect_refused "a file renamed out of a watched path makes the plan stale" "(iac/app/main.tf)" \
   ../../shared/scripts/apply-preflight.sh PATH="$WORK/bin:$PATH" GH_STUB_RESPONSE="$WORK/compare.json" \
   GH_TOKEN=secret-token GITHUB_REPOSITORY=org/repo TARGET_BRANCH=main TARGET_SHA="$BASE" PREFLIGHT_PATHS=iac/app
+
+# An incomplete comparison never calls the plan current: no file list (or an
+# empty one) for new commits asks git, and a target branch that no longer
+# contains the planned commit, or an answer without the counts, refuses
+# Usage: expect_current <name> [VAR=value ...]
+expect_current() {
+  local name="$1"
+  shift
+  cases=$((cases + 1))
+  if preflight "$@"; then
+    log_success "$name"
+  else
+    log_error "${name}: refused"
+    sed 's/^/    /' "$WORK/log" >&2
+    failures=$((failures + 1))
+  fi
+}
+# Usage: preflight_refused <name> <text in the log> [VAR=value ...]
+preflight_refused() {
+  local name="$1" text="$2"
+  shift 2
+  expect_refused "$name" "$text" ../../shared/scripts/apply-preflight.sh PATH="$WORK/bin:$PATH" \
+    GH_STUB_RESPONSE="$WORK/compare.json" GH_TOKEN=secret-token GITHUB_REPOSITORY=org/repo \
+    TARGET_BRANCH=main TARGET_SHA="$BASE" PREFLIGHT_PATHS=iac/app "$@"
+}
+
+echo '{"status": "ahead", "ahead_by": 1, "behind_by": 0}' > "$WORK/compare.json"
+preflight_refused "no file list for new commits: git finds the relevant change" \
+  "Files this plan depends on changed on main since it was made (iac/app/main.tf)"
+expect "...saying why it asked git" "1" "$(grep -c "GitHub's comparison didn't list the changed files" "$WORK/log")"
+expect_current "...and a change elsewhere doesn't stop the apply" PREFLIGHT_PATHS=iac/other
+echo '{"status": "ahead", "ahead_by": 1, "behind_by": 0, "files": []}' > "$WORK/compare.json"
+preflight_refused "no files listed for new commits: git finds the relevant change" "(iac/app/main.tf)"
+echo '{"status": "identical", "ahead_by": 0, "behind_by": 0, "files": []}' > "$WORK/compare.json"
+expect_current "no new commits: the plan is current"
+expect "...without asking git" "0" "$(grep -c "with git instead" "$WORK/log")"
+echo '{"status": "diverged", "ahead_by": 1, "behind_by": 2, "files": [{"filename": "docs/readme.md"}]}' > "$WORK/compare.json"
+preflight_refused "a rewritten target branch (diverged) refuses, even with no watched change listed" \
+  "main no longer contains" PREFLIGHT_PATHS=iac/other
+# -q, not -c: under Actions, log_error prints the line and an annotation
+expect "...and what to do" "yes" "$(grep -q "the branch was rewritten.*Run the workflow on main again to plan" "$WORK/log" && echo yes || echo no)"
+echo '{"status": "behind", "ahead_by": 0, "behind_by": 1, "files": []}' > "$WORK/compare.json"
+preflight_refused "...and so does one only behind the planned commit" "main no longer contains"
+echo '{"status": "ahead", "files": []}' > "$WORK/compare.json"
+preflight_refused "a comparison without the counts refuses" "didn't say how far apart they are"
 
 compare_response 300
 expect_refused "300 files: git finds the relevant change the API list cut off" \
@@ -1091,6 +1153,12 @@ else
   failures=$((failures + 1))
 fi
 
+# No file list and no usable checkout: refused, never called current
+echo '{"status": "ahead", "ahead_by": 1, "behind_by": 0}' > "$WORK/compare.json"
+preflight_refused "no file list without a usable checkout: refused, saying why" \
+  "GitHub's comparison didn't list the changed files, and git couldn't list the changes"
+compare_response 300
+
 # A checkout whose origin can't be fetched from: git's own error is logged
 git init -q "$WORK/bad-origin"
 cd "$WORK/bad-origin"
@@ -1110,11 +1178,71 @@ else
   failures=$((failures + 1))
 fi
 
+# --- The plan check and the applying comment ----------------------------------------
+
+# check-plan.sh runs before the PR comment says it's applying: the plan must
+# be there and be the one the plan job made
+mkdir -p "$WORK/saved-plan"
+echo plan > "$WORK/saved-plan/tfplan"
+saved_sha="$(file_sha256 "$WORK/saved-plan/tfplan")"
+expect "check-plan: the reviewed plan passes" passed \
+  "$(output_of nothing check-plan.sh PLAN_DIR="$WORK/saved-plan" PLAN_SHA256="$saved_sha" && echo passed)"
+expect_refused "check-plan: another plan is refused" "Refusing to apply a plan that isn't the one that was reviewed" \
+  check-plan.sh PLAN_DIR="$WORK/saved-plan" PLAN_SHA256=0000
+expect_refused "check-plan: a missing plan is refused" "Plan artifacts expire" \
+  check-plan.sh PLAN_DIR="$WORK/no-plan" PLAN_SHA256="$saved_sha"
+expect_refused "check-plan: Actions runs need the digest" "PLAN_SHA256 is not set" \
+  check-plan.sh PLAN_DIR="$WORK/saved-plan" PLAN_SHA256= GITHUB_ACTIONS=true
+
+# A stub gh for shared/scripts/pr-comment.sh: the PR's head is abc1234def,
+# there's no comment yet, and the body posted is saved to $GH_STUB_BODY
+mkdir -p "$WORK/commentbin"
+cat > "$WORK/commentbin/gh" << 'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"pulls/"*"--jq .head.sha"*) echo "abc1234def" ;;
+  *"--paginate"*) ;;
+  *"--input -"*) jq -r .body > "$GH_STUB_BODY" ;;
+esac
+STUB
+chmod +x "$WORK/commentbin/gh"
+printf '### Plan: 1 to add\n' > "$WORK/comment-summary.md"
+
+# Usage: comment_body [VAR=value ...]   (prints the comment posted)
+comment_body() {
+  : > "$WORK/comment-body.md"
+  env PATH="$WORK/commentbin:$PATH" GH_STUB_BODY="$WORK/comment-body.md" \
+    GH_TOKEN=t GITHUB_REPOSITORY=org/repo GITHUB_RUN_ID=9 PR_NUMBER=7 HEAD_SHA=abc1234def \
+    COMMENT_KEY=k TITLE="OpenTofu: \`iac/app\` · \`prod\`" SUMMARY_FILE="$WORK/comment-summary.md" \
+    "$@" "$REPO_ROOT/shared/scripts/pr-comment.sh" > "$WORK/log" 2>&1 || return 1
+  cat "$WORK/comment-body.md"
+}
+
+expect "pr-comment: applying shows the status, the environment and the run" \
+  "### ⏳ Applying||Applying this plan to \`prod\` now. Follow along on the [workflow run](https://github.com/org/repo/actions/runs/9)." \
+  "$(comment_body APPLY_STATUS=applying APPLY_ENVIRONMENT=prod | sed -n '/^### ⏳/,/^Applying/p' | tr '\n' '|' | sed 's/|$//')"
+expect "pr-comment: ...below the plan, which is still shown" "1" \
+  "$(comment_body APPLY_STATUS=applying APPLY_ENVIRONMENT=prod | grep -c '^### Plan: 1 to add$')"
+expect "pr-comment: ...and without an environment, just that it's applying" "1" \
+  "$(comment_body APPLY_STATUS=applying | grep -c '^Applying this plan now. Follow along')"
+
+# A run cancelled or timed out while applying replaces "Applying" with what
+# to check before running again
+expect "pr-comment: cancelled says the run stopped while applying and what to check" \
+  "### ⚠️ Apply cancelled||The [workflow run](https://github.com/org/repo/actions/runs/9) was cancelled or timed out during the apply step for this plan to \`prod\`. If the apply had started, some changes may already be live and the state may still be locked: check the state (release a leftover lock with \`tofu force-unlock\`) before running it again." \
+  "$(comment_body APPLY_STATUS=cancelled APPLY_ENVIRONMENT=prod | sed -n '/^### ⚠️/,/^The \[workflow run\]/p' | tr '\n' '|' | sed 's/|$//')"
+expect "pr-comment: ...below the plan, and no longer says it's applying" "1 0" \
+  "$(body="$(comment_body APPLY_STATUS=cancelled APPLY_ENVIRONMENT=prod)"
+    echo "$(grep -c '^### Plan: 1 to add$' <<< "$body") $(grep -c 'Applying' <<< "$body")")"
+expect "pr-comment: ...and without an environment, just this plan" "1" \
+  "$(comment_body APPLY_STATUS=cancelled | grep -c 'during the apply step for this plan. If the apply had started, some changes')"
+
 # --- checks-on-push ----------------------------------------------------------------
 
 # A stub gh that answers pr-checked.sh's reads from files in $GH_STUB_DIR:
-# the PRs of the pushed commit, this run (workflow 77), the PR's runs and
-# the two trees. GH_STUB_FAIL=<text> fails the calls whose path has it.
+# the PRs of the pushed commit, this run (workflow 77), this job (check run
+# 31), the PR's runs, the jobs of its latest run (22) and the two trees.
+# GH_STUB_FAIL=<text> fails the calls whose path has it.
 mkdir -p "$WORK/prbin" "$WORK/pr"
 cat > "$WORK/prbin/gh" << 'STUB'
 #!/usr/bin/env bash
@@ -1125,7 +1253,9 @@ fi
 case "$*" in
   *"/commits/"*"/pulls"*) file=pulls ;;
   *"/actions/workflows/77/runs"*"head_sha=head1"*) file=runs ;;
-  *"/actions/runs/9"*) file=run ;;
+  *"/actions/jobs/31") file=job ;;
+  *"/actions/runs/22/jobs?filter=latest"*) file=jobs ;;
+  *"/actions/runs/9") file=run ;;
   *"/git/trees/"*) file="tree-$(sed 's|.*/git/trees/\([^?]*\).*|\1|' <<< "$*")" ;;
   *) echo "gh stub: unexpected call: $*" >&2; exit 1 ;;
 esac
@@ -1133,15 +1263,28 @@ cat "$GH_STUB_DIR/$file.json"
 STUB
 chmod +x "$WORK/prbin/gh"
 
-# The merge of PR #5 (head1) as push1, its passing run, and the same tree
-# in both, with one file outside the watched paths
+# The merge of PR #5 (head1) as push1, its passing run (22, after a failed
+# one), which ran this call's ("prod") checks and integration tests, and the
+# same tree in both, with one file outside the watched paths
 pr_fixture() {
   jq -n '[{number: 5, merged_at: "2026-10-01T00:00:00Z", merge_commit_sha: "push1",
     base: {ref: "main"}, head: {sha: "head1", repo: {full_name: "org/repo"}}, user: {login: "alice"}}]' \
     > "$WORK/pr/pulls.json"
   echo '{"workflow_id": 77}' > "$WORK/pr/run.json"
-  jq -n '{workflow_runs: [{created_at: "2026-10-01T01:00:00Z", conclusion: "failure"},
-    {created_at: "2026-10-01T02:00:00Z", conclusion: "success"}]}' > "$WORK/pr/runs.json"
+  jq -n '{workflow_runs: [{id: 21, created_at: "2026-10-01T01:00:00Z", conclusion: "failure"},
+    {id: 22, created_at: "2026-10-01T02:00:00Z", conclusion: "success"}]}' > "$WORK/pr/runs.json"
+  echo '{"id": 31, "name": "prod / Prepare"}' > "$WORK/pr/job.json"
+  # Two pages, as gh api --paginate prints them; another call (dev) too
+  jq -n '{total_count: 8, jobs: [
+    {name: "dev / Prepare", conclusion: "success"},
+    {name: "dev / Checks", conclusion: "skipped"},
+    {name: "dev / Integration tests", conclusion: "skipped"},
+    {name: "prod / Prepare", conclusion: "success"}]}' > "$WORK/pr/jobs.json"
+  jq -n '{total_count: 8, jobs: [
+    {name: "prod / Checks", conclusion: "success"},
+    {name: "prod / Integration tests", conclusion: "success"},
+    {name: "prod / Plan", conclusion: "success"},
+    {name: "prod / Result", conclusion: "success"}]}' >> "$WORK/pr/jobs.json"
   jq -n '{truncated: false, tree: [
     {path: "iac", type: "tree", sha: "t1"},
     {path: "iac/app/main.tf", type: "blob", sha: "a1"},
@@ -1152,10 +1295,15 @@ pr_fixture() {
   cp "$WORK/pr/tree-head1.json" "$WORK/pr/tree-push1.json"
 }
 
-# Usage: pr_edit <file> '<jq filter>'
+# Usage: pr_edit <file> '<jq filter>'   (applied to each page)
 pr_edit() {
   jq "$2" "$WORK/pr/$1.json" > "$WORK/pr/edit.json"
   mv "$WORK/pr/edit.json" "$WORK/pr/$1.json"
+}
+
+# Usage: pr_job_set '<job name>' <conclusion>
+pr_job_set() {
+  pr_edit jobs "(.jobs[] | select(.name == \"$1\")).conclusion = \"$2\""
 }
 
 # Run pr-checked.sh as the merge's push run would; print its outputs as
@@ -1164,7 +1312,7 @@ pr_edit() {
 pr_checked() {
   : > "$WORK/output"
   env PATH="$WORK/prbin:$PATH" GH_STUB_DIR="$WORK/pr" GITHUB_OUTPUT="$WORK/output" \
-    GH_TOKEN=t GITHUB_REPOSITORY=org/repo GITHUB_RUN_ID=9 CHECKS_ON_PUSH=unchecked \
+    GH_TOKEN=t GITHUB_REPOSITORY=org/repo GITHUB_RUN_ID=9 JOB_CHECK_RUN_ID=31 CHECKS_ON_PUSH=unchecked \
     EVENT_NAME=push REF=refs/heads/main DEFAULT_BRANCH=main SHA=push1 \
     PATHS='iac/app !iac/app/**/*.tfvars iac/app/deployments/prod.tfvars .github/workflows/tofu.yaml' \
     "$@" "$SCRIPTS/pr-checked.sh" > "$WORK/log" 2>&1 || return 1
@@ -1221,9 +1369,43 @@ pr_fixture
 pr_edit pulls '.[0].user.login = "dependabot[bot]"'
 expect "...and the same for Dependabot" "checks=true tests=false" "$(pr_checked)"
 
+# The run passed, but which of this call's jobs ran decides what's skipped
+pr_fixture
+pr_job_set "prod / Integration tests" skipped
+expect "a PR run that skipped the integration tests skips only the checks" \
+  "checks=true tests=false" "$(pr_checked)"
+expect "...and notes why they run" "which that run didn't run (skipped)" \
+  "$(sed -n 's/.*\(which that run didn.t run (skipped)\).*/\1/p' "$WORK/output")"
+pr_fixture
+pr_job_set "prod / Checks" skipped
+expect "a PR run that skipped the checks skips only the integration tests" \
+  "checks=false tests=true" "$(pr_checked)"
+pr_job_set "prod / Integration tests" skipped
+expect "...and one that ran neither checks" "checks=false tests=false" "$(pr_checked)"
+pr_fixture
+pr_job_set "prod / Checks" skipped
+pr_edit pulls '.[0].head.repo.full_name = "fork/repo"'
+expect "...as does a fork's PR whose run skipped the checks" "checks=false tests=false" "$(pr_checked)"
+pr_fixture
+pr_edit jobs '.jobs |= map(select(.name != "prod / Integration tests"))'
+expect "a job missing from the PR's run counts as not run" "checks=true tests=false" "$(pr_checked)"
+pr_fixture
+pr_edit jobs '.jobs |= map(if .name == "dev / Checks" then .name = "prod / Checks" else . end)'
+expect "two jobs of the same name count as not run" "checks=false tests=true" "$(pr_checked)"
+pr_fixture
+echo '{"id": 31, "name": "Prepare"}' > "$WORK/pr/job.json"
+expect "a job name that doesn't name the call checks" "checks=false tests=false" "$(pr_checked)"
+pr_fixture
+echo '{"id": 31, "name": "staging / Prepare"}' > "$WORK/pr/job.json"
+expect "...and so does a call the PR's run doesn't have" "checks=false tests=false" "$(pr_checked)"
+pr_fixture
+expect "...and so does an empty job.check_run_id" "checks=false tests=false" "$(pr_checked JOB_CHECK_RUN_ID=)"
+
 pr_fixture
 expect "the PRs can't be looked up: it checks, without failing" "checks=false tests=false" "$(pr_checked GH_STUB_FAIL=/pulls)"
 expect "...the runs can't be listed" "checks=false tests=false" "$(pr_checked GH_STUB_FAIL=/actions/)"
+expect "...this job can't be read" "checks=false tests=false" "$(pr_checked GH_STUB_FAIL=/actions/jobs/)"
+expect "...the PR run's jobs can't be listed" "checks=false tests=false" "$(pr_checked GH_STUB_FAIL=/runs/22/jobs)"
 expect "...a tree can't be read" "checks=false tests=false" "$(pr_checked GH_STUB_FAIL=/git/trees/push1)"
 
 # details_open: the summary, a <br> for a line of space, then a blank line

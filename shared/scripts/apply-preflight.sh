@@ -12,10 +12,14 @@
 #     applying would undo whatever merged there.
 #
 # The changes come from the compare API, which lists at most 300 files; with
-# that many it lists them with git instead, which needs the job's checkout
-# (its origin remote; shallow is fine). The fetch is filtered (no blobs), which
-# turns the checkout into a partial clone with origin as its promisor remote;
-# that's harmless this late in a job.
+# that many, or when it lists none (or no list) for new commits, it lists
+# them with git instead, which needs the job's checkout (its origin remote;
+# shallow is fine). The fetch is filtered (no blobs), which turns the
+# checkout into a partial clone with origin as its promisor remote; that's
+# harmless this late in a job. A comparison that doesn't say how far apart
+# the commits are, or a target branch that no longer contains TARGET_SHA
+# (rewritten, e.g. force-pushed), refuses: the changes since the plan can't
+# be told, so the plan is never called current on an incomplete answer.
 #
 # Environment variables:
 #   GH_TOKEN          - token for the GitHub API (contents: read and
@@ -108,16 +112,39 @@ git_changed_files() {
 
 log_info "Checking ${PREFLIGHT_PATHS//$'\n'/, } hasn't changed on ${TARGET_BRANCH} since ${TARGET_SHA:0:7}..."
 comparison="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${TARGET_SHA}...${TARGET_BRANCH}")"
-ahead_by="$(jq -r .ahead_by <<< "$comparison")"
+status="$(jq -r '.status // "unknown"' <<< "$comparison")"
+ahead_by="$(jq -r '.ahead_by | numbers' <<< "$comparison")"
+behind_by="$(jq -r '.behind_by | numbers' <<< "$comparison")"
+if [ -z "$ahead_by" ] || [ -z "$behind_by" ]; then
+  log_error "GitHub's comparison of ${TARGET_SHA:0:7} with ${TARGET_BRANCH} didn't say how far apart they are (status ${status}), so it can't tell whether this plan is current. Re-run the job to ask again; if it keeps failing: ${RERUN_HINT}"
+  exit 1
+fi
+# The comparison is from the merge base: with TARGET_SHA no longer on the
+# branch, what changed between the two isn't in it
+if [ "$status" = diverged ] || [ "$behind_by" -gt 0 ]; then
+  log_error "${TARGET_BRANCH} no longer contains ${TARGET_SHA:0:7}, the commit this plan was made against (${behind_by} of its commits are gone: the branch was rewritten, e.g. force-pushed), so what changed since the plan can't be told. ${RERUN_HINT}"
+  exit 1
+fi
+
+files_listed="$(jq -r '.files | type == "array"' <<< "$comparison")"
 file_count="$(jq -r '.files | length' <<< "$comparison")"
 # A renamed file is listed under its new name: its old one changed too
 file_list="$(jq -r '.files[]? | .filename, (.previous_filename // empty)' <<< "$comparison")"
 
 # The compare API lists at most 300 files: with more, a relevant change could
-# be missing from the list. Ask git for the full list instead; only if that
-# fails is it too much to be sure either way.
-if [ "$file_count" -ge 300 ]; then
-  log_info "The compare API lists at most 300 files (${file_count} here); listing the changes with git instead..."
+# be missing from the list. An answer without the list, or with no files for
+# new commits, is just as unsure. Ask git for the full list instead; only if
+# that fails is it too much to be sure either way.
+git_reason=""
+if [ "$ahead_by" -gt 0 ] && [ "$files_listed" != true ]; then
+  git_reason="GitHub's comparison didn't list the changed files"
+elif [ "$file_count" -ge 300 ]; then
+  git_reason="the compare API lists at most 300 files (${file_count} here)"
+elif [ "$ahead_by" -gt 0 ] && [ "$file_count" -eq 0 ]; then
+  git_reason="GitHub's comparison listed no changed files for ${ahead_by} new commit(s)"
+fi
+if [ -n "$git_reason" ]; then
+  log_info "Listing the changes with git instead: ${git_reason}..."
   # The encoded value is as good as the token itself
   git_auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
   mask_value "$git_auth"
@@ -134,7 +161,7 @@ if [ "$file_count" -ge 300 ]; then
       git_error="${git_error//"$git_auth"/***}"
       log_warn "git said: ${git_error}"
     fi
-    log_error "${TARGET_BRANCH} has changed too much since this plan (${ahead_by} commits, ${file_count}+ files) to check what it deploys is unaffected, and git couldn't list the changes (the job needs a checkout with an origin remote and a token that can read it). ${RERUN_HINT}"
+    log_error "${TARGET_BRANCH} has ${ahead_by} new commit(s) since this plan, but ${git_reason}, and git couldn't list the changes (the job needs a checkout with an origin remote and a token that can read it), so it can't check what this deploys is unaffected. ${RERUN_HINT}"
     exit 1
   fi
 fi

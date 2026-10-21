@@ -20,7 +20,8 @@
 # - integration-tests (opt-in): tofu test with credentials.
 # - plan: plans to a file, uploads it, comments the summary on the PR.
 # - apply: waits for the apply environment's approval, refuses a stale
-#   plan, checks its digest, then applies exactly that plan.
+#   plan, checks its digest, marks the PR comment as applying (PR runs
+#   with pr-comment), then applies exactly that plan.
 # - result: the call's one check, for branch protection.
 #
 # Providers: every job that runs tofu init restores a provider cache keyed on
@@ -121,8 +122,8 @@ on:
       checks-on-push:
         description: >-
           Checks and integration tests on pushes to the default branch: always,
-          never, or unchecked (skipped when the merged PR's run passed on the
-          same watched content). Other runs always run them.
+          never, or unchecked (each skipped when the merged PR's passing run
+          ran it on the same watched content). Other runs always run them.
         type: string
         default: always
       fmt:
@@ -662,7 +663,7 @@ jobs:
       actions: read # environment protection rules; who approved, for the PR comment
       contents: read
       id-token: write # cloud OIDC
-      pull-requests: write # apply result comment
+      pull-requests: write # applying and apply result comment
     outputs:
       applied: ${{ steps.apply.outcome == 'success' }}
     steps:
@@ -712,16 +713,33 @@ jobs:
           var-files: ${{ inputs.var-files }}
           preflight-paths: ${{ needs.prepare.outputs.paths }}
           modules-token: ${{ secrets.modules-token }}
+          # The same comment the next step updates with the result
+          comment-key: ${{ inputs.pr-comment && needs.plan.outputs.comment-key || '' }}
+          comment-title: ${{ needs.plan.outputs.title }}
 
+      # Also runs when the job is cancelled or times out once the apply step
+      # has started, so the comment never stays at "Applying": an apply step
+      # that was cancelled part way (in its checks or in tofu apply) posts
+      # cancelled. A job cancelled before the apply step never marked the
+      # comment as applying, so it's left alone.
       - name: Comment apply result on PR
-        if: ${{ !cancelled() && github.event_name == 'pull_request' && inputs.pr-comment }}
+        if: >-
+          ${{
+            always() && github.event_name == 'pull_request' && inputs.pr-comment &&
+            (!cancelled() || contains(fromJSON('["success", "failure", "cancelled"]'), steps.apply.outcome))
+          }}
         uses: $/shared/pr-comment
         with:
           comment-key: ${{ needs.plan.outputs.comment-key }}
           title: ${{ needs.plan.outputs.title }}
           summary-file: ${{ runner.temp }}/tofu-plan/summary.md
           apply-environment: ${{ inputs.apply-environment }}
-          apply-status: ${{ steps.apply.outcome == 'success' && 'succeeded' || 'failed' }}
+          apply-status: >-
+            ${{
+              steps.apply.outcome == 'success' && 'succeeded' ||
+              steps.apply.outcome == 'cancelled' && 'cancelled' ||
+              'failed'
+            }}
 
   # The call's one check: every job succeeded, or was skipped for a reason
   # (nothing changed, checks off, plan only, a fork or Dependabot PR)

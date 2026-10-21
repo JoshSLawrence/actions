@@ -104,7 +104,8 @@ prepare ──> checks ──> integration-tests ──> plan ──> apply ─�
   [When it applies](#when-it-applies)), after the apply environment's
   reviewers approve. It refuses a stale plan (the PR moved on, or a watched
   path changed on the target branch since), checks the plan file's
-  SHA-256, applies exactly that plan, and updates the PR comment.
+  SHA-256, marks the PR comment as applying, applies exactly that plan, and
+  updates the PR comment with the result.
 - **result** is the call's one check (see
   [Branch protection](#branch-protection)).
 
@@ -222,7 +223,8 @@ way leaves its required checks pending forever.
   `changed-only: false`, or a diff that can't be computed always plan.
 - **Stale plans:** the same watched paths decide whether a plan is stale at
   apply time, so another deployment's var file merging first doesn't make
-  this call's plan stale.
+  this call's plan stale. A target branch rewritten since the plan (e.g.
+  force-pushed) makes every plan stale: what changed can't be told.
 
 ## When it applies
 
@@ -272,13 +274,23 @@ way leaves its required checks pending forever.
     - the push is the PR's merge commit (merge, squash or rebase), not a
       direct push;
     - the PR's latest run of the workflow on its head commit succeeded;
+    - that run ran this call's checks job (it concluded success, not
+      skipped) to skip the checks, and its integration tests job to skip
+      the integration tests: each is decided on its own, so tests the PR
+      didn't run (e.g. `integration-tests` only on pushes) run on the push;
     - every watched path (see [Change detection](#change-detection)) has
       the same content in the merge as in the PR's head. A PR merged while
       behind the default branch, which changed a watched path in the
       meantime, is checked again, so up-to-date branches aren't required.
 
     Integration tests still run after a fork's or Dependabot's PR, which
-    couldn't run them.
+    couldn't run them. It finds the call's jobs in the PR's run by the
+    calling job's name, so keep that name the same for both events.
+
+    It can't tell that the PR ran other checks than the push would: a
+    `uses: ...@v1` that moved between the PR's run and the push, or inputs
+    that differ by event. Pin a commit SHA or a tag you don't move, and
+    give both events the same inputs (or keep `always`).
 - **`test-filter`** selects test files, as OpenTofu's `-filter` does
   (`tests/unit/*.tftest.hcl`), not test or run block names.
 - **`docs`** is on by default: the module needs `terraform-docs` pinned and
@@ -727,9 +739,16 @@ Before any job runs, the prepare job checks:
   says which call applies in which environment, e.g.
   OpenTofu: `iac/identity` · `prod-eastus` → `prod`.
   - **Contents:** the plan summary, the cost and policy sections, the
-    checks' results, and where the apply stands: awaiting approval,
-    applying after merge, blocked by policy, applied (and by whose
-    approval), or failed.
+    checks' results, and where the apply stands: awaiting approval, to
+    apply after merge, blocked by policy, applying, applied (and by whose
+    approval), failed, or cancelled while applying.
+  - **Applying:** with `apply-from-pr`, once the apply is approved and the
+    plan is confirmed current (not stale, same digest), the comment says
+    it's applying, until the result replaces it. A comment that can't be
+    updated never stops the apply.
+  - **Cancelled:** a run cancelled or timed out during the apply says so
+    instead: some changes may be live and the state may still be locked
+    (`tofu force-unlock`), so check it before running again.
   - **History:** earlier versions stay in the comment's edit history (its
     **edited** menu).
   - **Out-of-order runs:** a run for an outdated PR head leaves the comment

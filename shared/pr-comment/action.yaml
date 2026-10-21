@@ -21,7 +21,11 @@ inputs:
     required: false
     default: ""
   apply-status:
-    description: none, awaiting-approval, after-merge, blocked, succeeded, or failed.
+    description: >-
+      none, awaiting-approval, after-merge, blocked, applying (approved and
+      about to apply), succeeded, failed, or cancelled (the run was
+      cancelled or timed out while applying; the text is OpenTofu's, about
+      its state and lock).
     required: false
     default: none
   apply-environment:
