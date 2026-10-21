@@ -37,6 +37,8 @@
 #
 # Environment variables:
 #   CHECKS_ON_PUSH    - always (default), never or unchecked
+#   INTEGRATION_TESTS - "true" if the call runs integration tests (default
+#                       false): only then do the notes mention them
 #   EVENT_NAME        - github.event_name
 #   REF               - github.ref
 #   DEFAULT_BRANCH    - the repository's default branch
@@ -63,7 +65,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 CHECKS_ON_PUSH="${CHECKS_ON_PUSH:-always}"
-log_config CHECKS_ON_PUSH EVENT_NAME REF DEFAULT_BRANCH SHA PATHS JOB_CHECK_RUN_ID
+INTEGRATION_TESTS="${INTEGRATION_TESTS:-false}"
+log_config CHECKS_ON_PUSH INTEGRATION_TESTS EVENT_NAME REF DEFAULT_BRANCH SHA PATHS JOB_CHECK_RUN_ID
+
+# The notes mention the integration tests only for a call that has them
+tests_on() { is_true "$INTEGRATION_TESTS"; }
 
 # Usage: decide <skip-checks> <skip-integration-tests>
 decide() {
@@ -90,7 +96,10 @@ if [ "${EVENT_NAME:-}" != push ] || [ "${REF:-}" != "refs/heads/${DEFAULT_BRANCH
   exit 0
 fi
 if [ "$CHECKS_ON_PUSH" = never ]; then
-  skip true true "checks-on-push is never, so this push skipped the checks and integration tests."
+  if tests_on; then
+    skip true true "checks-on-push is never, so this push skipped the checks and integration tests."
+  fi
+  skip true true "checks-on-push is never, so this push skipped the checks."
 fi
 
 require_tool gh "GitHub CLI (gh)"
@@ -187,7 +196,10 @@ checks_job="$(pr_job Checks)"
 tests_job="$(pr_job "Integration tests")"
 log_info "PR #${pr}'s run of '${call}': checks ${checks_job}, integration tests ${tests_job}"
 if [ "$checks_job" != success ] && [ "$tests_job" != success ]; then
-  run_checks "PR #${pr}'s run on ${head:0:7} ran neither the checks (${checks_job}) nor the integration tests (${tests_job})"
+  if tests_on; then
+    run_checks "PR #${pr}'s run on ${head:0:7} ran neither the checks (${checks_job}) nor the integration tests (${tests_job})"
+  fi
+  run_checks "PR #${pr}'s run on ${head:0:7} didn't run the checks (${checks_job})"
 fi
 
 # --- The same content -----------------------------------------------------------
@@ -225,14 +237,20 @@ done <<< "$differ"
 if [ "$(jq -r '.head.repo.full_name // ""' "$WORK_DIR/pr.json")" != "$GITHUB_REPOSITORY" ] ||
   [ "$(jq -r .user.login "$WORK_DIR/pr.json")" = "dependabot[bot]" ]; then
   if [ "$checks_job" != success ]; then
-    run_checks "PR #${pr}'s run on ${head:0:7} didn't run the checks (${checks_job}), and its integration tests can't have run (a fork's or Dependabot's PR)"
+    run_checks "PR #${pr}'s run on ${head:0:7} didn't run the checks (${checks_job})"
   fi
-  skip true false "PR #${pr} checked the same content (${head:0:7}), so this push skipped the checks. It's from a fork or Dependabot, which can't run integration tests, so they run here."
+  if tests_on; then
+    skip true false "PR #${pr} checked the same content (${head:0:7}), so this push skipped the checks. It's from a fork or Dependabot, which can't run integration tests, so they run here."
+  fi
+  skip true false "PR #${pr} checked the same content (${head:0:7}), so this push skipped the checks."
 fi
 if [ "$checks_job" != success ]; then
   skip false true "PR #${pr} ran the integration tests on the same content (${head:0:7}), so this push skipped them; not the checks, which that run didn't run (${checks_job})."
 fi
 if [ "$tests_job" != success ]; then
-  skip true false "PR #${pr} checked the same content (${head:0:7}), so this push skipped the checks; not the integration tests, which that run didn't run (${tests_job})."
+  if tests_on; then
+    skip true false "PR #${pr} checked the same content (${head:0:7}), so this push skipped the checks; not the integration tests, which that run didn't run (${tests_job})."
+  fi
+  skip true false "PR #${pr} checked the same content (${head:0:7}), so this push skipped the checks."
 fi
 skip true true "PR #${pr} checked the same content (${head:0:7}), so this push skipped the checks and integration tests."
