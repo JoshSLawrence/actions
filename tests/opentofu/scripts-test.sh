@@ -1312,7 +1312,7 @@ pr_job_set() {
 pr_checked() {
   : > "$WORK/output"
   env PATH="$WORK/prbin:$PATH" GH_STUB_DIR="$WORK/pr" GITHUB_OUTPUT="$WORK/output" \
-    GH_TOKEN=t GITHUB_REPOSITORY=org/repo GITHUB_RUN_ID=9 JOB_CHECK_RUN_ID=31 CHECKS_ON_PUSH=unchecked \
+    GH_TOKEN=t GITHUB_REPOSITORY=org/repo GITHUB_RUN_ID=9 JOB_CHECK_RUN_ID=31 CHECKS_ON_PUSH=unchecked INTEGRATION_TESTS=true \
     EVENT_NAME=push REF=refs/heads/main DEFAULT_BRANCH=main SHA=push1 \
     PATHS='iac/app !iac/app/**/*.tfvars iac/app/deployments/prod.tfvars .github/workflows/tofu.yaml' \
     "$@" "$SCRIPTS/pr-checked.sh" > "$WORK/log" 2>&1 || return 1
@@ -1376,6 +1376,18 @@ expect "a PR run that skipped the integration tests skips only the checks" \
   "checks=true tests=false" "$(pr_checked)"
 expect "...and notes why they run" "which that run didn't run (skipped)" \
   "$(sed -n 's/.*\(which that run didn.t run (skipped)\).*/\1/p' "$WORK/output")"
+# A call without integration tests: the notes don't mention them
+note_of() { sed -n 's/^note=//p' "$WORK/output"; }
+expect "a call without integration tests skips the checks, the note saying only that" \
+  "checks=true tests=false|PR #5 checked the same content (head1), so this push skipped the checks." \
+  "$(pr_checked INTEGRATION_TESTS=false)|$(note_of)"
+expect "...and never says the same" \
+  "checks=true tests=true|checks-on-push is never, so this push skipped the checks." \
+  "$(pr_checked INTEGRATION_TESTS=false CHECKS_ON_PUSH=never GH_STUB_FAIL=repos/)|$(note_of)"
+pr_edit pulls '.[0].head.repo.full_name = "fork/repo"'
+expect "...and so does a fork's PR" \
+  "checks=true tests=false|PR #5 checked the same content (head1), so this push skipped the checks." \
+  "$(pr_checked INTEGRATION_TESTS=false)|$(note_of)"
 pr_fixture
 pr_job_set "prod / Checks" skipped
 expect "a PR run that skipped the checks skips only the integration tests" \
