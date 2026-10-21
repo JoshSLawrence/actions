@@ -122,8 +122,8 @@ on:
       checks-on-push:
         description: >-
           Checks and integration tests on pushes to the default branch: always,
-          never, or unchecked (skipped when the merged PR's run passed on the
-          same watched content). Other runs always run them.
+          never, or unchecked (each skipped when the merged PR's passing run
+          ran it on the same watched content). Other runs always run them.
         type: string
         default: always
       fmt:

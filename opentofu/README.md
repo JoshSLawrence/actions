@@ -273,13 +273,23 @@ way leaves its required checks pending forever.
     - the push is the PR's merge commit (merge, squash or rebase), not a
       direct push;
     - the PR's latest run of the workflow on its head commit succeeded;
+    - that run ran this call's checks job (it concluded success, not
+      skipped) to skip the checks, and its integration tests job to skip
+      the integration tests: each is decided on its own, so tests the PR
+      didn't run (e.g. `integration-tests` only on pushes) run on the push;
     - every watched path (see [Change detection](#change-detection)) has
       the same content in the merge as in the PR's head. A PR merged while
       behind the default branch, which changed a watched path in the
       meantime, is checked again, so up-to-date branches aren't required.
 
     Integration tests still run after a fork's or Dependabot's PR, which
-    couldn't run them.
+    couldn't run them. It finds the call's jobs in the PR's run by the
+    calling job's name, so keep that name the same for both events.
+
+    It can't tell that the PR ran other checks than the push would: a
+    `uses: ...@v1` that moved between the PR's run and the push, or inputs
+    that differ by event. Pin a commit SHA or a tag you don't move, and
+    give both events the same inputs (or keep `always`).
 - **`test-filter`** selects test files, as OpenTofu's `-filter` does
   (`tests/unit/*.tftest.hcl`), not test or run block names.
 - **`docs`** is on by default: the module needs `terraform-docs` pinned and

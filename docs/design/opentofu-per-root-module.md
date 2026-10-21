@@ -587,15 +587,24 @@ deployment's variables can trip a check the module's defaults don't:
   (the git trees API: a squash merge's head isn't in the default branch's
   history). A PR merged while behind the default branch, which changed a
   watched path since, merges content nothing checked, so that push checks;
-  requiring up-to-date branches isn't needed. Integration tests still run
-  after a fork's or Dependabot's PR, which couldn't run them. Anything it
-  can't establish (a direct push, an API error, a tree too large for the
-  API) runs everything. The prepare job gets `pull-requests: read`, which
+  requiring up-to-date branches isn't needed. A run succeeds with jobs
+  skipped (e.g. `integration-tests: ${{ github.event_name == 'push' }}`),
+  so the checks are skipped only if that run's checks job for the same
+  call concluded success, and the integration tests only if its
+  integration tests job did, each on its own. The call's jobs are found by
+  name: a reusable workflow's jobs show as `<caller job> / <job>`, and the
+  prepare job reads its own name (`job.check_run_id`) for the prefix.
+  Integration tests still run after a fork's or Dependabot's PR, which
+  couldn't run them. Anything it can't establish (a direct push, an API
+  error, a tree too large for the API, a call it can't find in the PR's
+  run) runs everything. The prepare job gets `pull-requests: read`, which
   callers already grant. The comparison is with the PR's head, not the test
   merge commit the PR's run checked out, which GitHub doesn't keep; the two
   differ only if the default branch changed a watched path and changed it
-  back while the PR was open. `always` stays the default: skipping is an
-  opt-in.
+  back while the PR was open. Not detected: a caller's `uses: ...@v1` that
+  moved between the PR's run and the push, and inputs that differ by
+  event; callers pin a commit SHA or a tag they don't move. `always` stays
+  the default: skipping is an opt-in.
 - `test-filter` selects test files, as OpenTofu's `-filter` does
   (`tests/unit/*.tftest.hcl`), not test or run block names.
 - `docs` is on by default, so a module needs `terraform-docs` pinned and a

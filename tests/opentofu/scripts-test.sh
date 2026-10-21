@@ -1188,8 +1188,9 @@ expect "pr-comment: ...and without an environment, just this plan" "1" \
 # --- checks-on-push ----------------------------------------------------------------
 
 # A stub gh that answers pr-checked.sh's reads from files in $GH_STUB_DIR:
-# the PRs of the pushed commit, this run (workflow 77), the PR's runs and
-# the two trees. GH_STUB_FAIL=<text> fails the calls whose path has it.
+# the PRs of the pushed commit, this run (workflow 77), this job (check run
+# 31), the PR's runs, the jobs of its latest run (22) and the two trees.
+# GH_STUB_FAIL=<text> fails the calls whose path has it.
 mkdir -p "$WORK/prbin" "$WORK/pr"
 cat > "$WORK/prbin/gh" << 'STUB'
 #!/usr/bin/env bash
@@ -1200,7 +1201,9 @@ fi
 case "$*" in
   *"/commits/"*"/pulls"*) file=pulls ;;
   *"/actions/workflows/77/runs"*"head_sha=head1"*) file=runs ;;
-  *"/actions/runs/9"*) file=run ;;
+  *"/actions/jobs/31") file=job ;;
+  *"/actions/runs/22/jobs?filter=latest"*) file=jobs ;;
+  *"/actions/runs/9") file=run ;;
   *"/git/trees/"*) file="tree-$(sed 's|.*/git/trees/\([^?]*\).*|\1|' <<< "$*")" ;;
   *) echo "gh stub: unexpected call: $*" >&2; exit 1 ;;
 esac
@@ -1208,15 +1211,28 @@ cat "$GH_STUB_DIR/$file.json"
 STUB
 chmod +x "$WORK/prbin/gh"
 
-# The merge of PR #5 (head1) as push1, its passing run, and the same tree
-# in both, with one file outside the watched paths
+# The merge of PR #5 (head1) as push1, its passing run (22, after a failed
+# one), which ran this call's ("prod") checks and integration tests, and the
+# same tree in both, with one file outside the watched paths
 pr_fixture() {
   jq -n '[{number: 5, merged_at: "2026-10-01T00:00:00Z", merge_commit_sha: "push1",
     base: {ref: "main"}, head: {sha: "head1", repo: {full_name: "org/repo"}}, user: {login: "alice"}}]' \
     > "$WORK/pr/pulls.json"
   echo '{"workflow_id": 77}' > "$WORK/pr/run.json"
-  jq -n '{workflow_runs: [{created_at: "2026-10-01T01:00:00Z", conclusion: "failure"},
-    {created_at: "2026-10-01T02:00:00Z", conclusion: "success"}]}' > "$WORK/pr/runs.json"
+  jq -n '{workflow_runs: [{id: 21, created_at: "2026-10-01T01:00:00Z", conclusion: "failure"},
+    {id: 22, created_at: "2026-10-01T02:00:00Z", conclusion: "success"}]}' > "$WORK/pr/runs.json"
+  echo '{"id": 31, "name": "prod / Prepare"}' > "$WORK/pr/job.json"
+  # Two pages, as gh api --paginate prints them; another call (dev) too
+  jq -n '{total_count: 8, jobs: [
+    {name: "dev / Prepare", conclusion: "success"},
+    {name: "dev / Checks", conclusion: "skipped"},
+    {name: "dev / Integration tests", conclusion: "skipped"},
+    {name: "prod / Prepare", conclusion: "success"}]}' > "$WORK/pr/jobs.json"
+  jq -n '{total_count: 8, jobs: [
+    {name: "prod / Checks", conclusion: "success"},
+    {name: "prod / Integration tests", conclusion: "success"},
+    {name: "prod / Plan", conclusion: "success"},
+    {name: "prod / Result", conclusion: "success"}]}' >> "$WORK/pr/jobs.json"
   jq -n '{truncated: false, tree: [
     {path: "iac", type: "tree", sha: "t1"},
     {path: "iac/app/main.tf", type: "blob", sha: "a1"},
@@ -1227,10 +1243,15 @@ pr_fixture() {
   cp "$WORK/pr/tree-head1.json" "$WORK/pr/tree-push1.json"
 }
 
-# Usage: pr_edit <file> '<jq filter>'
+# Usage: pr_edit <file> '<jq filter>'   (applied to each page)
 pr_edit() {
   jq "$2" "$WORK/pr/$1.json" > "$WORK/pr/edit.json"
   mv "$WORK/pr/edit.json" "$WORK/pr/$1.json"
+}
+
+# Usage: pr_job_set '<job name>' <conclusion>
+pr_job_set() {
+  pr_edit jobs "(.jobs[] | select(.name == \"$1\")).conclusion = \"$2\""
 }
 
 # Run pr-checked.sh as the merge's push run would; print its outputs as
@@ -1239,7 +1260,7 @@ pr_edit() {
 pr_checked() {
   : > "$WORK/output"
   env PATH="$WORK/prbin:$PATH" GH_STUB_DIR="$WORK/pr" GITHUB_OUTPUT="$WORK/output" \
-    GH_TOKEN=t GITHUB_REPOSITORY=org/repo GITHUB_RUN_ID=9 CHECKS_ON_PUSH=unchecked \
+    GH_TOKEN=t GITHUB_REPOSITORY=org/repo GITHUB_RUN_ID=9 JOB_CHECK_RUN_ID=31 CHECKS_ON_PUSH=unchecked \
     EVENT_NAME=push REF=refs/heads/main DEFAULT_BRANCH=main SHA=push1 \
     PATHS='iac/app !iac/app/**/*.tfvars iac/app/deployments/prod.tfvars .github/workflows/tofu.yaml' \
     "$@" "$SCRIPTS/pr-checked.sh" > "$WORK/log" 2>&1 || return 1
@@ -1296,9 +1317,43 @@ pr_fixture
 pr_edit pulls '.[0].user.login = "dependabot[bot]"'
 expect "...and the same for Dependabot" "checks=true tests=false" "$(pr_checked)"
 
+# The run passed, but which of this call's jobs ran decides what's skipped
+pr_fixture
+pr_job_set "prod / Integration tests" skipped
+expect "a PR run that skipped the integration tests skips only the checks" \
+  "checks=true tests=false" "$(pr_checked)"
+expect "...and notes why they run" "which that run didn't run (skipped)" \
+  "$(sed -n 's/.*\(which that run didn.t run (skipped)\).*/\1/p' "$WORK/output")"
+pr_fixture
+pr_job_set "prod / Checks" skipped
+expect "a PR run that skipped the checks skips only the integration tests" \
+  "checks=false tests=true" "$(pr_checked)"
+pr_job_set "prod / Integration tests" skipped
+expect "...and one that ran neither checks" "checks=false tests=false" "$(pr_checked)"
+pr_fixture
+pr_job_set "prod / Checks" skipped
+pr_edit pulls '.[0].head.repo.full_name = "fork/repo"'
+expect "...as does a fork's PR whose run skipped the checks" "checks=false tests=false" "$(pr_checked)"
+pr_fixture
+pr_edit jobs '.jobs |= map(select(.name != "prod / Integration tests"))'
+expect "a job missing from the PR's run counts as not run" "checks=true tests=false" "$(pr_checked)"
+pr_fixture
+pr_edit jobs '.jobs |= map(if .name == "dev / Checks" then .name = "prod / Checks" else . end)'
+expect "two jobs of the same name count as not run" "checks=false tests=true" "$(pr_checked)"
+pr_fixture
+echo '{"id": 31, "name": "Prepare"}' > "$WORK/pr/job.json"
+expect "a job name that doesn't name the call checks" "checks=false tests=false" "$(pr_checked)"
+pr_fixture
+echo '{"id": 31, "name": "staging / Prepare"}' > "$WORK/pr/job.json"
+expect "...and so does a call the PR's run doesn't have" "checks=false tests=false" "$(pr_checked)"
+pr_fixture
+expect "...and so does an empty job.check_run_id" "checks=false tests=false" "$(pr_checked JOB_CHECK_RUN_ID=)"
+
 pr_fixture
 expect "the PRs can't be looked up: it checks, without failing" "checks=false tests=false" "$(pr_checked GH_STUB_FAIL=/pulls)"
 expect "...the runs can't be listed" "checks=false tests=false" "$(pr_checked GH_STUB_FAIL=/actions/)"
+expect "...this job can't be read" "checks=false tests=false" "$(pr_checked GH_STUB_FAIL=/actions/jobs/)"
+expect "...the PR run's jobs can't be listed" "checks=false tests=false" "$(pr_checked GH_STUB_FAIL=/runs/22/jobs)"
 expect "...a tree can't be read" "checks=false tests=false" "$(pr_checked GH_STUB_FAIL=/git/trees/push1)"
 
 # details_open: the summary, a <br> for a line of space, then a blank line
