@@ -223,7 +223,8 @@ way leaves its required checks pending forever.
   `changed-only: false`, or a diff that can't be computed always plan.
 - **Stale plans:** the same watched paths decide whether a plan is stale at
   apply time, so another deployment's var file merging first doesn't make
-  this call's plan stale.
+  this call's plan stale. A target branch rewritten since the plan (e.g.
+  force-pushed) makes every plan stale: what changed can't be told.
 
 ## When it applies
 

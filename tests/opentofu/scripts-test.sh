@@ -7,8 +7,9 @@
 # credentials mapping (azure-env.sh), the provider cache (provider-cache.sh),
 # the plan names (names.sh), and the drift report (drift-report.sh, with a
 # stubbed gh), plus two shared helpers the
-# OpenTofu workflow depends on: the apply preflight's git fallback
-# (apply-preflight.sh, with a stubbed gh) and scope_mise_to_module, and
+# OpenTofu workflow depends on: the apply preflight's git fallback and
+# incomplete comparisons (apply-preflight.sh, with a stubbed gh) and
+# scope_mise_to_module, and
 # what a push skips with checks-on-push (pr-checked.sh, with a stubbed gh),
 # the plan check before an apply (check-plan.sh) and the PR comment's
 # applying and cancelled statuses (shared/scripts/pr-comment.sh, with a
@@ -974,7 +975,7 @@ make_origin() {
 }
 
 compare_response() {
-  jq -n --argjson n "$1" '{ahead_by: 1, files: [range($n) | {filename: "unrelated/f\(.).txt"}]}' > "$WORK/compare.json"
+  jq -n --argjson n "$1" '{status: "ahead", ahead_by: 1, behind_by: 0, files: [range($n) | {filename: "unrelated/f\(.).txt"}]}' > "$WORK/compare.json"
 }
 
 # Usage: preflight [VAR=value ...]
@@ -998,7 +999,7 @@ fi
 
 # Usage: compare_files <file>...   (the compare API's answer listing them)
 compare_files() {
-  jq -n '{ahead_by: 1, files: [$ARGS.positional[] | {filename: .}]}' --args "$@" > "$WORK/compare.json"
+  jq -n '{status: "ahead", ahead_by: 1, behind_by: 0, files: [$ARGS.positional[] | {filename: .}]}' --args "$@" > "$WORK/compare.json"
 }
 OWN_VAR_FILE_ONLY='iac/app !iac/app/**/*.tfvars iac/app/deployments/prod.tfvars'
 
@@ -1017,10 +1018,54 @@ expect_refused "...but a file included again after the exclusion does" "(iac/app
   ../../shared/scripts/apply-preflight.sh PATH="$WORK/bin:$PATH" GH_STUB_RESPONSE="$WORK/compare.json" \
   GH_TOKEN=secret-token GITHUB_REPOSITORY=org/repo TARGET_BRANCH=main TARGET_SHA="$BASE" PREFLIGHT_PATHS="$OWN_VAR_FILE_ONLY"
 
-jq -n '{ahead_by: 1, files: [{filename: "iac/other/main.tf", previous_filename: "iac/app/main.tf", status: "renamed"}]}' > "$WORK/compare.json"
+jq -n '{status: "ahead", ahead_by: 1, behind_by: 0, files: [{filename: "iac/other/main.tf", previous_filename: "iac/app/main.tf", status: "renamed"}]}' > "$WORK/compare.json"
 expect_refused "a file renamed out of a watched path makes the plan stale" "(iac/app/main.tf)" \
   ../../shared/scripts/apply-preflight.sh PATH="$WORK/bin:$PATH" GH_STUB_RESPONSE="$WORK/compare.json" \
   GH_TOKEN=secret-token GITHUB_REPOSITORY=org/repo TARGET_BRANCH=main TARGET_SHA="$BASE" PREFLIGHT_PATHS=iac/app
+
+# An incomplete comparison never calls the plan current: no file list (or an
+# empty one) for new commits asks git, and a target branch that no longer
+# contains the planned commit, or an answer without the counts, refuses
+# Usage: expect_current <name> [VAR=value ...]
+expect_current() {
+  local name="$1"
+  shift
+  cases=$((cases + 1))
+  if preflight "$@"; then
+    log_success "$name"
+  else
+    log_error "${name}: refused"
+    sed 's/^/    /' "$WORK/log" >&2
+    failures=$((failures + 1))
+  fi
+}
+# Usage: preflight_refused <name> <text in the log> [VAR=value ...]
+preflight_refused() {
+  local name="$1" text="$2"
+  shift 2
+  expect_refused "$name" "$text" ../../shared/scripts/apply-preflight.sh PATH="$WORK/bin:$PATH" \
+    GH_STUB_RESPONSE="$WORK/compare.json" GH_TOKEN=secret-token GITHUB_REPOSITORY=org/repo \
+    TARGET_BRANCH=main TARGET_SHA="$BASE" PREFLIGHT_PATHS=iac/app "$@"
+}
+
+echo '{"status": "ahead", "ahead_by": 1, "behind_by": 0}' > "$WORK/compare.json"
+preflight_refused "no file list for new commits: git finds the relevant change" \
+  "Files this plan depends on changed on main since it was made (iac/app/main.tf)"
+expect "...saying why it asked git" "1" "$(grep -c "GitHub's comparison didn't list the changed files" "$WORK/log")"
+expect_current "...and a change elsewhere doesn't stop the apply" PREFLIGHT_PATHS=iac/other
+echo '{"status": "ahead", "ahead_by": 1, "behind_by": 0, "files": []}' > "$WORK/compare.json"
+preflight_refused "no files listed for new commits: git finds the relevant change" "(iac/app/main.tf)"
+echo '{"status": "identical", "ahead_by": 0, "behind_by": 0, "files": []}' > "$WORK/compare.json"
+expect_current "no new commits: the plan is current"
+expect "...without asking git" "0" "$(grep -c "with git instead" "$WORK/log")"
+echo '{"status": "diverged", "ahead_by": 1, "behind_by": 2, "files": [{"filename": "docs/readme.md"}]}' > "$WORK/compare.json"
+preflight_refused "a rewritten target branch (diverged) refuses, even with no watched change listed" \
+  "main no longer contains" PREFLIGHT_PATHS=iac/other
+expect "...and what to do" "1" "$(grep -c "the branch was rewritten.*Run the workflow on main again to plan" "$WORK/log")"
+echo '{"status": "behind", "ahead_by": 0, "behind_by": 1, "files": []}' > "$WORK/compare.json"
+preflight_refused "...and so does one only behind the planned commit" "main no longer contains"
+echo '{"status": "ahead", "files": []}' > "$WORK/compare.json"
+preflight_refused "a comparison without the counts refuses" "didn't say how far apart they are"
 
 compare_response 300
 expect_refused "300 files: git finds the relevant change the API list cut off" \
@@ -1106,6 +1151,12 @@ else
   sed 's/^/    /' "$WORK/log" >&2
   failures=$((failures + 1))
 fi
+
+# No file list and no usable checkout: refused, never called current
+echo '{"status": "ahead", "ahead_by": 1, "behind_by": 0}' > "$WORK/compare.json"
+preflight_refused "no file list without a usable checkout: refused, saying why" \
+  "GitHub's comparison didn't list the changed files, and git couldn't list the changes"
+compare_response 300
 
 # A checkout whose origin can't be fetched from: git's own error is logged
 git init -q "$WORK/bad-origin"

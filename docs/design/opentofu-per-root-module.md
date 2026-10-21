@@ -536,7 +536,10 @@ prepare job decides whether the run plans:
 - **Stale plans:** the same watched paths decide whether a plan is stale
   at apply time (something merged into them since). The apply preflight
   reads `!` entries the same way, for every area, and counts a renamed
-  file's old path as changed.
+  file's old path as changed. It never calls a plan current on an
+  incomplete comparison: when the compare API lists no files (or 300, its
+  cap) for new commits, git lists them, and a target branch that no longer
+  contains the planned commit (rewritten) refuses.
 
 ### When it applies
 
