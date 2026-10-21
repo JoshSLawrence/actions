@@ -1061,7 +1061,8 @@ expect "...without asking git" "0" "$(grep -c "with git instead" "$WORK/log")"
 echo '{"status": "diverged", "ahead_by": 1, "behind_by": 2, "files": [{"filename": "docs/readme.md"}]}' > "$WORK/compare.json"
 preflight_refused "a rewritten target branch (diverged) refuses, even with no watched change listed" \
   "main no longer contains" PREFLIGHT_PATHS=iac/other
-expect "...and what to do" "1" "$(grep -c "the branch was rewritten.*Run the workflow on main again to plan" "$WORK/log")"
+# -q, not -c: under Actions, log_error prints the line and an annotation
+expect "...and what to do" "yes" "$(grep -q "the branch was rewritten.*Run the workflow on main again to plan" "$WORK/log" && echo yes || echo no)"
 echo '{"status": "behind", "ahead_by": 0, "behind_by": 1, "files": []}' > "$WORK/compare.json"
 preflight_refused "...and so does one only behind the planned commit" "main no longer contains"
 echo '{"status": "ahead", "files": []}' > "$WORK/compare.json"
