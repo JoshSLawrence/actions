@@ -133,7 +133,7 @@ apply_section() {
     cancelled)
       echo "### ⚠️ Apply cancelled"
       echo ""
-      echo "The [workflow run](${RUN_URL}) was cancelled or timed out while applying this plan${ENVIRONMENT:+ to \`${ENVIRONMENT}\`}, so some changes may already be live and the state may still be locked: check the state (release a leftover lock with \`tofu force-unlock\`) before running it again."
+      echo "The [workflow run](${RUN_URL}) was cancelled or timed out during the apply step for this plan${ENVIRONMENT:+ to \`${ENVIRONMENT}\`}. If the apply had started, some changes may already be live and the state may still be locked: check the state (release a leftover lock with \`tofu force-unlock\`) before running it again."
       ;;
   esac
 }

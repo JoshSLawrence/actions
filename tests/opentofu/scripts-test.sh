@@ -1228,13 +1228,13 @@ expect "pr-comment: ...and without an environment, just that it's applying" "1" 
 # A run cancelled or timed out while applying replaces "Applying" with what
 # to check before running again
 expect "pr-comment: cancelled says the run stopped while applying and what to check" \
-  "### ⚠️ Apply cancelled||The [workflow run](https://github.com/org/repo/actions/runs/9) was cancelled or timed out while applying this plan to \`prod\`, so some changes may already be live and the state may still be locked: check the state (release a leftover lock with \`tofu force-unlock\`) before running it again." \
+  "### ⚠️ Apply cancelled||The [workflow run](https://github.com/org/repo/actions/runs/9) was cancelled or timed out during the apply step for this plan to \`prod\`. If the apply had started, some changes may already be live and the state may still be locked: check the state (release a leftover lock with \`tofu force-unlock\`) before running it again." \
   "$(comment_body APPLY_STATUS=cancelled APPLY_ENVIRONMENT=prod | sed -n '/^### ⚠️/,/^The \[workflow run\]/p' | tr '\n' '|' | sed 's/|$//')"
 expect "pr-comment: ...below the plan, and no longer says it's applying" "1 0" \
   "$(body="$(comment_body APPLY_STATUS=cancelled APPLY_ENVIRONMENT=prod)"
     echo "$(grep -c '^### Plan: 1 to add$' <<< "$body") $(grep -c 'Applying' <<< "$body")")"
 expect "pr-comment: ...and without an environment, just this plan" "1" \
-  "$(comment_body APPLY_STATUS=cancelled | grep -c 'timed out while applying this plan, so some changes')"
+  "$(comment_body APPLY_STATUS=cancelled | grep -c 'during the apply step for this plan. If the apply had started, some changes')"
 
 # --- checks-on-push ----------------------------------------------------------------
 
