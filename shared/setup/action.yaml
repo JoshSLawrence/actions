@@ -47,7 +47,7 @@ runs:
     # export is off because it would read configs above the directory; the
     # scripts run tools with `mise exec`, which applies the directory's [env].
     - name: Install mise
-      uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+      uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
       with:
         # The default lives here rather than on the input, so callers passing
         # an empty string through (like the reusable workflows) get it too.
