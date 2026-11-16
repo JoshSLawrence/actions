@@ -717,8 +717,33 @@ plan STUB_REPORT=one DACPAC_DIR="$unchanged"
 expect_file_has "plan: a single operation" "$PLAN/summary.md" "### 📋 Plan: 1 to create"
 
 expect_refused "plan: a missing database" "Database sqldb-dev doesn't exist on sql-dev.database.windows.net" plan.sh WORKING_DIR=proj DACPAC_DIR="$WORK/dacpac-scripts" PROFILE=deployments/dev.publish.xml PLAN_DIR="$PLAN" WORK_DIR="$WORK/plan-work" STUB_SCRIPT=script-create-database.sql
+expect_log "plan: ... and names the input that allows it" "set the workflow's create-database input"
 expect_file_has "plan: ... also in the summary" "$PLAN/summary.md" "Plan failed"
 expect "plan: ... with no changes reported" "false" "$(output has-changes)"
+expect "plan: ... and nothing created" "false" "$(output creates-database)"
+
+# create-database: a missing database is created by the publish
+plan STUB_SCRIPT=script-create-database.sql CREATE_DATABASE=true
+expect "plan: create-database lets a missing database pass" "0" "$status"
+expect "plan: ... has changes" "true" "$(output has-changes)"
+expect "plan: ... creates the database" "true" "$(output creates-database)"
+expect "plan: ... recorded in target.json" "true true" "$(jq -r '"\(.create_database) \(.creates_database)"' "$PLAN/deploy/target.json")"
+expect "plan: ... in the digest" "$(dir_sha256 "$PLAN/deploy")" "$(output plan-sha256)"
+expect_file_has "plan: ... the headline says so first" "$PLAN/summary.md" "### 📋 Plan: create the database, 2 to create, 1 to alter, 1 to rename, deployment scripts changed"
+expect_file_has "plan: ... with a note on the options" "$PLAN/summary.md" "doesn't exist on \`sql-dev.database.windows.net\`, so the publish creates it (create-database)"
+expect_file_has "plan: ... and the deploy options" "$PLAN/summary.md" "- create-database: \`true\`"
+expect_log "plan: ... and warns" "the publish will create it (create-database)"
+plan STUB_SCRIPT=script-create-database.sql CREATE_DATABASE=true STUB_REPORT=none DACPAC_DIR="$WORK/dacpac-plain"
+expect "plan: creating the database alone is a change" "true" "$(output has-changes)"
+expect "plan: ... and the headline says only that" "1" "$(grep -cx '### 📋 Plan: create the database' "$PLAN/summary.md")"
+plan CREATE_DATABASE=true
+expect "plan: create-database with an existing database" "0" "$status"
+expect "plan: ... creates nothing" "false" "$(output creates-database)"
+expect "plan: ... recorded in target.json" "true false" "$(jq -r '"\(.create_database) \(.creates_database)"' "$PLAN/deploy/target.json")"
+expect_file_lacks "plan: ... and the summary has no note" "$PLAN/summary.md" "so the publish creates it"
+expect_file_has "plan: ... but shows the input" "$PLAN/summary.md" "- create-database: \`true\`"
+plan
+expect "plan: create-database is off by default" "false false" "$(jq -r '"\(.create_database) \(.creates_database)"' "$PLAN/deploy/target.json")"
 reset_stub_log
 expect_refused "plan: a SqlPackage failure says what to check" "must reach sql-dev.database.windows.net (a private endpoint needs a runner in the network)" plan.sh WORKING_DIR=proj DACPAC_DIR="$WORK/dacpac-scripts" PROFILE=deployments/dev.publish.xml PLAN_DIR="$PLAN" WORK_DIR="$WORK/plan-work" STUB_FAIL=DeployReport
 expect_file_has "plan: ... and the summary has its output" "$PLAN/summary.md" "stub sqlpackage: DeployReport failed"
@@ -750,6 +775,13 @@ expect_file_lacks "plan: the offline profile has no connection string" "$PLAN/de
 expect_file_has "plan: ... but keeps its namespace" "$PLAN/deploy/profile.publish.xml" "$PROFILE_XMLNS"
 expect_file_has "plan: the summary says it isn't a database" "$PLAN/summary.md" "Planned against \`ci/baseline.dacpac\`, not a database"
 expect_refused "plan: a missing target-dacpac" "target-dacpac ci/none.dacpac doesn't exist" plan.sh WORKING_DIR=proj DACPAC_DIR="$WORK/dacpac-scripts" PROFILE=deployments/dev.publish.xml PLAN_DIR="$PLAN" WORK_DIR="$WORK/plan-work" TARGET_DACPAC=ci/none.dacpac
+plan TARGET_DACPAC=ci/baseline.dacpac MISE_PINNED="dotnet dotnet:microsoft.sqlpackage yq" STUB_SCRIPT=script-create-database.sql
+expect "plan: offline never asks whether the database exists" "0" "$status"
+expect "plan: ... nor creates it" "false" "$(output creates-database)"
+plan TARGET_DACPAC=ci/baseline.dacpac MISE_PINNED="dotnet dotnet:microsoft.sqlpackage yq" CREATE_DATABASE=true
+expect_file_has "plan: offline, create-database says it is ignored" "$PLAN/summary.md" "- create-database: \`true\` (ignored: planned against a dacpac)"
+plan TARGET_DACPAC=ci/baseline.dacpac MISE_PINNED="dotnet dotnet:microsoft.sqlpackage yq"
+expect "plan: offline, create-database off says just false" "1" "$(grep -cxF -- "- create-database: \`false\`" "$PLAN/summary.md")"
 
 # --- Secrets ------------------------------------------------------------------------------------------
 
@@ -809,11 +841,11 @@ sed 's/^"//; s/"$//' "$plan_rsp" | grep -v '^/Action:\|^/OutputPath:\|^/AccessTo
 
 apply
 expect "apply: succeeds" "0" "$status"
-expect "apply: a live report, then a publish" "DeployReport Publish" "$(tr '\n' ' ' < "$STUB_LOG/actions.log" | sed 's/ $//')"
-sed 's/^"//; s/"$//' "$STUB_LOG/calls/2.rsp" | grep -v '^/Action:\|^/OutputPath:\|^/AccessToken:' > "$WORK/publish.args"
+expect "apply: a live report, a script (does the database exist?), then a publish" "DeployReport Script Publish" "$(tr '\n' ' ' < "$STUB_LOG/actions.log" | sed 's/ $//')"
+sed 's/^"//; s/"$//' "$STUB_LOG/calls/$(last_call_of Publish).rsp" | grep -v '^/Action:\|^/OutputPath:\|^/AccessToken:' > "$WORK/publish.args"
 expect "apply: publishes with the plan's arguments" "" "$(diff "$WORK/plan.args" "$WORK/publish.args" || true)"
 expect_file_has "apply: ... from the plan's own profile" "$WORK/publish.args" "/Profile:${PLAN}/deploy/profile.publish.xml"
-expect "apply: a fresh token for each call" "2" "$(grep -c 'get-access-token' "$STUB_LOG/az.log")"
+expect "apply: a fresh token for each call" "3" "$(grep -c 'get-access-token' "$STUB_LOG/az.log")"
 expect "apply: the response files are deleted" "0" "$(find "$WORK/runner" -name 'sqlpackage.*' | wc -l | tr -d ' ')"
 
 apply STUB_REPORT=changes-reordered
@@ -829,6 +861,13 @@ expect_log "apply: ... and says what may be live" "some changes may be live"
 apply STUB_FAIL=DeployReport
 expect "apply: an unreachable database fails before publishing" "1" "$status"
 expect "apply: ... without publishing" "0" "$(calls_of Publish)"
+apply STUB_FAIL=Script
+expect "apply: a failing script fails before publishing" "1" "$status"
+expect "apply: ... without publishing" "0" "$(calls_of Publish)"
+apply STUB_SCRIPT=script-create-database.sql
+expect "apply: the database was dropped since the plan: refused" "1" "$status"
+expect_log "apply: ... and says so" "sqldb-dev no longer exists on sql-dev.database.windows.net"
+expect "apply: ... without publishing (or creating it)" "0" "$(calls_of Publish)"
 
 apply GITHUB_ACTIONS=true PLAN_SHA256=
 expect "apply: under Actions the digest is required" "1" "$status"
@@ -846,6 +885,24 @@ plan TARGET_DACPAC=ci/baseline.dacpac
 apply PLAN_SHA256="$(output plan-sha256)"
 expect "apply: an offline plan is refused" "1" "$status"
 expect_log "apply: ... with the reason" "was made against a dacpac"
+plan STUB_SCRIPT=script-create-database.sql CREATE_DATABASE=true
+apply PLAN_SHA256="$(output plan-sha256)" STUB_SCRIPT=script-create-database.sql
+expect "apply: a plan that creates the database applies" "0" "$status"
+expect_log "apply: ... and says it creates it" "Publish creates it, as planned"
+expect "apply: ... publishing once" "1" "$(calls_of Publish)"
+apply PLAN_SHA256="$(output plan-sha256)" STUB_PUBLISH_EXIT=1 STUB_SCRIPT=script-create-database.sql
+expect "apply: a failing create fails" "1" "$status"
+expect_log "apply: ... and names the permission" "member of dbmanager in master"
+apply PLAN_SHA256="$(output plan-sha256)"
+expect "apply: the database was created since the plan: refused" "1" "$status"
+expect_log "apply: ... and says so" "sqldb-dev now exists on sql-dev.database.windows.net, but the plan was to create it"
+expect "apply: ... without publishing" "0" "$(calls_of Publish)"
+jq '.create_database = false' "$PLAN/deploy/target.json" > "$WORK/target.json"
+cp "$WORK/target.json" "$PLAN/deploy/target.json"
+apply PLAN_SHA256= STUB_SCRIPT=script-create-database.sql
+expect "apply: creating a database without create-database is refused" "1" "$status"
+expect_log "apply: ... with the reason" "but create-database is off"
+expect "apply: ... without publishing" "0" "$(calls_of Publish)"
 plan STUB_REPORT=dataloss ALLOW_DATA_LOSS=true
 apply PLAN_SHA256="$(output plan-sha256)" STUB_REPORT=dataloss
 expect "apply: a plan with allowed data loss applies" "0" "$status"

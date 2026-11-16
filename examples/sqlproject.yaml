@@ -11,8 +11,9 @@
 #   profiles with the MSBuild namespace on <Project>, a TargetDatabaseName
 #   and a TargetConnectionString with only the server, e.g.
 #     <TargetConnectionString>Data Source=sql-dev.database.windows.net;Encrypt=True</TargetConnectionString>
-# - The databases exist (create them with your infrastructure code), and the
-#   Azure identity is a user of each that can deploy: e.g. the server's Entra
+# - The databases exist (create them with your infrastructure code, or set
+#   create-database: true to let the publish create them), and the Azure
+#   identity is a user of each that can deploy: e.g. the server's Entra
 #   administrator.
 # - Environments `dev` and `prod`, with required reviewers if your plan
 #   allows.

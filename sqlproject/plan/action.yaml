@@ -6,10 +6,11 @@ description: >-
   publishes with, and in additive mode what the database has that the
   project doesn't. Writes a markdown summary, and fails after writing it
   (so it can still be posted) when the plan has possible data loss that isn't
-  allowed. Upload plan-dir as an artifact for sqlproject/apply when
-  has-changes is true. Sign in with azure/login and run shared/setup (dotnet,
-  dotnet:microsoft.sqlpackage, yq and azure-cli pinned) first; with
-  target-dacpac, no sign-in or azure-cli is needed.
+  allowed. A database that doesn't exist fails the plan unless
+  create-database is on. Upload plan-dir as an artifact for
+  sqlproject/apply when has-changes is true. Sign in with azure/login and
+  run shared/setup (dotnet, dotnet:microsoft.sqlpackage, yq and azure-cli
+  pinned) first; with target-dacpac, no sign-in or azure-cli is needed.
 
 inputs:
   working-directory:
@@ -60,6 +61,10 @@ inputs:
     description: "'true' lets a plan with possible data loss pass, and publish with BlockOnPossibleDataLoss=False."
     required: false
     default: "false"
+  create-database:
+    description: "'true' lets the publish create a database that doesn't exist (the plan says so); otherwise a missing database fails the plan."
+    required: false
+    default: "false"
   target-dacpac:
     description: Plan against this dacpac, relative to the working directory, instead of the database (no Azure access).
     required: false
@@ -91,6 +96,9 @@ outputs:
   blocked-reason:
     description: One line saying why the plan is blocked.
     value: ${{ steps.plan.outputs.blocked-reason }}
+  creates-database:
+    description: "'true' if the database doesn't exist and the publish creates it (create-database)."
+    value: ${{ steps.plan.outputs.creates-database }}
   plan-sha256:
     description: SHA-256 of the plan; pass it to sqlproject/apply.
     value: ${{ steps.plan.outputs.plan-sha256 }}
@@ -138,6 +146,7 @@ runs:
         PROPERTIES: ${{ inputs.properties }}
         VARIABLES: ${{ inputs.variables }}
         ALLOW_DATA_LOSS: ${{ inputs.allow-data-loss }}
+        CREATE_DATABASE: ${{ inputs.create-database }}
         TARGET_DACPAC: ${{ inputs.target-dacpac }}
         TITLE: ${{ steps.names.outputs.title }}
         PR_NUMBER: ${{ github.event.pull_request.number }}

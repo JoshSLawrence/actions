@@ -119,11 +119,11 @@ sqlproject-deploy.yaml                   plan ──> apply (after approval)
   profiles into a matrix, and checks the GitHub environments exist.
 - **plan** (per deployment) asks SqlPackage for the report and the script
   against the live database, with the exact options the apply will use. A
-  database that does not exist fails the plan: this workflow never creates
-  databases. The plan holds the dacpacs, the profile, the target, the
-  report, the script and a summary, and is uploaded when there is something
-  to apply; the summary is commented on the PR. Plans of fork and Dependabot
-  PRs are skipped (no OIDC token).
+  database that does not exist fails the plan, unless `create-database` is
+  on ([Missing databases](#missing-databases)). The plan holds the dacpacs,
+  the profile, the target, the report, the script and a summary, and is
+  uploaded when there is something to apply; the summary is commented on
+  the PR. Plans of fork and Dependabot PRs are skipped (no OIDC token).
 - **apply** (per deployment) runs only when the plan has changes, so a plan
   with nothing to do asks for no approval. After the environment's approval
   it:
@@ -132,7 +132,8 @@ sqlproject-deploy.yaml                   plan ──> apply (after approval)
      count), or the target branch was rewritten;
   2. checks the plan's SHA-256;
   3. plans again against the live database and refuses if the report is not
-     the reviewed one: someone changed the database after the plan;
+     the reviewed one, or the database was created or dropped since: someone
+     changed it after the plan;
   4. publishes with the plan's own dacpac, profile and options.
 - **result** rolls everything up into one check to require in branch
   protection: `<caller job> / Result`.
@@ -164,7 +165,8 @@ One publish runs at a time per database, from whichever workflow or PR.
    application, Azure SQL's administrator ID is its client (application) ID.
 3. **Databases are created by your infrastructure code**, before the
    workflow plans them: a plan against a missing database fails, telling you
-   so.
+   so. Or turn on `create-database` to let the publish create them
+   ([Missing databases](#missing-databases)).
 4. **Runners that reach the databases.** Private endpoints need runners in
    the network: use `plan-runs-on` and `apply-runs-on` for a runner group
    that can reach the servers.
@@ -205,6 +207,7 @@ accept spaces or newlines. `{deployment}` is replaced where noted.
 | `pr-comment` | `true` | Comment the plan and apply result on the PR |
 | `target-dacpac` | none | Plan against this dacpac instead of the database: no Azure access; needs `apply: false` |
 | `allow-data-loss` | `false` | Let a plan with possible data loss be applied |
+| `create-database` | `false` | Let the publish create a database that doesn't exist ([Missing databases](#missing-databases)) |
 | `apply` | `true` | Include the apply job (`false` = plan only) |
 | `apply-from-pr` | `true` | Publish from the PR before merge; `false` = on the default branch only (add a `push` trigger) |
 | `apply-environment` | none | Environment with required reviewers; `{deployment}`; required with `apply` |
@@ -313,6 +316,33 @@ caller can wire the input to a PR label, e.g.
 `CreateNewDatabase=True` in a profile is refused outright: it drops and
 recreates the database.
 
+## Missing databases
+
+By default a database must exist before the workflow plans it, created by
+your infrastructure code (on Azure SQL, that is where its SKU, backups and
+networking belong): a plan against a missing database fails and says so.
+
+With `create-database: true` the plan of a missing database passes instead.
+It counts as a change, its headline says "create the database", and its
+deployment script shows the `CREATE DATABASE` statement; the publish creates
+the database, then deploys the project into it. The apply checks that the
+database still doesn't exist (and, for every plan, that a database that
+existed still does) and refuses otherwise, so a database is only ever
+created by a plan that said so.
+
+- The database is created with the profile's database options, e.g.
+  `DatabaseEdition`, `DatabaseServiceObjective` and `DatabaseMaximumSize` on
+  Azure SQL, or else the server's defaults.
+- The identity must be allowed to create databases: on Azure SQL, the
+  server's Entra administrator or a member of `dbmanager` in `master`.
+- With a separate apply identity (`apply-azure-client-id`), the plan
+  identity must still be able to connect to `master` (to see that the
+  database is missing), and, once the apply identity has created the
+  database, become a user of it before the next plan: only the creator is
+  `dbo`. Using the server's Entra administrator for both avoids this.
+- This is not `CreateNewDatabase`, which drops and recreates an existing
+  database on every publish and stays refused.
+
 ## Composite actions
 
 The workflows are made of these; use them directly for a different job
@@ -367,15 +397,16 @@ For a database in a local container, set `SQL_AUTH=sql`, `SQL_USER` and
   apply job can have been poisoned by another run.
 - **The base-commit build** runs the target branch's own code, never a
   fork's.
-- **Destructive operations** are explicit: databases are never created,
-  `CreateNewDatabase` is refused, additive mode drops nothing, and in truth
-  mode drops are in the plan, table and column drops are blocked as data
-  loss, and security objects are kept by default.
+- **Destructive operations** are explicit: databases are created only with
+  `create-database`, `CreateNewDatabase` is refused, additive mode drops
+  nothing, and in truth mode drops are in the plan, table and column drops
+  are blocked as data loss, and security objects are kept by default.
 
 ## Limitations
 
 - One SQL project per folder.
-- Databases must exist: create them with your infrastructure code first.
+- Databases must exist (create them with your infrastructure code first),
+  unless `create-database` is on.
 - No secret SQLCMD variables.
 - An Entra token lasts about an hour and SqlPackage cannot refresh it, so a
   publish longer than that may fail when it reconnects.

@@ -292,6 +292,33 @@ PROFILE_OVERRIDE="$MISSING_PROFILE" plan "$HEAD_DACPAC" 10
 expect "plan 10 is refused" "1" "$status"
 expect_log "plan 10 says the database doesn't exist" "doesn't exist on localhost"
 
+# --- 7. create-database ----------------------------------------------------------------------
+log_step "create-database"
+PROFILE_OVERRIDE="$MISSING_PROFILE" plan "$HEAD_DACPAC" 11 CREATE_DATABASE=true
+expect "plan 11 (create-database) passes" "0" "$status"
+expect "plan 11 creates the database" "true" "$(output creates-database)"
+expect "plan 11 has changes" "true" "$(output has-changes)"
+sql "CREATE DATABASE nowhere" master
+apply 11
+expect "apply 11 is refused: the database was created since the plan" "1" "$status"
+expect_log "apply 11 says so" "now exists on localhost"
+sql "DROP DATABASE nowhere" master
+apply 11
+expect "apply 11 succeeds once the database is missing again" "0" "$status"
+expect "the publish created the database" "1" "$(sql "SELECT COUNT(*) FROM sys.databases WHERE name = 'nowhere'" master)"
+expect "... and deployed the project into it" "3" "$(sql "SELECT COUNT(*) FROM dbo.Status" nowhere)"
+# An empty database and a missing one give the same report, so only the
+# apply's script check sees that it was dropped
+sql "DROP DATABASE nowhere; CREATE DATABASE nowhere" master
+PROFILE_OVERRIDE="$MISSING_PROFILE" plan "$HEAD_DACPAC" 12
+expect "plan 12 (an empty database) passes without create-database" "0" "$status"
+expect "plan 12 finds the database" "false" "$(output creates-database)"
+sql "DROP DATABASE nowhere" master
+apply 12
+expect "apply 12 is refused: the database was dropped since the plan" "1" "$status"
+expect_log "apply 12 says so" "no longer exists on localhost"
+expect "the database was not created unreviewed" "0" "$(sql "SELECT COUNT(*) FROM sys.databases WHERE name = 'nowhere'" master)"
+
 if [ "$failures" -gt 0 ]; then
   log_error "${failures} of ${cases} engine test(s) failed"
   exit 1

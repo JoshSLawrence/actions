@@ -4,11 +4,13 @@ description: >-
   and database it names. First refuses a stale plan (the PR moved on, or the
   project's files changed on the target branch since it was planned) and
   checks the plan's digest; then plans again against the live database and
-  refuses if its report differs from the reviewed one; then runs SqlPackage
-  Publish with the plan's own dacpac, profile and options. Download the plan
-  artifact into plan-dir, sign in with azure/login, and run shared/setup
-  (dotnet, dotnet:microsoft.sqlpackage, yq and azure-cli pinned) first. Gate
-  the job with an environment that requires reviewers.
+  refuses if its report differs from the reviewed one, or the database was
+  created or dropped since (Publish creates it only when the plan said so,
+  with create-database); then runs SqlPackage Publish with the plan's own
+  dacpac, profile and options. Download the plan artifact into plan-dir,
+  sign in with azure/login, and run shared/setup (dotnet,
+  dotnet:microsoft.sqlpackage, yq and azure-cli pinned) first. Gate the job
+  with an environment that requires reviewers.
 
 inputs:
   working-directory:

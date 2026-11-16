@@ -4,7 +4,9 @@
 # its digest must match the plan job's, the target comes from the plan, not
 # from inputs, and the arguments are built only from the plan directory. It
 # first plans again against the live database; if that report differs from
-# the reviewed one, the database changed since and nothing is published.
+# the reviewed one, or the database's existence does (the plan said whether
+# Publish creates it: create-database), the database changed since and
+# nothing is published.
 #
 # Environment variables:
 #   WORKING_DIR - the SQL project's folder, with its mise.toml (required)
@@ -103,8 +105,39 @@ if [ "$(jq -cS . <<< "$planned_json")" != "$(jq -cS . <<< "$live_json")" ]; then
 fi
 log_success "The database still yields the planned report"
 
+# A report doesn't show whether the database exists (a missing one lists the
+# same creates as an empty one), so ask the script: Publish creates the
+# database only if the reviewed plan said it would
+sql_run Script "$WORK_DIR/live-script.log" "${common_args[@]}" "/OutputPath:${WORK_DIR}/live-script.sql" || {
+  log_error "SqlPackage couldn't script the publish to ${database}. The runner must reach ${server}, and the identity must be able to deploy there."
+  exit 1
+}
+creates_now=false
+sql_missing_database "$WORK_DIR/live-script.sql" && creates_now=true
+if [ "$creates_now" != "$(jq -r '.creates_database // false' "$TARGET")" ]; then
+  if [ "$creates_now" = true ]; then
+    log_error "${database} no longer exists on ${server}, but the plan was made against it, so Publish would create it unreviewed. Re-run the workflow to plan again."
+  else
+    log_error "${database} now exists on ${server}, but the plan was to create it. Re-run the workflow to plan against the database as it is."
+  fi
+  exit 1
+fi
+if [ "$creates_now" = true ] && [ "$(jq -r '.create_database // false' "$TARGET")" != true ]; then
+  # Defense in depth: the plan job fails a missing database without
+  # create-database, so none should get here
+  log_error "The plan creates ${database}, but create-database is off. Create the database first, or re-run the workflow with create-database on."
+  exit 1
+fi
+if [ "$creates_now" = true ]; then
+  log_info "${database} doesn't exist on ${server}: Publish creates it, as planned"
+fi
+
 log_step "Publish"
 if ! sql_run Publish "$WORK_DIR/publish.log" "${common_args[@]}"; then
+  if [ "$creates_now" = true ]; then
+    log_error "Publish failed. Creating a database needs the identity to be allowed to (on Azure SQL, the server's Entra admin or a member of dbmanager in master). Check whether ${database} was created, fix the error above, and re-run the workflow to plan again."
+    exit 1
+  fi
   log_error "Publish failed; some changes may be live (SqlPackage deploys in steps; IncludeTransactionalScripts in the profile makes it all-or-nothing where possible). Fix the error above and push to plan again, or roll back by running the workflow on the target branch."
   exit 1
 fi

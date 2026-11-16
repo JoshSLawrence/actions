@@ -32,6 +32,9 @@
 #   ALLOW_DATA_LOSS    - "true": a plan with possible data loss may be applied
 #                        (and publishes with BlockOnPossibleDataLoss=False).
 #                        Default false: such a plan is blocked.
+#   CREATE_DATABASE    - "true": a database that doesn't exist is created by
+#                        the publish (the plan says so). Default false: a
+#                        missing database fails the plan. Ignored offline.
 #   TARGET_DACPAC      - plan against this dacpac instead of the database: no
 #                        Azure access (tests and offline previews)
 #   PLAN_DIR           - where the plan goes (default:
@@ -50,8 +53,11 @@
 #                        against a container. The workflows never set it.
 #
 # Outputs:
-#   has-changes    - "true" if the report has any operation, or the project's
-#                    deployment scripts count as changed
+#   has-changes    - "true" if the report has any operation, the database
+#                    is to be created, or the project's deployment scripts
+#                    count as changed
+#   creates-database - "true" if the database doesn't exist and the publish
+#                    creates it (CREATE_DATABASE)
 #   data-loss      - "true" if the report has possible data loss
 #   blocked        - "true" if it has, and ALLOW_DATA_LOSS isn't on (the
 #                    script then fails after writing everything)
@@ -87,10 +93,11 @@ DEPLOY_MODE="${DEPLOY_MODE:-additive}"
 KEEP_OBJECT_TYPES="${KEEP_OBJECT_TYPES-$SQL_DEFAULT_KEEP_OBJECT_TYPES}"
 DEPLOYMENT_SCRIPTS="${DEPLOYMENT_SCRIPTS:-changed}"
 ALLOW_DATA_LOSS="${ALLOW_DATA_LOSS:-false}"
+CREATE_DATABASE="${CREATE_DATABASE:-false}"
 TARGET_DACPAC="${TARGET_DACPAC:-}"
 SQL_AUTH="${SQL_AUTH:-entra}"
 
-log_config WORKING_DIR DACPAC_DIR PLAN_DIR DEPLOYMENT PROFILE DEPLOY_MODE KEEP_OBJECT_TYPES DEPLOYMENT_SCRIPTS ALLOW_DATA_LOSS TARGET_DACPAC SQL_AUTH
+log_config WORKING_DIR DACPAC_DIR PLAN_DIR DEPLOYMENT PROFILE DEPLOY_MODE KEEP_OBJECT_TYPES DEPLOYMENT_SCRIPTS ALLOW_DATA_LOSS CREATE_DATABASE TARGET_DACPAC SQL_AUTH
 
 rm -rf "$PLAN_DIR" "$WORK_DIR"
 mkdir -p "$PLAN_DIR/deploy/dacpac" "$WORK_DIR"
@@ -106,6 +113,7 @@ set_output summary-file "$SUMMARY_FILE"
 set_output has-changes false
 set_output data-loss false
 set_output blocked false
+set_output creates-database false
 
 # Always leave a summary behind -- a failure's too, for the PR comment -- and
 # delete the scratch files and any SqlPackage response file
@@ -217,13 +225,18 @@ if [ "$offline" = true ]; then
 else
   cp "$PROFILE" "$PLAN_DIR/deploy/profile.publish.xml"
 fi
+# creates_database is what the plan found (the script creates the database),
+# filled in once the script is written; the apply refuses if the database's
+# existence changed since
 jq -n --arg deployment "${DEPLOYMENT:-}" --arg server "$server" --arg database "$database" \
   --arg dacpac "$dacpac" --arg profile "$PROFILE" --arg deploy_mode "$DEPLOY_MODE" \
   --argjson keep "$keep_types" --argjson allow "$(is_true "$ALLOW_DATA_LOSS" && echo true || echo false)" \
+  --argjson create "$(is_true "$CREATE_DATABASE" && echo true || echo false)" \
   --argjson offline "$offline" --argjson properties "$properties" --argjson variables "$variables" '
   {service: "sqlproject", deployment: $deployment, server: (if $server == "" then null else $server end),
    database: $database, dacpac: $dacpac, profile: $profile, deploy_mode: $deploy_mode,
-   keep_object_types: $keep, allow_data_loss: $allow, offline: $offline,
+   keep_object_types: $keep, allow_data_loss: $allow, create_database: $create,
+   creates_database: false, offline: $offline,
    properties: $properties, variables: $variables}' > "$PLAN_DIR/deploy/target.json"
 if [ "$offline" = true ]; then
   log_success "Plan laid out for ${database}, planned against ${TARGET_DACPAC}"
@@ -251,9 +264,16 @@ log_step "Script"
 sql_run Script "$WORK_DIR/script.log" "${common_args[@]}" "/OutputPath:${PLAN_DIR}/script.sql" || sql_failed "Script" "$WORK_DIR/script.log"
 
 # A missing database doesn't show in a report (it lists only the creates),
-# but the script would create it
+# but the script would create it: only with create-database
+creates_database=false
 if [ "$offline" != true ] && sql_missing_database "$PLAN_DIR/script.sql"; then
-  fail "Database ${database} doesn't exist on ${server}. This workflow never creates databases (SqlPackage would, outside your infrastructure code): create it first, then re-run this job."
+  if ! is_true "$CREATE_DATABASE"; then
+    fail "Database ${database} doesn't exist on ${server}. Create it first (e.g. with your infrastructure code), or set the workflow's create-database input to let the publish create it, then re-run this job."
+  fi
+  creates_database=true
+  jq '.creates_database = true' "$PLAN_DIR/deploy/target.json" > "$WORK_DIR/target.json"
+  mv "$WORK_DIR/target.json" "$PLAN_DIR/deploy/target.json"
+  log_warn "Database ${database} doesn't exist on ${server}: the publish will create it (create-database)."
 fi
 
 kept_json='{"alerts": [], "operations": []}'
@@ -272,7 +292,7 @@ scripts_present="$(jq -r '(.pre_sha256 != null) or (.post_sha256 != null)' "$PLA
 scripts_changed="$(jq -r '.changed' "$PLAN_DIR/deploy/deployment-scripts.json")"
 scripts_why="$(jq -r '.why // ""' "$PLAN_DIR/deploy/deployment-scripts.json")"
 has_changes=false
-if [ "$operation_count" -gt 0 ] || { [ "$scripts_present" = true ] && [ "$scripts_changed" = true ]; }; then
+if [ "$operation_count" -gt 0 ] || [ "$creates_database" = true ] || { [ "$scripts_present" = true ] && [ "$scripts_changed" = true ]; }; then
   has_changes=true
 fi
 data_loss=false
@@ -296,14 +316,16 @@ counts="$(jq -r '
   | map({operation, n: (.items | length)} | select(.n > 0))
   | sort_by([(.operation as $op | $order | index($op) // 99), .operation])
   | map("\(.n) to \(.operation | words)") | join(", ")' <<< "$report_json")"
+headline=""
+[ "$creates_database" = true ] && headline="create the database"
+[ -n "$counts" ] && headline="${headline:+${headline}, }${counts}"
+if [ "$scripts_present" = true ] && [ "$scripts_changed" = true ]; then
+  headline="${headline:+${headline}, }deployment scripts changed"
+fi
 
 {
   if [ "$has_changes" = true ]; then
-    if [ -n "$counts" ]; then
-      echo "### 📋 Plan: ${counts}$([ "$scripts_present" = true ] && [ "$scripts_changed" = true ] && echo ", deployment scripts changed")"
-    else
-      echo "### 📋 Plan: deployment scripts changed"
-    fi
+    echo "### 📋 Plan: ${headline}"
   else
     echo "### ✅ No changes"
   fi
@@ -314,6 +336,10 @@ counts="$(jq -r '
     echo "Planned against \`${TARGET_DACPAC}\`, not a database: database name \`${database}\`, profile \`${PROFILE}\`, ${DEPLOY_MODE} mode."
   else
     echo "Database \`${database}\` on \`${server}\`, profile \`${PROFILE}\`, ${DEPLOY_MODE} mode."
+  fi
+  if [ "$creates_database" = true ]; then
+    echo ""
+    echo "> **Note:** \`${database}\` doesn't exist on \`${server}\`, so the publish creates it (create-database), with the profile's database options (e.g. \`DatabaseEdition\` and \`DatabaseServiceObjective\` on Azure SQL) or the server's defaults."
   fi
   if [ "$has_changes" != true ]; then
     echo ""
@@ -393,6 +419,7 @@ counts="$(jq -r '
   details_open "Deploy options"
   echo "- Mode: \`${DEPLOY_MODE}\`$([ "$DEPLOY_MODE" = truth ] && echo ", never dropped: $(jq -r 'if length == 0 then "nothing" else map("`\(.)`") | join(", ") end' <<< "$keep_types")")"
   echo "- allow-data-loss: \`$(is_true "$ALLOW_DATA_LOSS" && echo true || echo false)\`"
+  echo "- create-database: \`$(is_true "$CREATE_DATABASE" && echo true || echo false)\`$([ "$offline" = true ] && is_true "$CREATE_DATABASE" && echo " (ignored: planned against a dacpac)")"
   echo "- Profile properties: $(jq -r '.properties | del(.TargetDatabaseName, .TargetConnectionString) | to_entries | if length == 0 then "none" else map("`\(.key)=\(.value)`") | join(", ") end' <<< "$profile_json")"
   echo "- properties input: $(jq -r 'to_entries | if length == 0 then "none" else map("`\(.key)=\(.value)`") | join(", ") end' <<< "$properties")"
   echo "- Profile SQLCMD variables: $(jq -r '.variables | to_entries | if length == 0 then "none" else map("`\(.key)=\(.value)`") | join(", ") end' <<< "$profile_json")"
@@ -407,8 +434,9 @@ set_output has-changes "$has_changes"
 set_output data-loss "$data_loss"
 set_output blocked "$blocked"
 set_output blocked-reason "$blocked_reason"
+set_output creates-database "$creates_database"
 set_output plan-sha256 "$plan_sha256"
-log_summary "Planned ${database}${server:+ on ${server}} (has changes: ${has_changes}, data loss: ${data_loss}, plan sha256 ${plan_sha256})"
+log_summary "Planned ${database}${server:+ on ${server}} (has changes: ${has_changes}, creates database: ${creates_database}, data loss: ${data_loss}, plan sha256 ${plan_sha256})"
 
 if [ "$blocked" = true ]; then
   # The summary and outputs are written, so the PR comment can say why

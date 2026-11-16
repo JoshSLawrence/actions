@@ -15,6 +15,10 @@
 # project the source of truth and drops the rest, except keep-object-types.
 # See sqlproject/source-of-truth.md.
 #
+# Databases must exist (e.g. created by your infrastructure code) unless
+# create-database is on: then the publish creates a missing one, and the
+# plan says so.
+#
 # Tools: every job that runs one installs exactly what the project folder's
 # own mise.toml pins (dotnet to build; dotnet:microsoft.sqlpackage and yq to
 # plan and publish; azure-cli, with uv, for the Entra token) -- nothing from
@@ -163,6 +167,14 @@ on:
         description: >-
           Let a plan with possible data loss be applied, and publish with
           BlockOnPossibleDataLoss=False. Off: such a plan is blocked.
+        type: boolean
+        default: false
+      create-database:
+        description: >-
+          Let the publish create a database that doesn't exist on the server
+          (the plan says so). Off: a missing database fails the plan, so
+          databases come from your infrastructure code. Ignored with
+          target-dacpac.
         type: boolean
         default: false
       # --- Apply ----------------------------------------------------------------
@@ -358,6 +370,7 @@ jobs:
       pr-comment: ${{ inputs.pr-comment }}
       target-dacpac: ${{ inputs.target-dacpac }}
       allow-data-loss: ${{ inputs.allow-data-loss }}
+      create-database: ${{ inputs.create-database }}
       apply: ${{ inputs.apply }}
       apply-from-pr: ${{ inputs.apply-from-pr }}
       azure-client-id: ${{ inputs.azure-client-id }}

@@ -36,6 +36,7 @@ this document records the decisions and why.
 | Deploy mode | Input `deploy-mode`: `additive` (default; nothing outside the project is dropped, and the plan lists what is kept) or `truth` (drops what is not in the project, except `keep-object-types`). |
 | Deployment scripts | Pre/post-deployment scripts do not show in a report. Input `deployment-scripts`: `changed` (default; compared with what is deployed) or `always`. |
 | Possible data loss | `DataIssue` alerts block the plan unless `allow-data-loss` is on; then Publish uses `BlockOnPossibleDataLoss=False`. |
+| Missing database | Fails the plan unless `create-database` is on (default off); then the plan says it creates the database, and Publish does. |
 | Auth | `azure/login` (OIDC), then `az account get-access-token --resource https://database.windows.net/`, passed as `/AccessToken` inside a mode-600 response file, never on a command line. |
 | Tools | Pinned in the project folder's `mise.toml`: `dotnet`, `"dotnet:microsoft.sqlpackage"` (mise's dotnet backend), `yq`, plus `azure-cli` and `uv` for online plans. |
 | Triggers | `pull_request` and `workflow_dispatch`; `push` to the default branch only with `apply-from-pr: false`. |
@@ -65,10 +66,23 @@ later is an informed, reviewed one-line change.
   live re-check: the database still yields the same report. This is
   SqlPackage's equivalent of OpenTofu's stale saved plan.
 - **No changes, no approval.** `has-changes` false skips the apply job.
-- **A missing database fails the plan.** A report does not show it (it lists
-  only the object creates), but the generated script contains
-  `CREATE DATABASE [$(DatabaseName)]`. Publish would create it, on Azure SQL
-  with a default SKU outside the infrastructure code, so the plan refuses.
+- **A missing database fails the plan, unless `create-database`.** A report
+  does not show it (it lists only the object creates), but the generated
+  script contains `CREATE DATABASE [$(DatabaseName)]`. Publish would create
+  it, on Azure SQL with the profile's options or a default SKU, outside the
+  infrastructure code, so by default the plan refuses. Not every target is
+  Azure SQL with infrastructure code owning its databases, so
+  `create-database: true` (added in `v0.11.0`) lets the plan pass: it records
+  `creates_database` in `target.json` (so in the digest), counts it as a
+  change and says so. The apply runs `Script` again and refuses if the
+  database's existence differs from the plan's, in either direction: an
+  empty database and a missing one give the same report, so the report
+  check alone would let a database be created that no plan showed. Two
+  limits remain: a database dropped between that check and `Publish` is
+  still created (no SqlPackage option forbids it, and the report check has
+  the same window); and the detection is the script's
+  `CREATE DATABASE [$(DatabaseName)]` line, proven on SQL Server (the engine
+  test) but not yet against Azure SQL's script.
 - **When it applies.** A pull request run plans, then applies from the PR
   after approval (`apply: false`: plan only). Any other run on the default
   branch plans and applies after approval only if something changed; other
@@ -120,7 +134,8 @@ either way: they also run with every schema change.
 - The inputs own `BlockOnPossibleDataLoss`, `DropObjectsNotInSource` and
   `DoNotDropObjectTypes`: profiles and `properties` cannot set them, so
   there is one switch per call, visible in the calling workflow.
-  `CreateNewDatabase=True` is refused outright.
+  `CreateNewDatabase=True` is refused outright: it drops and recreates an
+  existing database, which `create-database` never does.
 
 ## SqlPackage and secrets
 
