@@ -11,16 +11,17 @@
 #   the database has that the project doesn't. Uploads the plan (dacpacs +
 #   profile + target + report, no credentials) as an artifact, and comments
 #   the summary on the PR. A plan with possible data loss is blocked unless
-#   allow-data-loss is on. Skipped for fork PRs and Dependabot, which get no
-#   OIDC token.
+#   allow-data-loss is on; a database that doesn't exist fails the plan
+#   unless create-database is on (then the publish creates it). Skipped for
+#   fork PRs and Dependabot, which get no OIDC token.
 # - apply: only when the plan has changes. Waits for the apply environment's
 #   approval, checks the plan is still current (the PR is at the planned
 #   commit and the project's files haven't changed on the target branch),
 #   checks the plan's digest, plans again and refuses if the database no
-#   longer yields the reviewed report, then publishes exactly that plan. A PR
-#   run applies from the PR, before merge (apply-from-pr), so the default
-#   branch only holds what was applied; other runs apply only on the default
-#   branch.
+#   longer yields the reviewed report (or was created or dropped since),
+#   then publishes exactly that plan. A PR run applies from the PR, before
+#   merge (apply-from-pr), so the default branch only holds what was
+#   applied; other runs apply only on the default branch.
 #
 # Runners: every runs-on input is a label, or JSON when it starts with { or
 # [ -- an array of labels or a runner group -- which each job's runs-on
@@ -145,6 +146,14 @@ on:
         description: >-
           Let a plan with possible data loss be applied, and publish with
           BlockOnPossibleDataLoss=False. Off: such a plan is blocked.
+        type: boolean
+        default: false
+      create-database:
+        description: >-
+          Let the publish create a database that doesn't exist on the server
+          (the plan says so). Off: a missing database fails the plan, so
+          databases come from your infrastructure code. Ignored with
+          target-dacpac.
         type: boolean
         default: false
       # --- Apply ----------------------------------------------------------------
@@ -293,6 +302,7 @@ jobs:
           properties: ${{ inputs.properties }}
           variables: ${{ inputs.variables }}
           allow-data-loss: ${{ inputs.allow-data-loss }}
+          create-database: ${{ inputs.create-database }}
           target-dacpac: ${{ inputs.target-dacpac }}
 
       # The plan holds the dacpacs (schema and deployment scripts), the

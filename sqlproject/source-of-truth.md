@@ -199,7 +199,8 @@ One `deployments/<name>.publish.xml` per environment. What goes in:
 - The `xmlns` is required: SqlPackage ignores the properties and variables
   of a profile without it, and the workflow refuses the file.
 
-The workflow refuses credentials, `CreateNewDatabase=True`, and the
+The workflow refuses credentials, `CreateNewDatabase=True` (to create a
+database that doesn't exist yet, use the `create-database` input), and the
 properties its inputs own (`BlockOnPossibleDataLoss`,
 `DropObjectsNotInSource`, `DoNotDropObjectTypes`). The same file works for a
 local publish from VS Code.

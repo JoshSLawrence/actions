@@ -96,8 +96,13 @@ catalog, layout and principles.
     and `BlockOnPossibleDataLoss`: profiles and `properties` may not set
     them. Pre/post-deployment scripts never show in a report, so the build
     compares them with the base commit's build (`deployment-scripts`).
+  - A missing database fails the plan unless `create-database` is on; the
+    plan then records `creates_database` and the publish creates it
+    (`CreateNewDatabase`, which recreates, stays refused).
   - The apply plans again against the live database and refuses if the
-    report differs from the reviewed one. SqlPackage always gets the access
+    report differs from the reviewed one, or if the database's existence
+    differs from the plan's (a `Script` run: a report can't tell an empty
+    database from a missing one). SqlPackage always gets the access
     token in a mode-600 response file, never on a command line.
 - **Workflow inputs stay in sync:**
   - An input means the same thing in every workflow of a family that has

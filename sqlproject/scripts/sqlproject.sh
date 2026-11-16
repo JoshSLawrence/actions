@@ -107,7 +107,7 @@ sql_profile_problems() {
     ( .properties | keys[] | ascii_downcase as $k | select($owned | has($k))
       | "\($file): \(.) is set, but the workflow owns it. Remove it from the profile; set the \($owned[$k]) input instead." ),
     ( .properties | to_entries[] | select((.key | ascii_downcase) == "createnewdatabase" and (.value | ascii_downcase) == "true")
-      | "\($file): CreateNewDatabase is True, which drops and recreates the database. Remove it: this workflow never creates or recreates databases." ),
+      | "\($file): CreateNewDatabase is True, which drops and recreates the database on every publish. Remove it; to create a database that does not exist yet, set the create-database input instead." ),
     ( [ .database, .server, (.properties | to_entries[] | .value), (.variables | to_entries[] | .value) ][]
       | select(contains("\"") or contains("\n") or contains("\r"))
       | "\($file): a value contains a double quote or a line break, which the workflow cannot pass to SqlPackage safely. Remove it from the profile." )
@@ -135,7 +135,7 @@ sql_assignment_problems() {
       echo "properties: ${name} is owned by the workflow. Set the $(jq -r --arg n "${name,,}" '.[$n]' <<< "$SQL_OWNED_PROPERTIES") input instead."
     fi
     if [ "$kind" = properties ] && [ "${name,,}" = createnewdatabase ]; then
-      echo "properties: CreateNewDatabase drops and recreates the database; this workflow never does. Remove it."
+      echo "properties: CreateNewDatabase drops and recreates the database on every publish. Remove it; to create a database that doesn't exist yet, set the create-database input instead."
     fi
   done < <(list_lines "$text")
 }
